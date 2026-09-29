@@ -11,6 +11,84 @@ menu_timeout=5
 provision_secrets=1
 env_file="$root/.env"
 env_file_explicit=0
+signer_fpr=''
+gpg_homedir=''
+bundle_only=''
+usage() {
+  printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets] [--signer-fingerprint FPR] [--gpg-homedir DIR]\n' "$0" >&2
+  printf '       %s --bundle-only DEST   (testing/inspection: copy only the allowlisted rescue bundle into new/empty DEST and exit)\n' "$0" >&2
+}
+
+# Copy only allowlisted repository paths into $2 (never .git, dotenv files,
+# ISOs, images, archives, caches, downloads, or evidence), so excluded files
+# are never written to the target media in the first place.
+copy_bundle() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import shutil
+import sys
+
+root, dest = sys.argv[1:]
+ALLOW = [
+    "AGENTS.md", "LICENSE", "Makefile", "README.md", "CHANGELOG.md", "VERSION",
+    "config/hermes-rescue.config.yaml", "config/rescue.env.example",
+    "docs", "profiles", "rescue-ai", "scripts", "tests",
+]
+SKIP_DIRS = {"__pycache__", ".git"}
+SKIP_SUFFIXES = (".pyc", ".iso", ".img", ".tar.gz")
+
+
+def excluded(name):
+    if name in SKIP_DIRS:
+        return True
+    if name.endswith(SKIP_SUFFIXES):
+        return True
+    if name.endswith(".example"):
+        return False
+    return name == ".env" or name.endswith(".env") or name.startswith(".env.")
+
+
+def copy_file(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(src, dst)
+    try:
+        shutil.copystat(src, dst)
+    except OSError:
+        pass  # FAT/exFAT targets may reject mode/time changes
+
+
+count = 0
+for rel in ALLOW:
+    src = os.path.join(root, rel)
+    if os.path.islink(src) or not os.path.exists(src):
+        continue
+    if os.path.isfile(src):
+        if not excluded(os.path.basename(rel)):
+            copy_file(src, os.path.join(dest, rel))
+            count += 1
+        continue
+    for cur, dirs, files in os.walk(src, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if not excluded(d) and not os.path.islink(os.path.join(cur, d)))
+        for name in sorted(files):
+            path = os.path.join(cur, name)
+            if excluded(name) or os.path.islink(path):
+                continue
+            copy_file(path, os.path.join(dest, os.path.relpath(path, root)))
+            count += 1
+os.makedirs(dest, exist_ok=True)
+print(f"Copied {count} allowlisted files into {dest}")
+PY
+}
+
+# Defensive check: the only dotenv-style file allowed in the bundle is the
+# private config/rescue.env written by the allowlisted provisioning step.
+assert_bundle_clean() {
+  local bundle=$1 leaked
+  leaked=$(find "$bundle" \( -name '.env' -o -name '.env.*' -o -name '*.env' \) ! -name '*.example' ! -path "$bundle/config/rescue.env" -print)
+  [[ -z "$leaked" ]] || { printf 'Refusing: unexpected dotenv file(s) in USB bundle:\n%s\n' "$leaked" >&2; exit 1; }
+  if [[ -e "$bundle/.git" ]]; then printf 'Refusing: .git found in USB bundle.\n' >&2; exit 1; fi
+}
+
 while (($#)); do
   case "$1" in
     --ventoy-mount) mountpoint=${2:?missing Ventoy mount}; shift 2 ;;
@@ -21,9 +99,22 @@ while (($#)); do
     --menu-timeout) menu_timeout=${2:?missing timeout seconds}; shift 2 ;;
     --env-file) env_file=${2:?missing dotenv file}; env_file_explicit=1; shift 2 ;;
     --no-provision-secrets) provision_secrets=0; shift ;;
-    *) printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets]\n' "$0" >&2; exit 2 ;;
+    --signer-fingerprint) signer_fpr=${2:?missing fingerprint}; shift 2 ;;
+    --gpg-homedir) gpg_homedir=${2:?missing GPG homedir}; shift 2 ;;
+    --bundle-only) bundle_only=${2:?missing destination}; shift 2 ;;
+    *) usage; exit 2 ;;
   esac
 done
+command -v python3 >/dev/null || { printf 'python3 is required.\n' >&2; exit 1; }
+if [[ -n "$bundle_only" ]]; then
+  if [[ -e "$bundle_only" ]] && { [[ ! -d "$bundle_only" ]] || [[ -n "$(ls -A -- "$bundle_only")" ]]; }; then
+    printf 'Refusing: --bundle-only destination must not exist or must be an empty directory: %s\n' "$bundle_only" >&2
+    exit 1
+  fi
+  copy_bundle "$root" "$bundle_only"
+  assert_bundle_clean "$bundle_only"
+  exit 0
+fi
 [[ "$menu_timeout" =~ ^[0-9]+$ ]] || { printf 'Menu timeout must be a non-negative integer.\n' >&2; exit 2; }
 [[ -n "$mountpoint" && -n "$iso" && -n "$sums" && -n "$sig" ]] || {
   printf 'Ventoy mount, ISO, checksum file, and GPG signature are required.\n' >&2; exit 2;
@@ -35,13 +126,29 @@ mountpoint -q "$mountpoint" || { printf 'Refusing: mount path is not a mounted f
   printf 'Refusing: mount does not look like a Ventoy data partition.\n' >&2; exit 1;
 }
 
-"$root/scripts/verify-mint-iso.sh" --iso "$iso" --sha256sums "$sums" --signature "$sig"
-mkdir -p "$mountpoint/ISO/LinuxMintXFCE" "$mountpoint/rescue-omes"
+verify_args=(--iso "$iso" --sha256sums "$sums" --signature "$sig")
+[[ -z "$signer_fpr" ]] || verify_args+=(--signer-fingerprint "$signer_fpr")
+[[ -z "$gpg_homedir" ]] || verify_args+=(--gpg-homedir "$gpg_homedir")
+"$root/scripts/verify-mint-iso.sh" "${verify_args[@]}"
+
+iso_name=$(basename -- "$iso")
+bundle="$mountpoint/rescue-omes"
+mkdir -p "$mountpoint/ISO/LinuxMintXFCE"
 cp --preserve=mode,timestamps "$iso" "$mountpoint/ISO/LinuxMintXFCE/"
-cp -a "$root/." "$mountpoint/rescue-omes/"
-# Remove stale local secrets before optionally provisioning the explicitly
-# requested API key through the allowlisted dotenv parser below.
-rm -f "$mountpoint/rescue-omes/config/rescue.env" "$mountpoint/rescue-omes/.env"
+sync
+# Read-back verification of the copied ISO against the verified source.
+src_sum=$(sha256sum -- "$iso"); src_sum=${src_sum%% *}
+dst_sum=$(sha256sum -- "$mountpoint/ISO/LinuxMintXFCE/$iso_name"); dst_sum=${dst_sum%% *}
+[[ "$src_sum" == "$dst_sum" ]] || {
+  printf 'Copied ISO checksum mismatch: source=%s copy=%s\n' "$src_sum" "$dst_sum" >&2
+  exit 1
+}
+printf 'Copied ISO read-back: PASS (%s)\n' "$dst_sum"
+
+# The bundle directory is our own; recreate it cleanly, then copy only the
+# allowlisted paths so secrets and large artifacts are never written to USB.
+rm -rf -- "$bundle"
+copy_bundle "$root" "$bundle"
 
 if ((provision_secrets)); then
   if [[ -f "$env_file" ]]; then
@@ -91,7 +198,6 @@ fi
 if ((auto_boot)); then
   # Preserve unrelated Ventoy settings while making the verified Mint ISO the
   # default image. A timeout of zero means immediate selection by Ventoy.
-  iso_name=$(basename -- "$iso")
   python3 - "$mountpoint/ventoy.json" "/ISO/LinuxMintXFCE/$iso_name" "$menu_timeout" <<'PY'
 import json
 import pathlib
@@ -128,5 +234,7 @@ PY
 else
   printf 'Ventoy auto-boot not changed; existing menu configuration is preserved.\n'
 fi
+assert_bundle_clean "$bundle"
+sync
 printf 'Copied verified Linux Mint ISO and rescue bundle to %s\n' "$mountpoint"
 printf 'Boot instruction: select the USB in firmware. Ventoy will auto-select Linux Mint when auto-boot is enabled; firmware boot selection still cannot be forced by a file.\n'
