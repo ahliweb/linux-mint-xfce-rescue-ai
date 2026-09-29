@@ -122,7 +122,18 @@ fi
 [[ -d "$mountpoint" ]] || { printf 'Not a directory: %s\n' "$mountpoint" >&2; exit 1; }
 [[ -f "$iso" ]] || { printf 'ISO not found: %s\n' "$iso" >&2; exit 1; }
 mountpoint -q "$mountpoint" || { printf 'Refusing: mount path is not a mounted filesystem: %s\n' "$mountpoint" >&2; exit 1; }
-[[ -d "$mountpoint/ventoy" || -f "$mountpoint/ventoy.json" || -d "$mountpoint/EFI" ]] || {
+# A freshly installed Ventoy data partition is empty (EFI lives on the separate
+# VTOYEFI partition), so also accept a partition labelled "Ventoy" whose disk
+# has a sibling partition labelled "VTOYEFI".
+is_ventoy_layout() {
+  local src disk
+  src=$(findmnt -no SOURCE -- "$mountpoint" 2>/dev/null) || return 1
+  [[ -b "$src" && "$(lsblk -dno LABEL -- "$src" 2>/dev/null)" == Ventoy ]] || return 1
+  disk=$(lsblk -dno PKNAME -- "$src" 2>/dev/null) || return 1
+  [[ -n "$disk" ]] || return 1
+  lsblk -nr -o LABEL -- "/dev/$disk" 2>/dev/null | grep -qx VTOYEFI
+}
+[[ -d "$mountpoint/ventoy" || -d "$mountpoint/EFI" ]] || is_ventoy_layout || {
   printf 'Refusing: mount does not look like a Ventoy data partition.\n' >&2; exit 1;
 }
 
@@ -198,7 +209,9 @@ fi
 if ((auto_boot)); then
   # Preserve unrelated Ventoy settings while making the verified Mint ISO the
   # default image. A timeout of zero means immediate selection by Ventoy.
-  python3 - "$mountpoint/ventoy.json" "/ISO/LinuxMintXFCE/$iso_name" "$menu_timeout" <<'PY'
+  # Ventoy reads plugin configuration only from /ventoy/ventoy.json.
+  mkdir -p -- "$mountpoint/ventoy"
+  python3 - "$mountpoint/ventoy/ventoy.json" "/ISO/LinuxMintXFCE/$iso_name" "$menu_timeout" <<'PY'
 import json
 import pathlib
 import sys

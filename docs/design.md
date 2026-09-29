@@ -184,7 +184,7 @@ flowchart TD
 
 1. Verify Ventoy and Linux Mint ISO provenance/checksums.
 2. Install Ventoy only to the confirmed USB whole disk; this erases that USB.
-3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper verifies the ISO first (GPG signature from the pinned Linux Mint signer fingerprint plus direct SHA-256 comparison), copies it, read-back verifies the copy, writes a Ventoy control configuration that auto-selects the verified ISO after a timeout, copies only an allowlisted rescue bundle, and can provision only the API key from an ignored local `.env` into the USB's private `config/rescue.env`.
+3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper verifies the ISO first (GPG signature from the pinned Linux Mint signer fingerprint plus direct SHA-256 comparison), copies it, read-back verifies the copy, writes a Ventoy control configuration to `/ventoy/ventoy.json` (the only path Ventoy reads plugin settings from) that auto-selects the verified ISO after a timeout, copies only an allowlisted rescue bundle, and can provision only the API key from an ignored local `.env` into the USB's private `config/rescue.env`.
 4. Boot the USB from the firmware menu; auto-selection by Ventoy is not the same as firmware auto-selection.
 5. Boot the live environment and record UEFI/Legacy and Secure Boot state.
 6. Connect the affected disk read-only first. For formal forensic work, prefer a

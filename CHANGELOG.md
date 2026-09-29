@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-30
+
+### Fixed
+
+- `prepare-ventoy-usb.sh` accepted only a Ventoy data partition that already contained `ventoy/`, `ventoy.json`, or `EFI/`, so it refused a freshly installed (empty) Ventoy USB. It now also recognizes the `Ventoy`-labelled partition whose disk has a sibling `VTOYEFI` partition.
+- `prepare-ventoy-usb.sh` wrote the auto-boot configuration to `<mount>/ventoy.json`, which Ventoy ignores; it now writes `<mount>/ventoy/ventoy.json`, so `VTOY_DEFAULT_IMAGE` and `VTOY_MENU_TIMEOUT` take effect. USBs prepared with 0.2.0 should be re-prepared (or the file moved into `ventoy/`).
+
 ## [0.2.0] - 2026-09-29
 
 ### Security
