@@ -81,7 +81,8 @@ PY
     printf 'Explicit dotenv file not found: %s\n' "$env_file" >&2
     exit 1
   else
-    printf 'No %s found; USB bundle will require interactive API-key setup.\n' "$env_file"
+    printf 'Default dotenv file not found: %s; use --no-provision-secrets to build without an API key.\n' "$env_file" >&2
+    exit 1
   fi
 else
   printf 'Secret provisioning disabled; USB bundle contains no API key.\n'

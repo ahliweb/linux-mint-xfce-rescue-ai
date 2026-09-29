@@ -127,7 +127,7 @@ Install Ventoy to the confirmed USB using the official Ventoy workflow first. Th
   --signature /path/to/sha256sum.txt.gpg
 ```
 
-Before preparation, an operator may create a local ignored `.env` beside the repository:
+Before preparation, the operator must create a local ignored `.env` beside the repository:
 
 ```dotenv
 OPENCODE_GO_API_KEY='operator-provided-secret'
