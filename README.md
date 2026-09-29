@@ -127,7 +127,7 @@ Install Ventoy to the confirmed USB using the official Ventoy workflow first. Th
   --signature /path/to/sha256sum.txt.gpg
 ```
 
-The helper copies the ISO and the rescue bundle. It does not install Ventoy and does not write a raw disk. On boot, choose the Linux Mint XFCE ISO, connect the network, and run the bootstrap script from the copied rescue bundle.
+The helper copies the ISO and the rescue bundle, then configures Ventoy to auto-select that exact verified ISO after a five-second timeout. Use `--menu-timeout 0` for immediate selection, or `--no-auto-boot`/`--manual-menu` to preserve a manual Ventoy menu. It never installs Ventoy and never writes a raw disk. On boot, firmware must still be instructed to boot from the USB; no file can force a PC firmware boot order.
 
 ## End-to-end execution checklist
 
@@ -144,8 +144,8 @@ flowchart LR
 1. Identify the removable USB with `lsblk -o NAME,PATH,RM,SIZE,MODEL,TRAN,MOUNTPOINTS`. Do not use `/dev/sda` or any disk with mounted children. Download and extract Ventoy, then run `sudo ./scripts/install-ventoy-usb.sh --device /dev/sdX --ventoy-dir ./ventoy-X.Y.Z --yes` only after reviewing the displayed model and size.
 2. Download Linux Mint XFCE plus `sha256sum.txt` and `sha256sum.txt.gpg` from the same official mirror. Verify with `scripts/verify-mint-iso.sh`.
 3. Mount the first Ventoy partition and run `scripts/prepare-ventoy-usb.sh` with the ISO, checksum file, and signature file. This copies the ISO and rescue source bundle.
-4. On the target PC, select the USB in the UEFI/BIOS boot menu. The USB cannot force boot merely by being plugged in.
-5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory.
+4. On the target PC, select the USB in the UEFI/BIOS boot menu. Ventoy then auto-selects the configured Linux Mint XFCE ISO; the firmware selection itself cannot be automated by the USB contents.
+5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory. The first live boot still requires the Hermes bootstrap unless an approved persistent Hermes state has already been prepared.
 6. Run `sudo ./scripts/install-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state`.
 7. Set `OPENCODE_GO_API_KEY` in `config/rescue.env`, then run `./scripts/check-hermes-rescue.sh --state-dir ...`.
 8. Start the launcher. It runs the automatic hardware-readiness gate by default and writes a report; use `--hardware-mode wizard` for per-step confirmation. Hermes starts only when required CPU, RAM, display, internet, and USB checks pass.

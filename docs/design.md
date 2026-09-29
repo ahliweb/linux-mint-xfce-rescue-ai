@@ -181,14 +181,15 @@ flowchart TD
 
 1. Verify Ventoy and Linux Mint ISO provenance/checksums.
 2. Install Ventoy only to the confirmed USB whole disk; this erases that USB.
-3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`.
-4. Boot the live environment and record UEFI/Legacy and Secure Boot state.
-5. Connect the affected disk read-only first. For formal forensic work, prefer a
+3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper writes a Ventoy control configuration that auto-selects the verified Linux Mint ISO after a timeout.
+4. Boot the USB from the firmware menu; auto-selection by Ventoy is not the same as firmware auto-selection.
+5. Boot the live environment and record UEFI/Legacy and Secure Boot state.
+6. Connect the affected disk read-only first. For formal forensic work, prefer a
    suitable hardware write blocker; software read-only controls have limitations.
-6. If the disk has I/O errors, image to a separate destination with GNU
+7. If the disk has I/O errors, image to a separate destination with GNU
    ddrescue and a mapfile before attempting filesystem repair.
-7. Produce bounded metadata and a separate evidence manifest.
-8. Use OpenCode Go only on sanitized evidence and preserve the operator's final
+8. Produce bounded metadata and a separate evidence manifest.
+9. Use OpenCode Go only on sanitized evidence and preserve the operator's final
    decision separately from model output.
 
 ```mermaid
