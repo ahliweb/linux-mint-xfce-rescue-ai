@@ -17,8 +17,12 @@ The system runs read-only diagnostics locally, sanitizes evidence, and asks Herm
 - `launch-hermes-rescue.sh` to start Hermes with the isolated profile.
 - `check-hermes-rescue.sh` to validate Hermes, configuration, provider endpoint, and model settings without exposing the API key.
 - Read-only evidence collector and schema validator.
-- Ventoy preparation helper that copies a verified Linux Mint XFCE ISO and this rescue bundle to an already-installed Ventoy partition.
-- Hermes closed-loop learning design: sanitized cases, feedback, verification, candidate skills, regression evaluation, and signed promotion.
+- `scripts/prepare-ventoy-usb.sh` — verifies the Linux Mint ISO signature/checksum before copying it.
+- `scripts/verify-mint-iso.sh` — performs Linux Mint SHA-256 and GPG verification.
+- `scripts/download-ventoy.sh` — downloads the official Ventoy Linux release package.
+- `scripts/install-ventoy-usb.sh` — installs Ventoy only to an explicitly confirmed removable USB disk.
+- `scripts/test-hermes-conversation.sh` — dry-run by default; `--live` performs one bounded cloud smoke test.
+- `scripts/verify-autostart.sh` — validates the XFCE autostart entry.
 
 ## Important boot limitation
 
@@ -57,7 +61,18 @@ Install Ventoy to the confirmed USB using the official Ventoy workflow first. Th
 
 The helper copies the ISO and the rescue bundle. It does not install Ventoy and does not write a raw disk. On boot, choose the Linux Mint XFCE ISO, connect the network, and run the bootstrap script from the copied rescue bundle.
 
-## OpenCode Go authentication
+## End-to-end execution checklist
+
+1. Identify the removable USB with `lsblk -o NAME,PATH,RM,SIZE,MODEL,TRAN,MOUNTPOINTS`. Do not use `/dev/sda` or any disk with mounted children. Download and extract Ventoy, then run `sudo ./scripts/install-ventoy-usb.sh --device /dev/sdX --ventoy-dir ./ventoy-X.Y.Z --yes` only after reviewing the displayed model and size.
+2. Download Linux Mint XFCE plus `sha256sum.txt` and `sha256sum.txt.gpg` from the same official mirror. Verify with `scripts/verify-mint-iso.sh`.
+3. Mount the first Ventoy partition and run `scripts/prepare-ventoy-usb.sh` with the ISO, checksum file, and signature file. This copies the ISO and rescue source bundle.
+4. On the target PC, select the USB in the UEFI/BIOS boot menu. The USB cannot force boot merely by being plugged in.
+5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory.
+6. Run `sudo ./scripts/install-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state`.
+7. Set `OPENCODE_GO_API_KEY` in `config/rescue.env`, then run `./scripts/check-hermes-rescue.sh --state-dir ...`.
+8. Run `./scripts/test-hermes-conversation.sh --state-dir ... --live` only after approving a real cloud request. Without `--live`, it is a no-cost dry run.
+9. Run `./scripts/verify-autostart.sh --state-dir ...`, reboot from the live environment, log in to XFCE, and verify the launcher with `pgrep -af hermes`. A physical reboot is required; it is not simulated by the source repository.
+
 
 OpenCode Go credentials are secrets. They are not stored in this repository or in evidence. Set `OPENCODE_GO_API_KEY` in the local `config/rescue.env`, or place it in the isolated Hermes secret environment at setup time.
 
