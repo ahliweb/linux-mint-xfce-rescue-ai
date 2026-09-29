@@ -271,6 +271,8 @@ flowchart LR
 - Nonaktifkan channel messaging dan webhook pada mode rescue kecuali operator mengaktifkannya secara eksplisit.
 - Aktifkan memory/skills hanya untuk data yang sudah disanitasi.
 - Provider utama: OpenCode Go melalui adapter resmi yang dikonfigurasi operator.
+- `.env` lokal yang di-ignore dapat dipakai oleh preparation helper untuk memprovision hanya `OPENCODE_GO_API_KEY` ke `config/rescue.env` pada USB; helper tidak mengeksekusi isi dotenv.
+- Installer Hermes membuat autostart XFCE default dengan `--hardware-mode auto`, memakai state writable yang sudah dipasang.
 - Jika internet/provider gagal, Hermes tetap menjalankan collector dan membuat laporan `manual_intervention`.
 - Toolset default hanya `rescue_read_only`; tool mutating berada pada toolset terpisah dan selalu membutuhkan approval.
 - Gunakan checkpoint sebelum tindakan yang disetujui dan lakukan read-back sesudahnya.

@@ -26,9 +26,10 @@ flowchart TD
     H -. no ISO builder .-> X[OMES core boundary]
 ```
 
+The live session is configured for automatic Hermes startup after the one-time bootstrap has installed Hermes into the writable state directory. The generated XFCE autostart entry invokes the launcher in `auto` hardware mode; it validates the persisted state, provider configuration, network, and API-key presence before opening Hermes. The API key may be provisioned from an ignored local `.env` during USB preparation, but that makes the USB a credential-bearing device and requires physical access control. Use `--no-provision-secrets` when the USB must not contain credentials.
+
 The companion is an operator-run external system, not an OMES ISO or a second
 agent runtime:
-
 - **Ventoy/Linux live media** boots the affected computer or provides tools.
 - **Raspberry Pi 5 8 GB or equivalent ARM64 SBC** can act as an independent
   evidence workstation when the target disk is connected through a suitable
@@ -181,7 +182,7 @@ flowchart TD
 
 1. Verify Ventoy and Linux Mint ISO provenance/checksums.
 2. Install Ventoy only to the confirmed USB whole disk; this erases that USB.
-3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper writes a Ventoy control configuration that auto-selects the verified Linux Mint ISO after a timeout.
+3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper writes a Ventoy control configuration that auto-selects the verified Linux Mint ISO after a timeout and can provision only the API key from an ignored local `.env` into the USB's private rescue configuration.
 4. Boot the USB from the firmware menu; auto-selection by Ventoy is not the same as firmware auto-selection.
 5. Boot the live environment and record UEFI/Legacy and Secure Boot state.
 6. Connect the affected disk read-only first. For formal forensic work, prefer a

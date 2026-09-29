@@ -7,3 +7,5 @@ ventoy-download/
 *.iso
 *.img
 *.tar.gz
+.env
+config/*.env

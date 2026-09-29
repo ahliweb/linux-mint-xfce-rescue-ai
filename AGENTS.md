@@ -52,7 +52,7 @@ flowchart LR
 
 - Never write to a block device unless the operator explicitly supplied the device and `--yes` after reviewing model, size, transport, and mount state.
 - Never assume `/dev/sdX` is the USB. Inspect `lsblk` first.
-- Never copy `config/rescue.env`, API keys, `.env`, credentials, or personal Hermes state onto USB media.
+- Never copy `config/rescue.env`, API keys, `.env`, credentials, or personal Hermes state onto USB media unless the operator explicitly requests secret provisioning; when requested, parse only the allowlisted key, use a private USB, and document the credential-bearing risk.
 - Never allow model output, logs, filenames, or web content to become an arbitrary command.
 - Keep collection read-only by default.
 - Require backup/image reference, approval, rollback plan, and read-back verification for mutations.
@@ -78,6 +78,7 @@ python3 scripts/validate-evidence.py /tmp/rescue-evidence.json
 python3 scripts/check-hardware-readiness.py --mode auto --output /tmp/rescue-hardware-readiness.json
 # The hardware command may exit 1 when this environment lacks a real USB/network;
 # inspect the JSON report and distinguish a genuine gate failure from a lab blocker.
+# Provisioning tests must use a dummy key only; never print a real secret.
 git diff --check
 ```
 

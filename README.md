@@ -38,7 +38,7 @@ flowchart TD
 - `launch-hermes-rescue.sh` to start Hermes with the isolated profile.
 - `check-hermes-rescue.sh` to validate Hermes, configuration, provider endpoint, and model settings without exposing the API key.
 - Read-only evidence collector and schema validator.
-- `scripts/prepare-ventoy-usb.sh` — verifies the Linux Mint ISO signature/checksum before copying it.
+- `scripts/prepare-ventoy-usb.sh` — verifies the Linux Mint ISO, configures Ventoy auto-selection, and optionally provisions only the API key from an ignored local dotenv file.
 - `scripts/verify-mint-iso.sh` — performs Linux Mint SHA-256 and GPG verification.
 - `scripts/download-ventoy.sh` — downloads the official Ventoy Linux release package.
 - `scripts/install-ventoy-usb.sh` — installs Ventoy only to an explicitly confirmed removable USB disk.
@@ -127,7 +127,16 @@ Install Ventoy to the confirmed USB using the official Ventoy workflow first. Th
   --signature /path/to/sha256sum.txt.gpg
 ```
 
-The helper copies the ISO and the rescue bundle, then configures Ventoy to auto-select that exact verified ISO after a five-second timeout. Use `--menu-timeout 0` for immediate selection, or `--no-auto-boot`/`--manual-menu` to preserve a manual Ventoy menu. It never installs Ventoy and never writes a raw disk. On boot, firmware must still be instructed to boot from the USB; no file can force a PC firmware boot order.
+Before preparation, an operator may create a local ignored `.env` beside the repository:
+
+```dotenv
+OPENCODE_GO_API_KEY='operator-provided-secret'
+```
+
+The preparation helper reads this file without executing it and writes only the allowlisted API key to the USB's `config/rescue.env` with mode `0600`. Use `--env-file FILE` for another dotenv source. The USB must then be treated as a credential-bearing device. If the key must not be stored on the USB, pass `--no-provision-secrets`.
+
+
+Use `--menu-timeout 0` for immediate Ventoy selection, or `--no-auto-boot`/`--manual-menu` to preserve a manual Ventoy menu. The helper never installs Ventoy and never writes a raw disk. On boot, firmware must still be instructed to boot from the USB; no file can force a PC firmware boot order.
 
 ## End-to-end execution checklist
 
@@ -145,9 +154,9 @@ flowchart LR
 2. Download Linux Mint XFCE plus `sha256sum.txt` and `sha256sum.txt.gpg` from the same official mirror. Verify with `scripts/verify-mint-iso.sh`.
 3. Mount the first Ventoy partition and run `scripts/prepare-ventoy-usb.sh` with the ISO, checksum file, and signature file. This copies the ISO and rescue source bundle.
 4. On the target PC, select the USB in the UEFI/BIOS boot menu. Ventoy then auto-selects the configured Linux Mint XFCE ISO; the firmware selection itself cannot be automated by the USB contents.
-5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory. The first live boot still requires the Hermes bootstrap unless an approved persistent Hermes state has already been prepared.
-6. Run `sudo ./scripts/install-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state`.
-7. Set `OPENCODE_GO_API_KEY` in `config/rescue.env`, then run `./scripts/check-hermes-rescue.sh --state-dir ...`.
+5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory. The provisioned `config/rescue.env` supplies the API key to the bootstrap; the first live boot still requires the bootstrap unless an approved persistent Hermes state has already been prepared.
+6. Run `sudo ./scripts/install-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state`. The installer creates the XFCE autostart entry with automatic hardware preflight as the default.
+7. Verify that `OPENCODE_GO_API_KEY` is present in the provisioned `config/rescue.env`, then run `./scripts/check-hermes-rescue.sh --state-dir ...`.
 8. Start the launcher. It runs the automatic hardware-readiness gate by default and writes a report; use `--hardware-mode wizard` for per-step confirmation. Hermes starts only when required CPU, RAM, display, internet, and USB checks pass.
 9. Run `./scripts/test-hermes-conversation.sh --state-dir ... --live` only after approving a real cloud request. Without `--live`, it is a no-cost dry run.
 10. Run `./scripts/verify-autostart.sh --state-dir ...`, reboot from the live environment, log in to XFCE, and verify the launcher with `pgrep -af hermes`. A physical reboot is required; it is not simulated by the source repository.

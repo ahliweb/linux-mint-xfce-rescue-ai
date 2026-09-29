@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 mountpoint=''
 iso=''
 sums=''
 sig=''
 auto_boot=1
 menu_timeout=5
+provision_secrets=1
+env_file="$root/.env"
+env_file_explicit=0
 while (($#)); do
   case "$1" in
     --ventoy-mount) mountpoint=${2:?missing Ventoy mount}; shift 2 ;;
@@ -15,7 +19,9 @@ while (($#)); do
     --signature) sig=${2:?missing sha256sum.txt.gpg}; shift 2 ;;
     --no-auto-boot|--manual-menu) auto_boot=0; shift ;;
     --menu-timeout) menu_timeout=${2:?missing timeout seconds}; shift 2 ;;
-    *) printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS]\n' "$0" >&2; exit 2 ;;
+    --env-file) env_file=${2:?missing dotenv file}; env_file_explicit=1; shift 2 ;;
+    --no-provision-secrets) provision_secrets=0; shift ;;
+    *) printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets]\n' "$0" >&2; exit 2 ;;
   esac
 done
 [[ "$menu_timeout" =~ ^[0-9]+$ ]] || { printf 'Menu timeout must be a non-negative integer.\n' >&2; exit 2; }
@@ -29,13 +35,57 @@ mountpoint -q "$mountpoint" || { printf 'Refusing: mount path is not a mounted f
   printf 'Refusing: mount does not look like a Ventoy data partition.\n' >&2; exit 1;
 }
 
-root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 "$root/scripts/verify-mint-iso.sh" --iso "$iso" --sha256sums "$sums" --signature "$sig"
 mkdir -p "$mountpoint/ISO/LinuxMintXFCE" "$mountpoint/rescue-omes"
 cp --preserve=mode,timestamps "$iso" "$mountpoint/ISO/LinuxMintXFCE/"
 cp -a "$root/." "$mountpoint/rescue-omes/"
-# Never copy a local API key or secret environment file onto the USB bundle.
+# Remove stale local secrets before optionally provisioning the explicitly
+# requested API key through the allowlisted dotenv parser below.
 rm -f "$mountpoint/rescue-omes/config/rescue.env" "$mountpoint/rescue-omes/.env"
+
+if ((provision_secrets)); then
+  if [[ -f "$env_file" ]]; then
+    python3 - "$env_file" "$mountpoint/rescue-omes/config/rescue.env" <<'PY'
+import pathlib
+import shlex
+import sys
+
+source = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+values = {}
+for raw in source.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in line:
+        raise SystemExit(f"Invalid dotenv line (expected KEY=VALUE): {raw!r}")
+    key, value = line.split("=", 1)
+    key = key.strip()
+    if key != "OPENCODE_GO_API_KEY":
+        continue
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]
+    values[key] = value
+api_key = values.get("OPENCODE_GO_API_KEY", "")
+if not api_key:
+    raise SystemExit("dotenv does not contain a non-empty OPENCODE_GO_API_KEY")
+# Do not copy arbitrary dotenv settings or execute the file as shell code.
+lines = [f"OPENCODE_GO_API_KEY={shlex.quote(api_key)}"]
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
+destination.chmod(0o600)
+PY
+    printf 'Provider secret provisioned from %s into the private USB rescue config.\n' "$env_file"
+  elif ((env_file_explicit)); then
+    printf 'Explicit dotenv file not found: %s\n' "$env_file" >&2
+    exit 1
+  else
+    printf 'No %s found; USB bundle will require interactive API-key setup.\n' "$env_file"
+  fi
+else
+  printf 'Secret provisioning disabled; USB bundle contains no API key.\n'
+fi
 
 if ((auto_boot)); then
   # Preserve unrelated Ventoy settings while making the verified Mint ISO the
