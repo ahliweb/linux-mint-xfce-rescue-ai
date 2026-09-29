@@ -46,7 +46,7 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - `scripts/verify-mint-iso.sh` — GPG signature (pinned Linux Mint signer fingerprint) plus direct SHA-256 comparison. **Implemented**
 - `scripts/download-ventoy.sh` — downloads the official Ventoy Linux release; the release digest is required. **Implemented**
 - `scripts/install-ventoy-usb.sh` — installs Ventoy only to an explicitly confirmed, unmounted, non-root removable USB disk. **Implemented**; the actual write is **Hardware-required**.
-- `scripts/prepare-ventoy-usb.sh` — verifies the ISO, copies it and an allowlisted rescue bundle to Ventoy, configures auto-selection. **Implemented**; a physical boot is **Hardware-required**.
+- `scripts/prepare-ventoy-usb.sh` — verifies the ISO, copies it and an allowlisted rescue bundle to Ventoy, configures auto-selection in `/ventoy/ventoy.json` (the only location Ventoy reads). **Implemented**; a physical boot is **Hardware-required**.
 - `scripts/test-hermes-conversation.sh` — dry-run by default; `--live` performs one bounded cloud smoke test. **Environment-blocked** (`--live`).
 - `scripts/verify-autostart.sh` — validates the XFCE autostart entry. The reboot itself is **Hardware-required**.
 - `scripts/check-hardware-readiness.py` — read-only preflight for CPU, RAM, VGA/display, internet, and USB live-media minimums; writes a `0600` JSON report and blocks Hermes when required checks fail. **Implemented**; results are only meaningful on the target PC.
@@ -131,7 +131,7 @@ flowchart LR
     N --> A
 ```
 
-Install Ventoy to the confirmed USB first (`scripts/download-ventoy.sh` then `scripts/install-ventoy-usb.sh`, see the checklist below). Then mount its data partition.
+Install Ventoy to the confirmed USB first (`scripts/download-ventoy.sh` then `scripts/install-ventoy-usb.sh`, see the checklist below). Then mount its data partition (label `Ventoy`). A freshly installed data partition is empty; the helper recognizes it by the `Ventoy` label plus a sibling `VTOYEFI` partition on the same disk, or by an existing `ventoy/` or `EFI/` directory.
 
 `verify-mint-iso.sh` requires the signature on `sha256sum.txt` to come from the Linux Mint signing key `27DEB15644C6B3CF3BD7D291300F846BA25BAE09` (override only with `--signer-fingerprint` after out-of-band verification; use `--gpg-homedir DIR` for an isolated keyring). The operator must import that key first, following the [Linux Mint verification guide](https://linuxmint.com/verify.php):
 
@@ -255,7 +255,7 @@ See:
 - [Rescue design](docs/design.md)
 - [Security model](docs/security-model.md)
 - [Testing and verification](docs/testing.md)
-- [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.0`)
+- [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.1`)
 - [Hermes profile](profiles/rescue-hermes/)
 - [OpenCode Go documentation](https://opencode.ai/docs/go)
 - [Hermes provider documentation](https://hermes-agent.nousresearch.com/docs/integrations/providers)

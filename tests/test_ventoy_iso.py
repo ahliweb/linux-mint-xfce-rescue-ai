@@ -1,5 +1,6 @@
 """Offline tests for the Ventoy/Mint ISO scripts (no network, root, or block devices)."""
 import hashlib
+import json
 import os
 import pathlib
 import re
@@ -68,6 +69,24 @@ class VerifyMintIsoTests(unittest.TestCase):
         if fpr:
             args += ["--signer-fingerprint", self.fpr]
         return run(args + list(extra), cwd=self.cwd)
+
+    def test_prepare_writes_ventoy_json_where_ventoy_reads_it(self):
+        self.write_sums()
+        mnt = self.work / "usb"
+        (mnt / "ventoy").mkdir(parents=True)
+        bindir = self.work / "bin"
+        bindir.mkdir()
+        (bindir / "mountpoint").write_text("#!/bin/sh\nexit 0\n")
+        (bindir / "mountpoint").chmod(0o755)
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+        r = run([SCRIPTS / "prepare-ventoy-usb.sh", "--ventoy-mount", mnt, "--mint-iso", self.iso,
+                 "--sha256sums", self.sums, "--signature", self.sig, "--gpg-homedir", self.gpghome,
+                 "--signer-fingerprint", self.fpr, "--no-provision-secrets"], env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((mnt / "ventoy.json").exists())
+        config = json.loads((mnt / "ventoy" / "ventoy.json").read_text())
+        self.assertIn({"VTOY_DEFAULT_IMAGE": "/ISO/LinuxMintXFCE/linuxmint-test-xfce.iso"},
+                      config["control"])
 
     def test_pass_with_iso_in_other_directory(self):
         self.write_sums()
@@ -159,6 +178,68 @@ class InstallVentoyUsbTests(unittest.TestCase):
 
     def test_requires_arguments(self):
         self.assertEqual(self.call().returncode, 2)
+
+
+BLOCK_DEV = next((d for d in ("/dev/sda", "/dev/vda", "/dev/nvme0n1", "/dev/loop0")
+                  if pathlib.Path(d).is_block_device()), None)
+
+
+class PrepareVentoyMountDetectionTests(unittest.TestCase):
+    """A fresh Ventoy data partition is empty; detection must use partition labels."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = pathlib.Path(self.tmp.name)
+        self.bindir = base / "bin"
+        self.bindir.mkdir()
+        self.mnt = base / "mnt"
+        self.mnt.mkdir()
+        self.iso = base / "x.iso"
+        self.iso.write_bytes(b"iso")
+
+    def stub(self, name, body):
+        p = self.bindir / name
+        p.write_text("#!/bin/sh\n" + body + "\n")
+        p.chmod(0o755)
+
+    def prepare(self, source, data_label, efi_label):
+        self.stub("mountpoint", "exit 0")
+        self.stub("findmnt", f"echo {source}")
+        self.stub("lsblk", f"""case "$*" in
+  *PKNAME*) echo fake ;;
+  *LABEL*/dev/fake*) printf '%s\\n%s\\n' '{data_label}' '{efi_label}' ;;
+  *LABEL*) echo '{data_label}' ;;
+esac""")
+        env = dict(os.environ, PATH=f"{self.bindir}:{os.environ['PATH']}")
+        return run([SCRIPTS / "prepare-ventoy-usb.sh", "--ventoy-mount", self.mnt,
+                    "--mint-iso", self.iso, "--sha256sums", self.iso, "--signature", self.iso,
+                    "--no-provision-secrets"], env=env)
+
+    def test_empty_mount_on_non_block_source_refused(self):
+        r = self.prepare("/dev/null", "Ventoy", "VTOYEFI")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("does not look like a Ventoy", r.stderr)
+
+    @unittest.skipIf(BLOCK_DEV is None, "no block device node for the -b check")
+    def test_fresh_ventoy_labels_accepted(self):
+        r = self.prepare(BLOCK_DEV, "Ventoy", "VTOYEFI")
+        # Detection passes; verification of the bogus ISO then fails, nothing copied.
+        self.assertNotIn("does not look like a Ventoy", r.stderr)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(list(self.mnt.iterdir()), [])
+
+    @unittest.skipIf(BLOCK_DEV is None, "no block device node for the -b check")
+    def test_missing_vtoyefi_sibling_refused(self):
+        r = self.prepare(BLOCK_DEV, "Ventoy", "OTHER")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("does not look like a Ventoy", r.stderr)
+
+    @unittest.skipIf(BLOCK_DEV is None, "no block device node for the -b check")
+    def test_wrong_data_label_refused(self):
+        r = self.prepare(BLOCK_DEV, "DATA", "VTOYEFI")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("does not look like a Ventoy", r.stderr)
 
 
 class PrepareVentoyUsbBundleTests(unittest.TestCase):
