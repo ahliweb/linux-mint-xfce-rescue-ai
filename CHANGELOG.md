@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Evidence schema 1.1 (backward compatible with 1.0): `target_systems` for the operating systems examined (Linux Mint, other Linux, Windows, macOS), per-check `target_ref` and bounded numeric `value`, host platforms `linux-host`/`windows-host`/`macos-host`, OS-specific check IDs, and storage class `usb-rescue-state`. `validate-evidence.py` also rejects dangling or duplicate target references, 1.1 fields in 1.0 evidence, and a mismatched `entry_count`. ahliweb/linux-mint-xfce-rescue-ai#7
+- `profiles/rescue-hermes/analysis-prompt.md`: one system prompt shared by every direct OpenCode Go client. ahliweb/linux-mint-xfce-rescue-ai#7
+
 ## [0.2.1] - 2026-09-30
 
 ### Fixed

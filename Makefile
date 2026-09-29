@@ -13,8 +13,9 @@ lint:
 	shellcheck -x scripts/*.sh scripts/lib/*.sh
 
 validate:
-	$(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-sanitized-opencode-go.json
+	$(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-*.json
 	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-raw-ai-fields.json >/dev/null 2>&1
+	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-text-value-1.1.json >/dev/null 2>&1
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
