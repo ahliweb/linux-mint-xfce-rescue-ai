@@ -39,6 +39,7 @@ Read these files before changing behavior:
 3. `docs/hermes-learning-loop.md` — Hermes memory, skills, feedback, and promotion model.
 4. `profiles/rescue-hermes/` — the Hermes runtime policy and rescue skill.
 5. `rescue-ai/v1/rescue-evidence.schema.json` — evidence contract.
+6. `docs/security-model.md` and `docs/testing.md` — threat/control table and verification levels.
 
 ## Safety invariants
 
@@ -52,6 +53,7 @@ flowchart LR
 
 - Never write to a block device unless the operator explicitly supplied the device and `--yes` after reviewing model, size, transport, and mount state.
 - Never assume `/dev/sdX` is the USB. Inspect `lsblk` first.
+- Read config files (`config/rescue.env`, `<state-dir>/hermes/env`) only through `scripts/lib/rescue-env.sh`; never `source` them and never pass the API key on a command line (`check-hermes-rescue.sh` uses a curl stdin config).
 - Never copy `config/rescue.env`, API keys, `.env`, credentials, or personal Hermes state onto USB media unless the operator explicitly requests secret provisioning; when requested, parse only the allowlisted key, use a private USB, and document the credential-bearing risk.
 - Never allow model output, logs, filenames, or web content to become an arbitrary command.
 - Keep collection read-only by default.
@@ -63,16 +65,26 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    S[Syntax] --> C[Collector/schema]
+    S[make check: syntax + shellcheck] --> C[Collector/schema + unit tests]
     C --> H[Hermes config]
     H --> D[Diff and secret checks]
     D --> P[Push and read-back]
 ```
 
+Preferred single gate (the same one CI runs in `.github/workflows/ci.yml`):
+
 ```bash
-bash -n scripts/*.sh
+make check   # syntax, lint (shellcheck -x), validate fixtures, unit tests, git diff --check
+```
+
+Requires `shellcheck`, `gnupg`, and `python3-jsonschema` (see [docs/testing.md](docs/testing.md)). The individual steps and extra manual checks:
+
+```bash
+bash -n scripts/*.sh scripts/lib/*.sh
 python3 -m py_compile scripts/*.py
+shellcheck -x scripts/*.sh scripts/lib/*.sh
 python3 scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-sanitized-opencode-go.json
+python3 -m unittest discover -s tests -v
 ./scripts/collect-evidence.sh --output /tmp/rescue-evidence.json
 python3 scripts/validate-evidence.py /tmp/rescue-evidence.json
 python3 scripts/check-hardware-readiness.py --mode auto --output /tmp/rescue-hardware-readiness.json
@@ -90,6 +102,12 @@ The live cloud smoke test is opt-in only:
 
 It requires an operator-provided `OPENCODE_GO_API_KEY` and incurs provider usage. Do not fabricate a successful cloud response.
 
+## Versioning and changelog
+
+- The version is SemVer in the `VERSION` file (currently `0.2.0`).
+- `CHANGELOG.md` follows Keep a Changelog. This repository has no Node/changesets tooling, so `CHANGELOG.md` is the changeset record: every behavior-changing commit adds an entry under `[Unreleased]`, and a release moves those entries under a dated version heading together with the `VERSION` bump.
+- Reference issues as `ahliweb/linux-mint-xfce-rescue-ai#N`.
+
 ## Documentation rules
 
 ```mermaid
@@ -104,6 +122,8 @@ flowchart TD
 - Mark implemented, planned, hardware-required, and environment-blocked work distinctly.
 - Use Bahasa Indonesia for operator explanations when appropriate; preserve commands, identifiers, model IDs, and URLs exactly.
 - Include the management attribution in new operator-facing documents.
+- Docs must describe the actual script behavior; when a script changes, update README, `docs/`, and `CHANGELOG.md` in the same change.
+- Operator install commands run as the desktop user: `scripts/install-hermes-rescue.sh` refuses root and calls `sudo` itself. Never document `sudo ./scripts/install-hermes-rescue.sh`.
 - Run link, syntax, secret, and diff checks before committing.
 
 ## Git workflow
