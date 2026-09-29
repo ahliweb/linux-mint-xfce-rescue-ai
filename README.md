@@ -9,7 +9,28 @@ Bootable USB rescue toolkit with a dedicated **Hermes Rescue profile** and cloud
 
 The system runs read-only diagnostics locally, sanitizes evidence, and asks Hermes/OpenCode Go for bounded hypotheses and next checks. It never performs destructive repair without operator approval.
 
+> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
+
+```mermaid
+flowchart LR
+    USB[Linux Mint XFCE USB] --> H[Hermes Rescue Profile]
+    H --> E[Read-only evidence]
+    E --> G[OpenCode Go / MiMo-V2.6-Flash]
+    G --> O[Operator approval]
+    O --> V[Verification and report]
+    M[ahliweb.com] --> K[ahlikoding.com + satpamsiber.com]
+    K --> H
+```
+
 ## What is implemented
+
+```mermaid
+flowchart TD
+    P[Hermes profile] --> B[Bootstrap]
+    B --> V[Ventoy workflow]
+    V --> C[Collector + validator]
+    C --> T[Health and smoke tests]
+```
 
 - Hermes profile files: `profiles/rescue-hermes/`.
 - Hermes configuration template with OpenCode Go/MiMo-V2.6-Flash as the default model.
@@ -26,11 +47,31 @@ The system runs read-only diagnostics locally, sanitizes evidence, and asks Herm
 
 ## Important boot limitation
 
+```mermaid
+flowchart LR
+    Plug[USB plugged in] --> Firmware{Boot menu/order}
+    Firmware -- USB selected --> Live[Linux Mint XFCE]
+    Firmware -- disk selected --> Host[Existing OS]
+```
+
 Plugging in a USB flash drive does not force a PC to boot from it. The PC firmware must support USB boot and the operator must select the USB from the boot menu or change the boot order. Secure Boot may require an approved configuration.
 
 This repository does not silently erase disks, install Ventoy, or manufacture an ISO. Those actions are deliberately explicit and operator-confirmed.
 
 ## Quick start on a live Linux Mint XFCE session
+
+```mermaid
+sequenceDiagram
+    participant U as Operator
+    participant X as XFCE live session
+    participant H as Hermes bootstrap
+    participant G as OpenCode Go
+    U->>X: Open terminal
+    X->>H: Install isolated profile
+    U->>H: Set API key
+    H->>G: Health check
+    G-->>H: Provider response
+```
 
 ```bash
 cp config/rescue.env.example config/rescue.env
@@ -51,17 +92,37 @@ The state directory must be on a writable persistent partition if memory and ses
 
 ## Prepare an existing Ventoy USB
 
+```mermaid
+flowchart LR
+    I[Verified ISO] --> V[Mounted Ventoy partition]
+    V --> C[Copy ISO]
+    V --> R[Copy rescue bundle]
+    R --> X[Remove secret env files]
+```
+
 Install Ventoy to the confirmed USB using the official Ventoy workflow first. Then mount its data partition and run:
 
 ```bash
 ./scripts/prepare-ventoy-usb.sh \
   --ventoy-mount /media/$USER/VENTOY \
-  --mint-iso /path/to/linuxmint-xfce.iso
+  --mint-iso /path/to/linuxmint-xfce.iso \
+  --sha256sums /path/to/sha256sum.txt \
+  --signature /path/to/sha256sum.txt.gpg
 ```
 
 The helper copies the ISO and the rescue bundle. It does not install Ventoy and does not write a raw disk. On boot, choose the Linux Mint XFCE ISO, connect the network, and run the bootstrap script from the copied rescue bundle.
 
 ## End-to-end execution checklist
+
+```mermaid
+flowchart LR
+    V[Ventoy] --> I[Verified ISO]
+    I --> B[Boot menu]
+    B --> X[XFCE]
+    X --> H[Hermes bootstrap]
+    H --> T[Cloud smoke test]
+    T --> A[Autostart after reboot]
+```
 
 1. Identify the removable USB with `lsblk -o NAME,PATH,RM,SIZE,MODEL,TRAN,MOUNTPOINTS`. Do not use `/dev/sda` or any disk with mounted children. Download and extract Ventoy, then run `sudo ./scripts/install-ventoy-usb.sh --device /dev/sdX --ventoy-dir ./ventoy-X.Y.Z --yes` only after reviewing the displayed model and size.
 2. Download Linux Mint XFCE plus `sha256sum.txt` and `sha256sum.txt.gpg` from the same official mirror. Verify with `scripts/verify-mint-iso.sh`.
@@ -80,7 +141,42 @@ OpenCode Go currently documents the model as `MiMo-V2.6-Flash` with model ID `mi
 
 ## Security boundary
 
+```mermaid
+flowchart TD
+    L[Untrusted logs] --> S[Sanitizer]
+    S --> E[Bounded evidence]
+    E --> H[Hermes read-only tools]
+    H --> A[Operator approval]
+    A --> W[Verified mutation, if any]
+```
+
 Hermes has a separate rescue profile and must not reuse the operator's personal `~/.hermes` directory. Default actions are read-only. Logs are untrusted data and cannot issue commands. Skills are versioned and candidate learning is not promoted without verification and approval.
+
+## Governance and licensing
+
+This project is managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**. See [ownership and governance](docs/ownership-and-governance.md), [agent instructions](AGENTS.md), and [MIT License](LICENSE).
+
+```mermaid
+flowchart TD
+    D[Documentation and source] --> A[ahlikoding.com]
+    D --> S[satpamsiber.com]
+    A --> R[Technical release gate]
+    S --> R
+    R --> W[ahliweb.com authorization]
+    W --> L[USB release]
+```
+
+## Documentation map
+
+```mermaid
+flowchart LR
+    README[README.md] --> DESIGN[docs/design.md]
+    README --> LOOP[docs/hermes-learning-loop.md]
+    README --> GOV[docs/ownership-and-governance.md]
+    README --> AGENTS[AGENTS.md]
+    DESIGN --> SCHEMA[rescue-ai/v1 schema]
+    LOOP --> PROFILE[profiles/rescue-hermes]
+```
 
 See:
 

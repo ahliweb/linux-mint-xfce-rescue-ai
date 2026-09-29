@@ -1,10 +1,30 @@
 # Standalone Linux Mint XFCE Rescue AI companion
 
+> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 > This repository is standalone. It does not modify the `ahliweb/omes` repository.
+
+```mermaid
+flowchart LR
+    A[ahliweb.com] --> K[ahlikoding.com]
+    A --> S[satpamsiber.com]
+    K --> R[Engineering and release]
+    S --> Q[Security and resilience review]
+    R --> U[Rescue USB]
+    Q --> U
+```
 
 The companion boots from Linux Mint XFCE selected through Ventoy and runs an isolated Hermes Rescue profile. The target PC's CPU/RAM/network are used by the live session; OpenCode Go provides cloud inference.
 
 ## Boundary
+
+```mermaid
+flowchart TD
+    V[Ventoy/live media] --> H[Hermes/OpenCode routing]
+    H --> R[Rescue evidence]
+    R --> O[Operator approval]
+    O --> W[Verified write, only if approved]
+    H -. no ISO builder .-> X[OMES core boundary]
+```
 
 The companion is an operator-run external system, not an OMES ISO or a second
 agent runtime:
@@ -21,7 +41,16 @@ agent runtime:
 
 A USB flash drive alone cannot replace the target computer's CPU/RAM. A Pi/SBC
 is a separate computer and needs its own power, storage, network, and usually a
-display or SSH path.
+ display or SSH path.
+
+```mermaid
+flowchart LR
+    V[Ventoy USB] --> P[Target PC live session]
+    A[Optional Pi/SBC] --> D[Disk via USB-SATA/NVMe]
+    P --> H[Hermes Rescue]
+    D --> H
+    H --> G[OpenCode Go]
+```
 
 ## Evidence contract
 
@@ -34,6 +63,16 @@ display or SSH path.
 - explicit OpenCode Go provider/model identity without credentials;
 - analysis, mutation, and verification status;
 - data classification and closed source references.
+
+```mermaid
+flowchart TD
+    C[Collector] --> S[Sanitizer]
+    S --> M[Bounded metadata]
+    M --> V[Schema validator]
+    V --> G[OpenCode Go only if policy allows]
+    S --> X[Raw evidence vault]
+    X -. restricted, not sent .-> G
+```
 
 It rejects prompts, model responses, raw logs, credentials, private keys,
 arbitrary command fields, and extra properties. Raw evidence belongs in an
@@ -55,7 +94,29 @@ operator-controlled store and must not be sent to OpenCode Go when classified
 5. If OpenCode Go is unavailable, produce the evidence report and mark AI status
    `manual_intervention`; do not silently switch providers.
 
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant H as Hermes
+    participant G as OpenCode Go
+    participant V as Validator
+    Op->>H: Authenticate and select rescue profile
+    H->>V: Validate sanitized summary
+    V-->>H: Allow or block
+    H->>G: Send bounded metadata
+    G-->>H: Facts, hypotheses, next checks
+    H-->>Op: Explain uncertainty and request approval
+```
+
 ## Read-only collection contract
+
+```mermaid
+flowchart LR
+    A[Allowlisted checks] --> C[Collector]
+    C --> H[Hash and timestamp]
+    H --> E[Evidence manifest]
+    E --> V[Validator]
+```
 
 The future external collector should use a fixed allowlist such as:
 
@@ -73,6 +134,20 @@ from a remote request. Filesystem repair, `grub-install`, NVRAM changes,
 partitioning, formatting, and disk writes require a human approval gate,
 backup/image reference, rollback plan, and post-action read-back verification.
 
+```mermaid
+flowchart TD
+    R[Read-only request] --> A{Allowlisted?}
+    A -- no --> B[Block]
+    A -- yes --> T[Typed adapter]
+    T --> E[Evidence + exit status + hash]
+    E --> H[Hermes summary]
+    H --> O{Mutation requested?}
+    O -- no --> F[Finish]
+    O -- yes --> P[Approval + backup + rollback]
+    P --> W[Write action]
+    W --> Q[Read-back verification]
+```
+
 ## Recovery media workflow
 
 1. Verify Ventoy and Linux Mint ISO provenance/checksums.
@@ -87,6 +162,17 @@ backup/image reference, rollback plan, and post-action read-back verification.
 8. Use OpenCode Go only on sanitized evidence and preserve the operator's final
    decision separately from model output.
 
+```mermaid
+flowchart LR
+    D[Download Mint ISO] --> G[Verify GPG + SHA-256]
+    G --> V[Install Ventoy to confirmed USB]
+    V --> C[Copy ISO and rescue bundle]
+    C --> B[Boot from firmware menu]
+    B --> L[Live XFCE]
+    L --> H[Bootstrap Hermes]
+    H --> R[Rescue report]
+```
+
 ## Implementation stages
 
 | Stage | Deliverable | Status |
@@ -98,6 +184,16 @@ backup/image reference, rollback plan, and post-action read-back verification.
 | 5 | Ventoy preparation helper | Implemented; requires an operator-installed Ventoy USB |
 | 6 | Candidate learning, feedback, regression evaluation, signed promotion | Design documented; implementation next |
 | 7 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Requires lab hardware |
+
+```mermaid
+flowchart LR
+    S1[Schema] --> S2[Collector]
+    S2 --> S3[Hermes profile]
+    S3 --> S4[Bootstrap + health]
+    S4 --> S5[Ventoy workflow]
+    S5 --> S6[Learning promotion]
+    S6 --> S7[Hardware matrix]
+```
 
 ## Verification requirements
 
@@ -115,7 +211,28 @@ Before calling the integration ready:
 - architecture registry, security model, and documentation distinguish the
   staged external companion from implemented OMES code.
 
+```mermaid
+flowchart TD
+    C[Contract tests] --> P[Policy checks]
+    P --> N[Network/provider checks]
+    N --> H[Hardware boot checks]
+    H --> R[Release decision]
+    C -. fail .-> X[Block release]
+    P -. fail .-> X
+    N -. fail .-> X
+    H -. unavailable .-> M[Mark hardware verification pending]
+```
+
 ## References
+
+```mermaid
+flowchart LR
+    H[Hermes] --> P[Provider docs]
+    O[OpenCode Go] --> P
+    V[Ventoy] --> B[Boot docs]
+    L[Linux Mint] --> I[ISO verification]
+    N[NIST] --> F[Forensic practice]
+```
 
 - [OpenCode Go](https://opencode.ai/docs/go)
 - [OpenCode providers](https://opencode.ai/docs/providers)
