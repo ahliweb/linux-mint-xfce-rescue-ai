@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.1",
+  "collected_at": "2026-09-30T08:00:00Z",
+  "evidence_manifest": {
+    "entry_count": 5,
+    "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "storage_class": "usb-rescue-state"
+  },
+  "ai_provider": {
+    "provider_id": "opencode-go",
+    "model_id": "mimo-v2.6-flash",
+    "authenticated": false,
+    "destination_class": "unknown"
+  },
+  "ai_analysis_status": "not_run",
+  "mutation_status": "none",
+  "verification": {
+    "hashes_verified": false,
+    "read_back_verified": false,
+    "status": "not_applicable"
+  },
+  "classification": "restricted",
+  "source_references": [
+    "opencode-go:provider",
+    "nist:sp-800-86"
+  ],
+  "run_id": "rescue-20260930-081500",
+  "source_platform": "windows-host",
+  "boot_mode": "uefi",
+  "target_device_opaque_id": "target-9c8b7a6d5e4f3021",
+  "ventoy_version": null,
+  "linux_release": null,
+  "target_systems": [
+    {
+      "ref": "os-0",
+      "family": "windows",
+      "release": "Windows 11 24H2",
+      "architecture": "x86_64",
+      "detection": "host-native",
+      "encryption": "bitlocker",
+      "access": "host-running"
+    }
+  ],
+  "checks": [
+    {
+      "check_id": "os-detection",
+      "status": "pass",
+      "source": "host-allowlist",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0"
+    },
+    {
+      "check_id": "encryption-status",
+      "status": "pass",
+      "source": "host-allowlist",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0"
+    },
+    {
+      "check_id": "windows-defender-status",
+      "status": "pass",
+      "source": "host-allowlist",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0"
+    },
+    {
+      "check_id": "windows-event-log-errors",
+      "status": "warn",
+      "source": "host-allowlist",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0",
+      "value": {
+        "kind": "text",
+        "number": "C:\\Users\\alice"
+      }
+    },
+    {
+      "check_id": "network-connectivity",
+      "status": "pass",
+      "source": "host-allowlist",
+      "observed_at": "2026-09-30T08:00:00Z"
+    }
+  ]
+}

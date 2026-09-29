@@ -23,6 +23,29 @@ def format_path(error):
     return '/' + '/'.join(str(p) for p in parts) if parts else '<root>'
 
 
+V11_ONLY_PLATFORMS = {'linux-host', 'windows-host', 'macos-host'}
+
+
+def semantic_errors(data):
+    """Cross-field rules JSON Schema cannot express; only run on schema-valid data."""
+    errors = []
+    targets = data.get('target_systems') or []
+    refs = [t['ref'] for t in targets]
+    if len(refs) != len(set(refs)):
+        errors.append('target_systems[].ref values must be unique')
+    for i, c in enumerate(data['checks']):
+        ref = c.get('target_ref')
+        if ref is not None and ref not in refs:
+            errors.append(f'checks/{i}/target_ref {ref!r} does not match any target_systems[].ref')
+    if data['schema_version'] == '1.0':
+        if 'target_systems' in data or data['source_platform'] in V11_ONLY_PLATFORMS or any(
+                'target_ref' in c or 'value' in c for c in data['checks']):
+            errors.append('schema_version 1.0 must not use 1.1 fields (target_systems, target_ref, value, host platforms)')
+    if data['evidence_manifest']['entry_count'] != len(data['checks']):
+        errors.append('evidence_manifest.entry_count must equal the number of checks')
+    return errors
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('files', nargs='+', metavar='FILE', help='evidence JSON file(s) to validate')
@@ -57,7 +80,14 @@ def main(argv=None):
             return 2
         errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.absolute_path])
         if not errors:
-            print(f'evidence: valid ({name})')
+            problems = semantic_errors(data)
+            if not problems:
+                print(f'evidence: valid ({name})')
+                continue
+            any_invalid = True
+            print(f'evidence: INVALID ({name}): {problems[0]}')
+            for problem in problems[1:]:
+                print(f'  - {problem}')
             continue
         any_invalid = True
         best = jsonschema.exceptions.best_match(errors)

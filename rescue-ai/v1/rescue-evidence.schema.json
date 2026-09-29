@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "rescue-ai/v1/rescue-evidence.schema.json",
   "title": "rescue-ai-evidence",
-  "description": "Bounded metadata contract for an optional external Ventoy/Linux rescue companion. This contract is validation/provenance only: it MUST NOT carry prompts, model responses, credentials, private keys, raw logs, arbitrary commands, or unrestricted paths.",
+  "description": "Bounded metadata contract for the rescue toolkit: live-USB boot scans of installed operating systems and host-native launchers on Linux, Windows, and macOS. Validation/provenance only: it MUST NOT carry prompts, model responses, credentials, private keys, raw logs, arbitrary commands, usernames, filenames, or unrestricted paths.",
   "type": "object",
   "required": [
     "schema_version",
@@ -21,13 +21,37 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0" },
-    "run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$" },
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0",
+        "1.1"
+      ],
+      "description": "1.1 adds target_systems, per-check target_ref/value, host-native platforms, and OS-specific check IDs."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$"
+    },
     "source_platform": {
       "type": "string",
-      "enum": ["linux-mint-xfce-live", "systemrescue-live", "other-live-linux"]
+      "enum": [
+        "linux-mint-xfce-live",
+        "systemrescue-live",
+        "other-live-linux",
+        "linux-host",
+        "windows-host",
+        "macos-host"
+      ]
     },
-    "boot_mode": { "type": "string", "enum": ["uefi", "legacy-bios", "unknown"] },
+    "boot_mode": {
+      "type": "string",
+      "enum": [
+        "uefi",
+        "legacy-bios",
+        "unknown"
+      ]
+    },
     "collected_at": {
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
@@ -38,20 +62,31 @@
       "pattern": "^target-[A-Za-z0-9][A-Za-z0-9._-]{3,47}$"
     },
     "ventoy_version": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
     "linux_release": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+()/-]{0,63}$"
     },
     "checks": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 32,
+      "maxItems": 64,
       "items": {
         "type": "object",
-        "required": ["check_id", "status", "source", "observed_at"],
+        "required": [
+          "check_id",
+          "status",
+          "source",
+          "observed_at"
+        ],
         "additionalProperties": false,
         "properties": {
           "check_id": {
@@ -67,55 +102,200 @@
               "lvm-or-raid-discovery",
               "filesystem-read-only",
               "network-connectivity",
-              "iso-integrity"
+              "iso-integrity",
+              "os-detection",
+              "disk-free-space",
+              "encryption-status",
+              "boot-loader-files",
+              "windows-fast-startup",
+              "windows-ntfs-dirty",
+              "windows-pending-updates",
+              "windows-crash-dumps",
+              "windows-event-log-errors",
+              "windows-defender-status",
+              "windows-update-service",
+              "linux-fstab-consistency",
+              "linux-kernel-initrd",
+              "linux-package-state",
+              "linux-failed-units",
+              "linux-journal-errors",
+              "macos-apfs-container",
+              "macos-filevault",
+              "macos-sip-status",
+              "macos-crash-reports",
+              "macos-software-update",
+              "macos-startup-disk"
             ]
           },
-          "status": { "type": "string", "enum": ["pass", "fail", "warn", "not_applicable", "unknown"] },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "warn",
+              "not_applicable",
+              "unknown"
+            ]
+          },
           "source": {
             "type": "string",
-            "enum": ["collector-allowlist", "linux-mint-documentation", "ventoy-documentation", "operator-observation"]
+            "enum": [
+              "collector-allowlist",
+              "linux-mint-documentation",
+              "ventoy-documentation",
+              "operator-observation",
+              "host-allowlist",
+              "offline-target-scan"
+            ]
           },
           "observed_at": {
             "type": "string",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+          },
+          "target_ref": {
+            "type": "string",
+            "pattern": "^os-[0-7]$",
+            "description": "Refers to target_systems[].ref; omitted for checks about the rescue environment itself."
+          },
+          "value": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "number"
+            ],
+            "description": "Optional bounded numeric observation (never text).",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "percent",
+                  "count",
+                  "bytes",
+                  "days",
+                  "seconds"
+                ]
+              },
+              "number": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000.0
+              }
+            }
           }
         }
       }
     },
     "evidence_manifest": {
       "type": "object",
-      "required": ["entry_count", "manifest_sha256", "storage_class"],
+      "required": [
+        "entry_count",
+        "manifest_sha256",
+        "storage_class"
+      ],
       "additionalProperties": false,
       "properties": {
-        "entry_count": { "type": "integer", "minimum": 0, "maximum": 10000 },
-        "manifest_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "storage_class": { "type": "string", "enum": ["volatile-live-session", "encrypted-external", "operator-controlled-local"] }
+        "entry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "storage_class": {
+          "type": "string",
+          "enum": [
+            "volatile-live-session",
+            "encrypted-external",
+            "operator-controlled-local",
+            "usb-rescue-state"
+          ]
+        }
       }
     },
     "ai_provider": {
       "type": "object",
-      "required": ["provider_id", "model_id", "authenticated", "destination_class"],
+      "required": [
+        "provider_id",
+        "model_id",
+        "authenticated",
+        "destination_class"
+      ],
       "additionalProperties": false,
       "properties": {
-        "provider_id": { "type": "string", "const": "opencode-go" },
-        "model_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$" },
-        "authenticated": { "type": "boolean" },
-        "destination_class": { "type": "string", "enum": ["cloud", "unknown"] }
+        "provider_id": {
+          "type": "string",
+          "const": "opencode-go"
+        },
+        "model_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$"
+        },
+        "authenticated": {
+          "type": "boolean"
+        },
+        "destination_class": {
+          "type": "string",
+          "enum": [
+            "cloud",
+            "unknown"
+          ]
+        }
       }
     },
-    "ai_analysis_status": { "type": "string", "enum": ["not_run", "completed", "manual_intervention", "blocked"] },
-    "mutation_status": { "type": "string", "enum": ["none", "approval_required", "completed_verified"] },
+    "ai_analysis_status": {
+      "type": "string",
+      "enum": [
+        "not_run",
+        "completed",
+        "manual_intervention",
+        "blocked"
+      ]
+    },
+    "mutation_status": {
+      "type": "string",
+      "enum": [
+        "none",
+        "approval_required",
+        "completed_verified"
+      ]
+    },
     "verification": {
       "type": "object",
-      "required": ["hashes_verified", "read_back_verified", "status"],
+      "required": [
+        "hashes_verified",
+        "read_back_verified",
+        "status"
+      ],
       "additionalProperties": false,
       "properties": {
-        "hashes_verified": { "type": "boolean" },
-        "read_back_verified": { "type": "boolean" },
-        "status": { "type": "string", "enum": ["pass", "fail", "partial", "not_applicable"] }
+        "hashes_verified": {
+          "type": "boolean"
+        },
+        "read_back_verified": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "partial",
+            "not_applicable"
+          ]
+        }
       }
     },
-    "classification": { "type": "string", "enum": ["public", "confidential", "restricted"] },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "public",
+        "confidential",
+        "restricted"
+      ]
+    },
     "source_references": {
       "type": "array",
       "maxItems": 16,
@@ -128,8 +308,84 @@
           "opencode-go:provider",
           "opencode:cli",
           "nist:sp-800-86",
-          "gnu:ddrescue"
+          "gnu:ddrescue",
+          "microsoft:windows-recovery",
+          "apple:macos-recovery"
         ]
+      }
+    },
+    "target_systems": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Operating systems examined in this run. Live boot: installed systems found on internal disks. Host mode: the running system.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "family",
+          "detection",
+          "encryption",
+          "access"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^os-[0-7]$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "linuxmint",
+              "linux-other",
+              "windows",
+              "macos",
+              "unknown"
+            ]
+          },
+          "release": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+()/-]{0,63}$"
+          },
+          "architecture": {
+            "type": "string",
+            "enum": [
+              "x86_64",
+              "arm64",
+              "unknown"
+            ]
+          },
+          "detection": {
+            "type": "string",
+            "enum": [
+              "live-offline",
+              "host-native"
+            ]
+          },
+          "encryption": {
+            "type": "string",
+            "enum": [
+              "none",
+              "bitlocker",
+              "filevault",
+              "luks",
+              "unknown"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "read-only-mounted",
+              "not-mounted-encrypted",
+              "not-mounted-unsupported",
+              "host-running",
+              "unknown"
+            ]
+          }
+        }
       }
     }
   }

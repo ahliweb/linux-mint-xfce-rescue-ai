@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.1",
+  "collected_at": "2026-09-30T08:00:00Z",
+  "evidence_manifest": {
+    "entry_count": 7,
+    "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "storage_class": "usb-rescue-state"
+  },
+  "ai_provider": {
+    "provider_id": "opencode-go",
+    "model_id": "mimo-v2.6-flash",
+    "authenticated": false,
+    "destination_class": "unknown"
+  },
+  "ai_analysis_status": "not_run",
+  "mutation_status": "none",
+  "verification": {
+    "hashes_verified": false,
+    "read_back_verified": false,
+    "status": "not_applicable"
+  },
+  "classification": "restricted",
+  "source_references": [
+    "opencode-go:provider",
+    "nist:sp-800-86"
+  ],
+  "run_id": "rescue-20260930-080000",
+  "source_platform": "linux-mint-xfce-live",
+  "boot_mode": "uefi",
+  "target_device_opaque_id": "target-3f9a1c2d4e5b6a70",
+  "ventoy_version": "1.1.17",
+  "linux_release": "Linux Mint 22.3",
+  "target_systems": [
+    {
+      "ref": "os-0",
+      "family": "windows",
+      "release": "Windows 11",
+      "architecture": "x86_64",
+      "detection": "live-offline",
+      "encryption": "none",
+      "access": "read-only-mounted"
+    },
+    {
+      "ref": "os-1",
+      "family": "linuxmint",
+      "release": "Linux Mint 22.3",
+      "architecture": "x86_64",
+      "detection": "live-offline",
+      "encryption": "none",
+      "access": "read-only-mounted"
+    }
+  ],
+  "checks": [
+    {
+      "check_id": "block-device-discovery",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-09-30T08:00:00Z"
+    },
+    {
+      "check_id": "os-detection",
+      "status": "pass",
+      "source": "offline-target-scan",
+      "observed_at": "2026-09-30T08:00:00Z"
+    },
+    {
+      "check_id": "windows-fast-startup",
+      "status": "warn",
+      "source": "offline-target-scan",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0"
+    },
+    {
+      "check_id": "windows-crash-dumps",
+      "status": "warn",
+      "source": "offline-target-scan",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0",
+      "value": {
+        "kind": "count",
+        "number": 3
+      }
+    },
+    {
+      "check_id": "disk-free-space",
+      "status": "fail",
+      "source": "offline-target-scan",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-0",
+      "value": {
+        "kind": "percent",
+        "number": 2.5
+      }
+    },
+    {
+      "check_id": "linux-fstab-consistency",
+      "status": "pass",
+      "source": "offline-target-scan",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-1"
+    },
+    {
+      "check_id": "linux-kernel-initrd",
+      "status": "fail",
+      "source": "offline-target-scan",
+      "observed_at": "2026-09-30T08:00:00Z",
+      "target_ref": "os-1"
+    }
+  ]
+}

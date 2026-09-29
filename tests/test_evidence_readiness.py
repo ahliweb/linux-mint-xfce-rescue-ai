@@ -59,6 +59,47 @@ class ValidatorTests(unittest.TestCase):
         self.assertIn("evidence: valid (", result.stdout)
         self.assertIn("evidence: INVALID (", result.stdout)
 
+    def test_schema_1_1_fixtures_valid(self):
+        result = run_validator(FIXTURES / "valid-live-multi-os-1.1.json",
+                               FIXTURES / "valid-windows-host-1.1.json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_free_text_value_rejected(self):
+        result = run_validator(FIXTURES / "invalid-text-value-1.1.json")
+        self.assertEqual(result.returncode, 1)
+
+    def _mutated(self, fixture, mutate):
+        data = json.loads((FIXTURES / fixture).read_text())
+        mutate(data)
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        self.addCleanup(os.unlink, tmp.name)
+        json.dump(data, tmp)
+        tmp.close()
+        return run_validator(Path(tmp.name))
+
+    def test_dangling_target_ref_rejected(self):
+        r = self._mutated("valid-live-multi-os-1.1.json",
+                          lambda d: d["checks"][2].__setitem__("target_ref", "os-7"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("does not match any target_systems", r.stdout)
+
+    def test_duplicate_target_ref_rejected(self):
+        r = self._mutated("valid-live-multi-os-1.1.json",
+                          lambda d: d["target_systems"][1].__setitem__("ref", "os-0"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("unique", r.stdout)
+
+    def test_version_1_0_cannot_use_1_1_fields(self):
+        r = self._mutated("valid-windows-host-1.1.json", lambda d: d.__setitem__("schema_version", "1.0"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("schema_version 1.0", r.stdout)
+
+    def test_entry_count_must_match_checks(self):
+        r = self._mutated("valid-windows-host-1.1.json",
+                          lambda d: d["evidence_manifest"].__setitem__("entry_count", 99))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("entry_count", r.stdout)
+
     def test_missing_file_exit_two(self):
         result = run_validator(Path(tempfile.gettempdir()) / "definitely-missing-evidence-file.json")
         self.assertEqual(result.returncode, 2)
