@@ -44,6 +44,7 @@ flowchart TD
 - `scripts/install-ventoy-usb.sh` — installs Ventoy only to an explicitly confirmed removable USB disk.
 - `scripts/test-hermes-conversation.sh` — dry-run by default; `--live` performs one bounded cloud smoke test.
 - `scripts/verify-autostart.sh` — validates the XFCE autostart entry.
+- `scripts/check-hardware-readiness.py` — read-only preflight for CPU, RAM, VGA/display, internet, and USB live-media minimums; writes a timestamped JSON report and blocks Hermes when required checks fail.
 
 ## Important boot limitation
 
@@ -89,6 +90,22 @@ sudo ./scripts/install-hermes-rescue.sh \
 ```
 
 The state directory must be on a writable persistent partition if memory and sessions should survive reboot. For a normal live session, use a separate encrypted writable storage device.
+
+The launcher performs the hardware preflight after verifying the Hermes installation and before starting Hermes. The default is fully automatic through all checks:
+
+```bash
+./scripts/launch-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state
+```
+
+It checks the minimum of 2 logical CPUs, 4 GiB RAM, a VGA/3D/display adapter, an IP route plus DNS/HTTPS access, and an 8 GiB USB live medium. Thresholds can be changed explicitly with `--min-cpu`, `--min-ram-gib`, and `--min-usb-gib`. Use the per-step wizard when an operator must confirm every check:
+
+```bash
+./scripts/launch-hermes-rescue.sh \
+  --state-dir /media/$USER/RESCUE-STATE/hermes-state \
+  --hardware-mode wizard
+```
+
+The report is saved under `<state-dir>/reports/hardware-readiness-YYYYMMDD-HHMMSS.json`. `fail` and `unknown` on required checks prevent Hermes from starting and show the unmet minimum; a physically unverified firmware boot is reported as a warning because software cannot prove that a particular PC firmware booted from USB. The check is read-only and does not format, partition, or write to any disk.
 
 ## Prepare an existing Ventoy USB
 
