@@ -38,6 +38,10 @@ This repository does not include an ISO image or bootloader writer.
 
 Treat the rescue USB and evidence files as sensitive. Use a separate writable storage area, encrypt reports when they leave the rescue machine, and delete them only under the device owner's approved policy.
 
+## Learning loop
+
+The Hermes-specific architecture for becoming more effective over time is documented in [docs/hermes-learning-loop.md](docs/hermes-learning-loop.md). It uses sanitized case signatures, operator feedback, verified outcomes, curated memory, regression evaluation, and signed skill-bundle promotion. It does not permit unreviewed self-modifying repair behavior.
+
 ## Status
 
 The standalone repository contains the v1 evidence contract, read-only collector, OpenCode Go adapter boundary, validation, fixtures, and implementation documentation. Hardware-specific repair plugins are intentionally out of scope for v1.
