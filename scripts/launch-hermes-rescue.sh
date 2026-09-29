@@ -12,6 +12,7 @@ hardware_mode=${RESCUE_HARDWARE_MODE:-auto}
 min_cpu=${RESCUE_MIN_CPU:-2}
 min_ram_gib=${RESCUE_MIN_RAM_GIB:-4}
 min_usb_gib=${RESCUE_MIN_USB_GIB:-8}
+scan_targets=1
 while (($#)); do
   case "$1" in
     --state-dir) state_dir=${2:?missing state directory}; state_dir_set=1; shift 2 ;;
@@ -19,7 +20,8 @@ while (($#)); do
     --min-cpu) min_cpu=${2:?missing CPU threshold}; shift 2 ;;
     --min-ram-gib) min_ram_gib=${2:?missing RAM threshold}; shift 2 ;;
     --min-usb-gib) min_usb_gib=${2:?missing USB threshold}; shift 2 ;;
-    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N]\n' "$0" >&2; exit 2 ;;
+    --no-target-scan) scan_targets=0; shift ;;
+    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan]\n' "$0" >&2; exit 2 ;;
   esac
 done
 [[ "$hardware_mode" == auto || "$hardware_mode" == wizard ]] || { printf 'Invalid hardware mode: %s\n' "$hardware_mode" >&2; exit 2; }
@@ -56,6 +58,40 @@ if ! python3 "$root/scripts/check-hardware-readiness.py" \
   printf 'Preflight perangkat keras GAGAL; Hermes tidak dijalankan. Periksa laporan: %s\n' "$report_file" >&2
   printf 'Hardware readiness preflight FAILED; Hermes was not started. See report: %s\n' "$report_file" >&2
   exit 1
+fi
+
+# Automatic read-only scan of the operating systems on the internal disks, then
+# cloud analysis of the resulting evidence. Neither step may block Hermes: on any
+# failure print a bilingual warning and continue. Everything is written to the
+# state directory on the USB, never to the internal disks.
+if ((scan_targets)); then
+  ts=$(date -u +%Y%m%d-%H%M%S)
+  evidence_file="$report_dir/target-evidence-$ts.json"
+  analysis_file="$report_dir/analysis-$ts.md"
+  printf 'Memindai sistem operasi di disk internal (read-only) ...\n'
+  printf 'Scanning installed operating systems on internal disks (read-only) ...\n'
+  if timeout 900 sudo -n python3 "$root/scripts/scan-target-os.py" --output "$evidence_file" && [[ -s $evidence_file ]]; then
+    # The scan runs as root; hand the evidence back to the desktop user (best effort: FAT/exFAT ignores it).
+    [[ -O $evidence_file ]] || sudo -n chown "$(id -u):$(id -g)" -- "$evidence_file" 2>/dev/null || true
+    cp -f -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
+    chmod 0600 -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
+    printf 'Bukti tersimpan: %s\n' "$evidence_file"
+    printf 'Menganalisis dengan OpenCode Go (%s) ...\n' 'mimo-v2.6-flash'
+    if python3 "$root/scripts/opencode-go-analyze.py" \
+      --evidence "$evidence_file" \
+      --output "$analysis_file" \
+      --env-file "$root/config/rescue.env" \
+      --env-file "$state_dir/hermes/env"; then
+      printf 'Analisis tersimpan: %s\nAnalysis saved: %s\n' "$analysis_file" "$analysis_file"
+    else
+      printf 'PERINGATAN: analisis OpenCode Go gagal; Hermes tetap dijalankan. Bukti: %s\n' "$evidence_file" >&2
+      printf 'WARNING: OpenCode Go analysis failed; starting Hermes anyway. Evidence: %s\n' "$evidence_file" >&2
+    fi
+  else
+    rm -f -- "$evidence_file" 2>/dev/null || true
+    printf 'PERINGATAN: pemindaian sistem operasi gagal atau tidak diizinkan (sudo -n); Hermes tetap dijalankan.\n' >&2
+    printf 'WARNING: target OS scan failed or was not permitted (sudo -n); starting Hermes anyway.\n' >&2
+  fi
 fi
 
 exec hermes --tui --provider custom --model mimo-v2.6-flash
