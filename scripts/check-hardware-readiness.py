@@ -148,6 +148,22 @@ def check_usb(min_usb: float) -> dict:
                         note="USB transport and live mount detected")
 
 
+def write_private(destination: pathlib.Path, text: str) -> None:
+    """Create/replace the report atomically; the file is 0600 from creation (no chmod window)."""
+    tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, destination)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def ask(step: dict, mode: str) -> bool:
     if mode == "auto":
         return True
@@ -172,17 +188,19 @@ def main() -> int:
         parser.error("minimum thresholds must be positive")
 
     checks = []
+    # (check_id, minimum_text, fn): minimum_text is what the wizard shows before asking.
     definitions = [
-        ("cpu", lambda: check_cpu(args.min_cpu)),
-        ("ram", lambda: check_ram(args.min_ram_gib)),
-        ("vga-display", check_vga),
-        ("internet-connectivity", lambda: check_network(args.internet_url)),
-        ("usb-boot-media", lambda: check_usb(args.min_usb_gib)),
+        ("cpu", f">= {args.min_cpu} logical CPU(s)", lambda: check_cpu(args.min_cpu)),
+        ("ram", f">= {args.min_ram_gib:.1f} GiB", lambda: check_ram(args.min_ram_gib)),
+        ("vga-display", "display adapter (DRM or PCI VGA/3D/Display)", check_vga),
+        ("internet-connectivity", f"IP/default route + DNS + HTTPS to {args.internet_url}",
+         lambda: check_network(args.internet_url)),
+        ("usb-boot-media", f"USB transport and >= {args.min_usb_gib:.1f} GiB", lambda: check_usb(args.min_usb_gib)),
     ]
-    for expected, fn in definitions:
-        preview = {"check_id": expected, "minimum": "configured threshold"}
+    for check_id, minimum_text, fn in definitions:
+        preview = {"check_id": check_id, "minimum": minimum_text}
         if not ask(preview, args.mode):
-            checks.append(check_result(expected, "warn", "skipped by operator", "not skipped", note="wizard skip"))
+            checks.append(check_result(check_id, "warn", "skipped by operator", "not skipped", note="wizard skip"))
             continue
         checks.append(fn())
 
@@ -203,8 +221,7 @@ def main() -> int:
     }
     destination = pathlib.Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    os.chmod(destination, 0o600)
+    write_private(destination, json.dumps(report, indent=2) + "\n")
     print(f"Hardware readiness: {overall.upper()}")
     for check in checks:
         print(f"[{check['status'].upper():7}] {check['check_id']}: {check['observed']} (minimum: {check['minimum']})")
