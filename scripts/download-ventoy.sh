@@ -43,5 +43,15 @@ PY
 ))
 file=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["asset"])' "$out_dir/ventoy-release.json")
 curl --fail --location --show-error --output "$out_dir/$file" "$url"
-sha256sum "$out_dir/$file" | tee "$out_dir/$file.sha256"
-printf 'Ventoy package downloaded. Verify this hash against the official release metadata before installation.\n'
+expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("digest") or "")' "$out_dir/ventoy-release.json")
+actual=$(sha256sum "$out_dir/$file" | awk '{print $1}')
+if [[ "$expected" == sha256:* ]]; then
+  [[ "${expected#sha256:}" == "$actual" ]] || {
+    printf 'Ventoy digest mismatch: expected=%s actual=%s\n' "$expected" "$actual" >&2
+    exit 1
+  }
+  printf 'Ventoy release digest: PASS (%s)\n' "$actual"
+else
+  printf 'Ventoy release metadata did not expose a digest; refusing automatic installation.\n' >&2
+  exit 1
+fi
