@@ -9,3 +9,5 @@ ventoy-download/
 *.tar.gz
 .env
 config/*.env
+*.pyc
+evidence.json
