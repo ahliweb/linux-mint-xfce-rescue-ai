@@ -1,0 +1,13 @@
+model:
+  provider: custom
+  default: mimo-v2.6-flash
+  base_url: https://opencode.ai/zen/go/v1
+  api_key: ${OPENCODE_GO_API_KEY}
+# Keep the rescue profile conservative. The bootstrap script can extend this
+# with the installed Hermes version's supported settings.
+memory:
+  enabled: true
+  user_profile_enabled: false
+  write_approval: true
+terminal:
+  backend: local

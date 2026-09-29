@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes Rescue AI
+Comment=Start the isolated Hermes Linux rescue profile
+Exec=/usr/local/bin/launch-hermes-rescue.sh
+Terminal=true
+Categories=System;Utility;
+X-GNOME-Autostart-enabled=true

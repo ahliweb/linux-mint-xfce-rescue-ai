@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "contracts/rescue-ai/v1/rescue-evidence.schema.json",
+  "$id": "rescue-ai/v1/rescue-evidence.schema.json",
   "title": "rescue-ai-evidence",
   "description": "Bounded metadata contract for an optional external Ventoy/Linux rescue companion. This contract is validation/provenance only: it MUST NOT carry prompts, model responses, credentials, private keys, raw logs, arbitrary commands, or unrestricted paths.",
   "type": "object",

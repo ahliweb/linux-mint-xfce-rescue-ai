@@ -1,9 +1,8 @@
-# Optional USB Rescue AI companion
+# Standalone Linux Mint XFCE Rescue AI companion
 
-> Status: staged in issue [#261](https://github.com/ahliweb/omes/issues/261). The
-> contract is implemented in `contracts/rescue-ai/v1/`; the external collector,
-> Ventoy media builder, and `omes rescue` CLI are not implemented in this
-> repository yet.
+> This repository is standalone. It does not modify the `ahliweb/omes` repository.
+
+The companion boots from Linux Mint XFCE selected through Ventoy and runs an isolated Hermes Rescue profile. The target PC's CPU/RAM/network are used by the live session; OpenCode Go provides cloud inference.
 
 ## Boundary
 
@@ -26,7 +25,7 @@ display or SSH path.
 
 ## Evidence contract
 
-`contracts/rescue-ai/v1/rescue-evidence.schema.json` accepts only bounded metadata:
+`rescue-ai/v1/rescue-evidence.schema.json` accepts only bounded metadata:
 
 - source live platform, boot mode, timestamps, opaque target identifier;
 - tool and release identifiers;
@@ -88,16 +87,17 @@ backup/image reference, rollback plan, and post-action read-back verification.
 8. Use OpenCode Go only on sanitized evidence and preserve the operator's final
    decision separately from model output.
 
-## OMES implementation stages
+## Implementation stages
 
 | Stage | Deliverable | Status |
 |---|---|---|
-| 1 | `rescue-ai/v1` bounded schema and valid/invalid fixtures | Implemented in this branch |
-| 2 | Read-only validator and typed `omes rescue validate` command | Planned in #261 |
-| 3 | Provenance recording for media/tools/provider identity | Planned in #261 |
-| 4 | External ARM64 collector and report writer | Separate companion workstream |
-| 5 | Optional Hermes skill/runbook integration | Delegated to Hermes; no OMES router |
-| 6 | Hardware field validation with Pi 5 and USB-SATA/NVMe adapters | Operator/QA lab work |
+| 1 | `rescue-ai/v1` bounded schema and valid/invalid fixtures | Implemented |
+| 2 | Read-only collector and evidence validator | Implemented |
+| 3 | Hermes Rescue profile with OpenCode Go/MiMo-V2.6-Flash default | Implemented |
+| 4 | Hermes bootstrap, isolated state, autostart, and health check | Implemented |
+| 5 | Ventoy preparation helper | Implemented; requires an operator-installed Ventoy USB |
+| 6 | Candidate learning, feedback, regression evaluation, signed promotion | Design documented; implementation next |
+| 7 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Requires lab hardware |
 
 ## Verification requirements
 
