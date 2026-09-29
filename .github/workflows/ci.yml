@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-gates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck gnupg
+          python -m pip install jsonschema
+      - name: Source-level checks
+        run: make check PYTHON=python
+      - name: Collector smoke test
+        run: |
+          ./scripts/collect-evidence.sh --output "$RUNNER_TEMP/rescue-evidence.json"
+          python scripts/validate-evidence.py "$RUNNER_TEMP/rescue-evidence.json"
+      - name: Hardware readiness report (lab runner, gate result informational)
+        run: |
+          python scripts/check-hardware-readiness.py --mode auto --output "$RUNNER_TEMP/hw.json" || true
+          python -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['report_type']=='hardware-readiness'; print(r['summary'])" "$RUNNER_TEMP/hw.json"
