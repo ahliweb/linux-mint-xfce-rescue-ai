@@ -19,7 +19,9 @@ jobs:
       - name: Install tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck gnupg
+          sudo apt-get install -y shellcheck gnupg zsh
+          # pwsh is preinstalled on ubuntu-24.04; the host-launcher tests skip cleanly if it is missing
+          if command -v pwsh >/dev/null; then pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'; else echo 'pwsh not present: PowerShell launcher tests will skip'; fi
           python -m pip install jsonschema
       - name: Source-level checks
         run: make check PYTHON=python
