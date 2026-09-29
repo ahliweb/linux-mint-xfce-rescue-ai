@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "run_id": "rescue-20260929-0001",
+  "source_platform": "linux-mint-xfce-live",
+  "boot_mode": "uefi",
+  "collected_at": "2026-09-29T10:30:00Z",
+  "target_device_opaque_id": "target-laptop-a1b2",
+  "ventoy_version": "1.1.05",
+  "linux_release": "Linux Mint 22.3 Xfce",
+  "checks": [
+    {"check_id": "block-device-discovery", "status": "pass", "source": "collector-allowlist", "observed_at": "2026-09-29T10:31:00Z"},
+    {"check_id": "filesystem-discovery", "status": "warn", "source": "collector-allowlist", "observed_at": "2026-09-29T10:31:05Z"},
+    {"check_id": "smart-health", "status": "unknown", "source": "collector-allowlist", "observed_at": "2026-09-29T10:31:10Z"},
+    {"check_id": "network-connectivity", "status": "pass", "source": "collector-allowlist", "observed_at": "2026-09-29T10:31:15Z"}
+  ],
+  "evidence_manifest": {
+    "entry_count": 4,
+    "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "storage_class": "encrypted-external"
+  },
+  "ai_provider": {
+    "provider_id": "opencode-go",
+    "model_id": "opencode/gpt-5.6-luna",
+    "authenticated": true,
+    "destination_class": "cloud"
+  },
+  "ai_analysis_status": "completed",
+  "mutation_status": "none",
+  "verification": {"hashes_verified": true, "read_back_verified": true, "status": "pass"},
+  "classification": "confidential",
+  "source_references": ["linuxmint:iso-verification", "ventoy:install-update", "opencode-go:provider", "nist:sp-800-86"]
+}
