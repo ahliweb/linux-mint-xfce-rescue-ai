@@ -75,6 +75,9 @@ python3 -m py_compile scripts/*.py
 python3 scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-sanitized-opencode-go.json
 ./scripts/collect-evidence.sh --output /tmp/rescue-evidence.json
 python3 scripts/validate-evidence.py /tmp/rescue-evidence.json
+python3 scripts/check-hardware-readiness.py --mode auto --output /tmp/rescue-hardware-readiness.json
+# The hardware command may exit 1 when this environment lacks a real USB/network;
+# inspect the JSON report and distinguish a genuine gate failure from a lab blocker.
 git diff --check
 ```
 

@@ -26,7 +26,7 @@ flowchart LR
 
 ## Responsibilities
 
-- **ahlikoding.com**: source maintenance, implementation, release packaging, compatibility testing, and technical documentation.
+- **ahlikoding.com**: source maintenance, implementation, release packaging, compatibility testing, and technical documentation, including the hardware-readiness workflow and operator report format.
 - **satpamsiber.com**: security review, threat analysis, evidence-handling policy, and operational safety review.
 - **ahliweb.com**: organizational ownership, product direction, branding, and final release authorization.
 

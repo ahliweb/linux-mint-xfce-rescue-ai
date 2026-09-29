@@ -79,6 +79,35 @@ arbitrary command fields, and extra properties. Raw evidence belongs in an
 operator-controlled store and must not be sent to OpenCode Go when classified
 `restricted`.
 
+## Hardware readiness gate
+
+```mermaid
+flowchart LR
+    X[Hermes installed] --> P[Read-only preflight]
+    P --> C[CPU / RAM / VGA]
+    P --> N[Route / DNS / HTTPS]
+    P --> U[USB live media / capacity]
+    C --> D{All required checks pass?}
+    N --> D
+    U --> D
+    D -- yes --> H[Start Hermes]
+    D -- no --> R[Stop and write report]
+```
+
+Before Hermes starts, `scripts/check-hardware-readiness.py` validates that the
+live PC has the minimum resources needed for diagnosis: 2 logical CPUs, 4 GiB
+RAM, a display adapter, working internet access for OpenCode Go, and a detected
+USB live medium of at least 8 GiB. The launcher defaults to `--hardware-mode
+auto`; `--hardware-mode wizard` asks for confirmation at each step. Thresholds
+are explicit and configurable with `--min-cpu`, `--min-ram-gib`, and
+`--min-usb-gib`.
+
+The result is a timestamped, permission-restricted JSON report under
+`<state-dir>/reports/`. A failed or unknown required check blocks Hermes and
+states the observed value and minimum. Software cannot prove that a particular
+firmware boot menu selected the USB, so that physical acceptance test remains a
+separate warning and must be tested on real hardware.
+
 ## OpenCode Go procedure
 
 1. Authenticate interactively with OpenCode using `/connect` and select
@@ -169,7 +198,8 @@ flowchart LR
     V --> C[Copy ISO and rescue bundle]
     C --> B[Boot from firmware menu]
     B --> L[Live XFCE]
-    L --> H[Bootstrap Hermes]
+    L --> P[Hardware preflight]
+    P --> H[Bootstrap Hermes]
     H --> R[Rescue report]
 ```
 
@@ -182,8 +212,9 @@ flowchart LR
 | 3 | Hermes Rescue profile with OpenCode Go/MiMo-V2.6-Flash default | Implemented |
 | 4 | Hermes bootstrap, isolated state, autostart, and health check | Implemented |
 | 5 | Ventoy preparation helper | Implemented; requires an operator-installed Ventoy USB |
-| 6 | Candidate learning, feedback, regression evaluation, signed promotion | Design documented; implementation next |
-| 7 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Requires lab hardware |
+| 6 | Hardware readiness preflight with auto/wizard modes and JSON report | Implemented; physical firmware boot still requires lab test |
+| 7 | Candidate learning, feedback, regression evaluation, signed promotion | Design documented; implementation next |
+| 8 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Requires lab hardware |
 
 ```mermaid
 flowchart LR
@@ -191,19 +222,21 @@ flowchart LR
     S2 --> S3[Hermes profile]
     S3 --> S4[Bootstrap + health]
     S4 --> S5[Ventoy workflow]
-    S5 --> S6[Learning promotion]
-    S6 --> S7[Hardware matrix]
+    S5 --> S6[Hardware preflight]
+    S6 --> S7[Learning promotion]
+    S7 --> S8[Hardware matrix]
 ```
 
 ## Verification requirements
 
 Before calling the integration ready:
 
-- contract fixtures pass through `scripts/check-contracts.py`;
-- raw prompt/response/credential/arbitrary-command fixtures fail for the
-  intended reason;
+- `scripts/validate-evidence.py` accepts the valid fixture and rejects raw
+  prompt/response/credential/arbitrary-command fixtures for the intended reason;
 - validator never executes discovered files or commands;
 - checksum mismatch fails closed;
+- the hardware preflight produces a report with all five check IDs and blocks on
+  failed or unknown required checks;
 - network failure still permits evidence collection and produces
   `manual_intervention` rather than a false AI success;
 - OpenCode Go provider/model identity is recorded without secrets;

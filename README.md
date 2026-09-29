@@ -148,8 +148,9 @@ flowchart LR
 5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory.
 6. Run `sudo ./scripts/install-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state`.
 7. Set `OPENCODE_GO_API_KEY` in `config/rescue.env`, then run `./scripts/check-hermes-rescue.sh --state-dir ...`.
-8. Run `./scripts/test-hermes-conversation.sh --state-dir ... --live` only after approving a real cloud request. Without `--live`, it is a no-cost dry run.
-9. Run `./scripts/verify-autostart.sh --state-dir ...`, reboot from the live environment, log in to XFCE, and verify the launcher with `pgrep -af hermes`. A physical reboot is required; it is not simulated by the source repository.
+8. Start the launcher. It runs the automatic hardware-readiness gate by default and writes a report; use `--hardware-mode wizard` for per-step confirmation. Hermes starts only when required CPU, RAM, display, internet, and USB checks pass.
+9. Run `./scripts/test-hermes-conversation.sh --state-dir ... --live` only after approving a real cloud request. Without `--live`, it is a no-cost dry run.
+10. Run `./scripts/verify-autostart.sh --state-dir ...`, reboot from the live environment, log in to XFCE, and verify the launcher with `pgrep -af hermes`. A physical reboot is required; it is not simulated by the source repository.
 
 
 OpenCode Go credentials are secrets. They are not stored in this repository or in evidence. Set `OPENCODE_GO_API_KEY` in the local `config/rescue.env`, or place it in the isolated Hermes secret environment at setup time.

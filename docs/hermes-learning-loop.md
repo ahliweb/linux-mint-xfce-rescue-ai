@@ -80,6 +80,25 @@ Operator decision + verified outcome
 
 Hermes tidak boleh menerima tool generik `shell_exec`. Setiap tool harus berupa adapter typed, allowlisted, timeout-bounded, read-only by default, dan menghasilkan output yang dapat diverifikasi.
 
+## Gate kesiapan sebelum diagnosis
+
+```mermaid
+flowchart LR
+    B[Boot Linux Mint XFCE] --> H[Hermes tersedia]
+    H --> P[Hardware preflight]
+    P --> A{Minimum terpenuhi?}
+    A -- tidak --> R[Laporan gagal + berhenti]
+    A -- ya --> D[Mulai diagnosis]
+```
+
+Sebelum loop kasus dimulai, launcher menjalankan pemeriksaan CPU, RAM, VGA/display,
+route/DNS/HTTPS, dan USB live media. Mode `auto` adalah default dan menjalankan
+semua langkah tanpa interaksi; mode `wizard` meminta konfirmasi operator pada
+setiap langkah. Laporan disimpan sebagai JSON di `<state-dir>/reports/` dan
+menjadi bukti awal yang terpisah dari `case.json`. Kegagalan atau status unknown
+pada syarat wajib mencegah Hermes mulai, sedangkan keberhasilan software tidak
+menggantikan uji boot firmware pada PC fisik.
+
 ## Bagaimana sistem menjadi lebih cerdas
 
 ```mermaid
