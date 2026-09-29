@@ -271,7 +271,7 @@ flowchart LR
 - Nonaktifkan channel messaging dan webhook pada mode rescue kecuali operator mengaktifkannya secara eksplisit.
 - Aktifkan memory/skills hanya untuk data yang sudah disanitasi.
 - Provider utama: OpenCode Go melalui adapter resmi yang dikonfigurasi operator.
-- `.env` lokal yang di-ignore dapat dipakai oleh preparation helper untuk memprovision hanya `OPENCODE_GO_API_KEY` ke `config/rescue.env` pada USB; helper tidak mengeksekusi isi dotenv.
+- `.env` lokal yang di-ignore dapat dipakai oleh preparation helper untuk memprovision hanya `OPENCODE_GO_API_KEY` ke `config/rescue.env` pada USB (mode `0600` diminta); helper tidak mengeksekusi isi dotenv, dan salinan bundle rescue memakai allowlist sehingga `.env` tidak pernah ikut tertulis. Skrip runtime membaca `config/rescue.env` dan `<state-dir>/hermes/env` lewat `scripts/lib/rescue-env.sh` (hanya key allowlist, tidak pernah dieksekusi sebagai shell). Gunakan `--no-provision-secrets` bila key tidak boleh ada di USB.
 - Installer Hermes membuat autostart XFCE default dengan `--hardware-mode auto`, memakai state writable yang sudah dipasang.
 - Jika internet/provider gagal, Hermes tetap menjalankan collector dan membuat laporan `manual_intervention`.
 - Toolset default hanya `rescue_read_only`; tool mutating berada pada toolset terpisah dan selalu membutuhkan approval.

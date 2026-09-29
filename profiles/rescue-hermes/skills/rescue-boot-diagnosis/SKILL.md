@@ -5,7 +5,7 @@ description: Use when a PC cannot boot; collect bounded facts and propose only a
 
 # Rescue boot diagnosis
 
-1. Confirm the launcher hardware-readiness report is `ready` or review each blocking failure before continuing.
+1. Confirm the launcher hardware-readiness report is `ready` (or `ready_with_warnings` after reviewing each warning) or review each blocking failure before continuing.
 2. Read the sanitized evidence and its manifest hash.
 3. Classify the symptom: firmware entry, bootloader, filesystem, disk I/O, kernel, or unknown.
 4. Retrieve only matching approved playbooks.

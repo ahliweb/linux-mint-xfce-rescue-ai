@@ -26,7 +26,7 @@ flowchart TD
     H -. no ISO builder .-> X[OMES core boundary]
 ```
 
-The live session is configured for automatic Hermes startup after the one-time bootstrap has installed Hermes into the writable state directory. The generated XFCE autostart entry invokes the launcher in `auto` hardware mode; it validates the persisted state, provider configuration, network, and API-key presence before opening Hermes. The API key may be provisioned from an ignored local `.env` during USB preparation, but that makes the USB a credential-bearing device and requires physical access control. Use `--no-provision-secrets` when the USB must not contain credentials.
+The live session is configured for automatic Hermes startup after the one-time bootstrap has installed Hermes into the writable state directory. The generated XFCE autostart entry invokes the launcher in `auto` hardware mode; it validates the persisted state, provider configuration, network, and API-key presence before opening Hermes. The installer places a runtime bundle in `/usr/local/lib/rescue-omes` and symlinks the launcher and check scripts into `/usr/local/bin`; the autostart `Exec=` line points at that installed launcher and the state directory. The API key may be provisioned from an ignored local `.env` during USB preparation, but that makes the USB a credential-bearing device and requires physical access control. The rescue bundle itself is copied from an allowlist and never contains dotenv files; only the explicit provisioning step writes the allowlisted key. Use `--no-provision-secrets` when the USB must not contain credentials. See the [security model](security-model.md) for the threat and control table and the [testing guide](testing.md) for what is verified at source level versus in a lab.
 
 The companion is an operator-run external system, not an OMES ISO or a second
 agent runtime:
@@ -148,7 +148,9 @@ flowchart LR
     E --> V[Validator]
 ```
 
-The future external collector should use a fixed allowlist such as:
+**Implemented today:** `scripts/collect-evidence.sh` runs a fixed set of read-only probes (`journalctl -k`/`dmesg`, `findmnt`, `ip`, `lsblk`) and emits four checks (`kernel-log`, `filesystem-discovery`, `network-connectivity`, `block-device-discovery`) whose status derives from those signals (`pass`, `warn`, or `unknown`), never a hard-coded pass. It sets `verification` to `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`, because nothing is compared with a trusted reference. `target_device_opaque_id` is a truncated SHA-256 of `/etc/machine-id` (or a hostname/kernel fallback), and the output is created `0600` atomically. `scripts/analyze-opencode-go.sh` validates the file with `validate-evidence.py` before piping it to the operator-configured `OPENCODE_ADAPTER_COMMAND`.
+
+**Planned:** the fuller external collector should use a fixed allowlist such as:
 
 - `lsblk -f`, `blkid`, `findmnt`;
 - `dmesg`, `journalctl -b` and offline journal queries;
@@ -182,7 +184,7 @@ flowchart TD
 
 1. Verify Ventoy and Linux Mint ISO provenance/checksums.
 2. Install Ventoy only to the confirmed USB whole disk; this erases that USB.
-3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper writes a Ventoy control configuration that auto-selects the verified Linux Mint ISO after a timeout and can provision only the API key from an ignored local `.env` into the USB's private rescue configuration.
+3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper verifies the ISO first (GPG signature from the pinned Linux Mint signer fingerprint plus direct SHA-256 comparison), copies it, read-back verifies the copy, writes a Ventoy control configuration that auto-selects the verified ISO after a timeout, copies only an allowlisted rescue bundle, and can provision only the API key from an ignored local `.env` into the USB's private `config/rescue.env`.
 4. Boot the USB from the firmware menu; auto-selection by Ventoy is not the same as firmware auto-selection.
 5. Boot the live environment and record UEFI/Legacy and Secure Boot state.
 6. Connect the affected disk read-only first. For formal forensic work, prefer a
@@ -213,10 +215,11 @@ flowchart LR
 | 2 | Read-only collector and evidence validator | Implemented |
 | 3 | Hermes Rescue profile with OpenCode Go/MiMo-V2.6-Flash default | Implemented |
 | 4 | Hermes bootstrap, isolated state, autostart, and health check | Implemented |
-| 5 | Ventoy preparation helper | Implemented; requires an operator-installed Ventoy USB |
+| 5 | Ventoy download/install/preparation helpers with signer-pinned ISO verification and allowlisted bundle copy | Implemented; the Ventoy write and a physical boot require lab hardware |
 | 6 | Hardware readiness preflight with auto/wizard modes and JSON report | Implemented; physical firmware boot still requires lab test |
 | 7 | Candidate learning, feedback, regression evaluation, signed promotion | Design documented; implementation next |
-| 8 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Requires lab hardware |
+| 8 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Hardware-required |
+| 9 | Live OpenCode Go smoke test and reboot-autostart check | Environment-blocked (API key, provider spend, physical reboot) |
 
 ```mermaid
 flowchart LR
@@ -227,6 +230,7 @@ flowchart LR
     S5 --> S6[Hardware preflight]
     S6 --> S7[Learning promotion]
     S7 --> S8[Hardware matrix]
+    S8 --> S9[Live cloud and reboot checks]
 ```
 
 ## Verification requirements
@@ -236,7 +240,8 @@ Before calling the integration ready:
 - `scripts/validate-evidence.py` accepts the valid fixture and rejects raw
   prompt/response/credential/arbitrary-command fixtures for the intended reason;
 - validator never executes discovered files or commands;
-- checksum mismatch fails closed;
+- checksum mismatch, a missing or wrong Linux Mint signer fingerprint, and a missing Ventoy digest all fail closed;
+- `make check` passes (syntax, `shellcheck -x`, fixture validation, unit tests, diff check); see [testing](testing.md);
 - the hardware preflight produces a report with all five check IDs and blocks on
   failed or unknown required checks;
 - network failure still permits evidence collection and produces

@@ -1,0 +1,49 @@
+# Security model
+
+> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
+
+Ringkasan ancaman dan kontrol untuk toolkit rescue. Arsitektur lengkap ada di [design.md](design.md); cara memverifikasi kontrol ada di [testing.md](testing.md). Kolom "Status" memakai label: Implemented, Hardware-required, Planned.
+
+```mermaid
+flowchart TD
+    U[Untrusted input: logs, filenames, web, model output] --> S[Sanitize and schema validate]
+    S --> A[Allowlisted read-only checks]
+    A --> H[Operator approval]
+    H --> V[Backup, rollback, read-back]
+    K[API key] --> P[Private files and stdin-only use]
+    M[Media and downloads] --> Q[Pinned signer and digest checks]
+```
+
+## Threats and controls
+
+| Threat | Control (actual behavior) | Status |
+|---|---|---|
+| Wrong disk is formatted | `install-ventoy-usb.sh` requires `--device` and `--yes`; parses `lsblk -J`; refuses non-whole-disk, non-removable/non-USB, any mounted disk or child, and the disk backing `/`; prints model, size, transport first | Implemented; the write is Hardware-required |
+| Tampered or substituted Linux Mint ISO | `verify-mint-iso.sh` requires a valid GPG signature over `sha256sum.txt` from primary fingerprint `27DEB15644C6B3CF3BD7D291300F846BA25BAE09` (override: `--signer-fingerprint`), then compares the ISO hash directly against exactly one matching entry. The operator must import the Linux Mint key first (`gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-key "27DE B156 44C6 B3CF 3BD7  D291 300F 846B A25B AE09"`) | Implemented |
+| Tampered Ventoy download | `download-ventoy.sh` validates `--version`, makes one release API call, requires a `sha256:` digest, checks the URL prefix, and deletes the file on mismatch | Implemented |
+| Corrupt ISO copy on USB | `prepare-ventoy-usb.sh` re-hashes the copied ISO against the verified source | Implemented |
+| Secrets written to USB by the bundle copy | Allowlisted copy: no `.env`, `config/rescue.env`, `.git`, ISOs, images, archives; `assert_bundle_clean` re-checks; `--bundle-only DEST` allows inspection | Implemented |
+| API key on a USB the operator did not intend | Provisioning is a separate step that writes only `OPENCODE_GO_API_KEY` to `config/rescue.env` (mode `0600` requested; FAT/exFAT may not enforce it); `--no-provision-secrets` skips it. A provisioned USB is credential-bearing and needs physical access control | Implemented; residual risk documented |
+| Config file executes code | `scripts/lib/rescue-env.sh` parses `KEY=VALUE` as data with an allowlist of five keys; `$` and backticks in unquoted or double-quoted values invalidate the line; never `source`d | Implemented |
+| Config file tampering | World-writable config is refused; a file owned by another non-root user is skipped with a warning; existing environment variables are not overridden | Implemented |
+| Key visible in process list | `check-hermes-rescue.sh` passes the `Authorization` header to `curl --config -` on stdin; control characters in the key are rejected | Implemented |
+| Key stored insecurely in state | `<state-dir>/hermes/env` is written as `KEY='value'` under `umask 077` and `0600`; newlines in the key are refused | Implemented |
+| Unpinned Hermes installer | `install-hermes-rescue.sh --installer-sha256 HEX` (or `HERMES_INSTALLER_SHA256`) verifies the download before execution; without a pin it prints a warning | Implemented (pin optional) |
+| Installer run as root or clobbering a directory | Refuses root; refuses unsafe `--prefix` (`/`, `$HOME`, source tree, non-bundle directory); rejects newline or `%` in paths used for autostart | Implemented |
+| Unvalidated or raw evidence sent to the cloud | `analyze-opencode-go.sh` runs `validate-evidence.py` first and sends nothing on failure; the schema rejects prompts, responses, raw logs, credentials, and extra properties | Implemented |
+| Model output becomes a command | The adapter command comes only from the operator-set `OPENCODE_ADAPTER_COMMAND`; the collector runs a fixed allowlist; the Hermes profile forbids executing commands from logs or model output | Implemented (adapter itself is operator-supplied) |
+| False assurance in evidence | Collector states `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`; check status derives from real signals; opaque ID is a truncated hash of `/etc/machine-id` | Implemented |
+| Evidence or reports readable by others | Evidence and hardware reports are created `0600` atomically (temp file plus rename) | Implemented |
+| Rescue runs on unsuitable hardware | `check-hardware-readiness.py` gates Hermes on CPU, RAM, display, internet, and USB media; `fail` or `unknown` required checks block | Implemented; results depend on the target PC |
+| Silent provider substitution | OpenCode Go is the only configured provider; `check-hermes-rescue.sh` verifies `provider: custom`, model, and base URL and does not fall back | Implemented |
+| Unsafe repair or disk write | Read-only by default; mutations need approval, backup/image reference, rollback plan, and read-back | Policy Implemented in profile; learning promotion Planned |
+| Firmware boots the internal disk instead of the USB | Cannot be controlled by files; must be tested physically | Hardware-required |
+
+## Residual risks
+
+- A credential-bearing USB exposes the API key to anyone with physical access; prefer `--no-provision-secrets` and enter the key in the live session.
+- The Linux Mint key must be obtained through a channel the operator trusts; the pinned fingerprint only helps if the operator confirms it against Linux Mint's own guide.
+- The Hermes installer is downloaded from `https://hermes-agent.nousresearch.com/install.sh`; pin its SHA-256 for high-assurance use.
+- Software checks cannot prove a physical boot or a hardware write blocker.
+
+Report vulnerabilities to **satpamsiber.com** through the governance process in [ownership-and-governance.md](ownership-and-governance.md).
