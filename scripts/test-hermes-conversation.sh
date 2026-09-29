@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-state_dir=${RESCUE_STATE_DIR:-"$HOME/.local/share/rescue-omes"}
+root=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/rescue-env.sh
+source "$root/scripts/lib/rescue-env.sh"
+
+state_dir="$HOME/.local/share/rescue-omes"
+state_dir_set=0
+live=0
 while (($#)); do
   case "$1" in
-    --state-dir) state_dir=${2:?missing state directory}; shift 2 ;;
+    --state-dir) state_dir=${2:?missing state directory}; state_dir_set=1; shift 2 ;;
     --live) live=1; shift ;;
     *) printf 'usage: %s [--state-dir DIR] [--live]\n' "$0" >&2; exit 2 ;;
   esac
 done
 
+rescue_load_env "$root/config/rescue.env" || exit 1
+if ((!state_dir_set)) && [[ -n ${RESCUE_STATE_DIR:-} ]]; then
+  state_dir=$RESCUE_STATE_DIR
+fi
 [[ -f "$state_dir/hermes/env" ]] || { printf 'Hermes state not found: %s\n' "$state_dir/hermes" >&2; exit 1; }
-# shellcheck disable=SC1091
-source "$state_dir/hermes/env"
+rescue_load_env "$state_dir/hermes/env" || exit 1
 export HERMES_HOME="$state_dir/hermes"
 
-if [[ "${live:-0}" -ne 1 ]]; then
+if ((live != 1)); then
   printf 'DRY RUN: would send one bounded conversation to OpenCode Go MiMo-V2.6-Flash.\n'
   printf 'Use --live only when OPENCODE_GO_API_KEY is configured and cloud cost is approved.\n'
   exit 0
