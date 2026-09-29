@@ -134,10 +134,10 @@ def check_network(url: str) -> dict:
 def check_usb(min_usb: float) -> dict:
     tran, size, source = storage_for_live_media()
     if not source:
-        return check_result("usb-boot-media", "warn", "USB/live medium cannot be verified",
-                            f">= {min_usb:.1f} GiB removable boot media", note="physical firmware boot must be tested")
+        return check_result("usb-boot-media", "fail", "USB/live medium cannot be verified",
+                            f">= {min_usb:.1f} GiB removable boot media", note="physical firmware boot must still be tested")
     if tran != "usb":
-        return check_result("usb-boot-media", "warn", f"transport={tran}, source={source}",
+        return check_result("usb-boot-media", "fail", f"transport={tran}, source={source}",
                             f"USB transport and >= {min_usb:.1f} GiB", note="boot source is not identified as USB")
     if size is None:
         return check_result("usb-boot-media", "unknown", f"USB size unavailable ({source})",
