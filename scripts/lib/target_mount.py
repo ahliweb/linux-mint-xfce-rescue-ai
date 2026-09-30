@@ -320,7 +320,14 @@ class TargetMount:
                                            'mount could corrupt it. Shut Windows down fully first '
                                            '/ Windows hibernasi atau fast startup; matikan penuh dulu')
                 meta = part['meta'] or {}
-                dirty = meta.get('dirty') if part['meta'] is not None else None
+                if part['meta'] is not None:            # fixture mode: the sidecar says it
+                    dirty = bool(meta.get('dirty'))
+                else:                                   # real disk: read the $Volume flag raw (needs root)
+                    dirty = scanner.raw_ntfs_dirty(part['path'])
+                if dirty is None:
+                    raise TargetMountError('cannot confirm that the NTFS volume is clean (the dirty flag is '
+                                           'unreadable); refusing read-write / status bersih NTFS tidak dapat '
+                                           'dipastikan, read-write ditolak')
                 if dirty:
                     raise TargetMountError('the NTFS volume is flagged dirty; refusing read-write '
                                            '/ volume NTFS dirty, read-write ditolak')

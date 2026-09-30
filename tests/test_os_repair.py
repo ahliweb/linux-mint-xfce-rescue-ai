@@ -838,5 +838,40 @@ class ZshOsModule(Base):
             self.assertNotIn(verb, code)
 
 
+
+class RealDiskNtfsProbeTests(unittest.TestCase):
+    """Without fixture metadata the provider must read the raw NTFS dirty flag, and refuse when it cannot."""
+
+    def probe(self, raw_dirty):
+        root = tempfile.mkdtemp(prefix='ntfs-probe-')
+        self.addCleanup(shutil.rmtree, root, True)
+        scanner = tm.load_scanner()
+
+        class FakeMounter:
+            def mount(self, part, kind):
+                return types.SimpleNamespace(status='ok', root=root)
+
+            def release(self, res):
+                pass
+
+        mount = tm.TargetMount(None, {}, 'os-0', True)
+        mount._mounter = FakeMounter()
+        part = scanner.make_part(path='/dev/sdz9', fstype='ntfs', meta=None)
+        original = scanner.raw_ntfs_dirty
+        scanner.raw_ntfs_dirty = lambda dev: raw_dirty
+        try:
+            return mount._probe(scanner, part, 'ntfs', 'windows', [])
+        finally:
+            scanner.raw_ntfs_dirty = original
+
+    def test_unreadable_or_dirty_flag_refuses_and_clean_passes(self):
+        for value, needle in ((None, 'cannot confirm'), (True, 'dirty')):
+            with self.subTest(raw=value):
+                with self.assertRaises(tm.TargetMountError) as ctx:
+                    self.probe(value)
+                self.assertIn(needle, str(ctx.exception))
+        self.assertEqual(self.probe(False), {'subvol': None, 'boot': None})
+
+
 if __name__ == '__main__':
     unittest.main()
