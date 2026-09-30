@@ -1,5 +1,440 @@
 {
   "catalog_version": "1",
   "domain": "os-linux",
-  "actions": []
+  "actions": [
+    {
+      "action_id": "os-linux.dpkg-configure-pending",
+      "title": "Finish half-configured packages in the offline Linux system (chroot dpkg --configure -a)",
+      "title_id": "Selesaikan konfigurasi paket setengah jadi pada Linux offline (chroot dpkg --configure -a)",
+      "scope": "os",
+      "platforms": [
+        "live-linux"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "requires_target_rw": true,
+      "triggers": [
+        {
+          "check_id": "linux-package-state",
+          "status": [
+            "fail",
+            "warn"
+          ]
+        },
+        {
+          "check_id": "linux-dpkg-lock",
+          "status": [
+            "warn"
+          ]
+        }
+      ],
+      "params": [
+        {
+          "name": "target_root",
+          "type": "target_root"
+        }
+      ],
+      "preconditions": [
+        {
+          "argv": [
+            "chroot",
+            "{target_root}",
+            "dpkg",
+            "--version"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "dpkg",
+          "--configure",
+          "-a"
+        ],
+        "timeout_seconds": 1800
+      },
+      "verify": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "apt-get",
+          "check",
+          "-q"
+        ]
+      },
+      "rollback": {
+        "kind": "restore-backup",
+        "doc": "docs/os-repair.md#rollback-linux"
+      },
+      "backup": {
+        "required": true,
+        "what": "package-state"
+      },
+      "doc": "docs/os-repair.md#linux-dpkg-configure"
+    },
+    {
+      "action_id": "os-linux.initramfs-create",
+      "title": "Create missing initramfs images in the offline Linux system (chroot update-initramfs -c)",
+      "title_id": "Buat initramfs yang hilang pada Linux offline (chroot update-initramfs -c)",
+      "scope": "os",
+      "platforms": [
+        "live-linux"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "requires_target_rw": true,
+      "triggers": [
+        {
+          "check_id": "linux-kernel-initrd",
+          "status": [
+            "fail"
+          ]
+        }
+      ],
+      "params": [
+        {
+          "name": "target_root",
+          "type": "target_root"
+        }
+      ],
+      "preconditions": [
+        {
+          "argv": [
+            "chroot",
+            "{target_root}",
+            "update-initramfs",
+            "-h"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "update-initramfs",
+          "-c",
+          "-k",
+          "all"
+        ],
+        "timeout_seconds": 900
+      },
+      "verify": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "test",
+          "-s",
+          "/boot/initrd.img"
+        ]
+      },
+      "rollback": {
+        "kind": "restore-backup",
+        "doc": "docs/os-repair.md#rollback-linux"
+      },
+      "backup": {
+        "required": true,
+        "what": "file-copy"
+      },
+      "doc": "docs/os-repair.md#linux-initramfs"
+    },
+    {
+      "action_id": "os-linux.update-initramfs",
+      "title": "Rebuild existing initramfs images in the offline Linux system (chroot update-initramfs -u)",
+      "title_id": "Bangun ulang initramfs yang ada pada Linux offline (chroot update-initramfs -u)",
+      "scope": "os",
+      "platforms": [
+        "live-linux"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "requires_target_rw": true,
+      "triggers": [],
+      "params": [
+        {
+          "name": "target_root",
+          "type": "target_root"
+        }
+      ],
+      "preconditions": [
+        {
+          "argv": [
+            "chroot",
+            "{target_root}",
+            "update-initramfs",
+            "-h"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "update-initramfs",
+          "-u",
+          "-k",
+          "all"
+        ],
+        "timeout_seconds": 900
+      },
+      "verify": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "test",
+          "-s",
+          "/boot/initrd.img"
+        ]
+      },
+      "rollback": {
+        "kind": "restore-backup",
+        "doc": "docs/os-repair.md#rollback-linux"
+      },
+      "backup": {
+        "required": true,
+        "what": "file-copy"
+      },
+      "doc": "docs/os-repair.md#linux-initramfs"
+    },
+    {
+      "action_id": "os-linux.update-grub",
+      "title": "Regenerate grub.cfg in the offline Linux system (chroot update-grub)",
+      "title_id": "Buat ulang grub.cfg pada Linux offline (chroot update-grub)",
+      "scope": "os",
+      "platforms": [
+        "live-linux"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "requires_target_rw": true,
+      "triggers": [
+        {
+          "check_id": "linux-grub-config",
+          "status": [
+            "fail",
+            "warn"
+          ]
+        }
+      ],
+      "params": [
+        {
+          "name": "target_root",
+          "type": "target_root"
+        }
+      ],
+      "preconditions": [
+        {
+          "argv": [
+            "chroot",
+            "{target_root}",
+            "update-grub",
+            "--version"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "update-grub"
+        ],
+        "timeout_seconds": 300
+      },
+      "verify": {
+        "argv": [
+          "chroot",
+          "{target_root}",
+          "grub-script-check",
+          "/boot/grub/grub.cfg"
+        ]
+      },
+      "rollback": {
+        "kind": "restore-backup",
+        "doc": "docs/os-repair.md#rollback-linux"
+      },
+      "backup": {
+        "required": true,
+        "what": "file-copy"
+      },
+      "doc": "docs/os-repair.md#linux-grub"
+    },
+    {
+      "action_id": "os-linux.dpkg-configure-host",
+      "title": "Finish half-configured packages on this Linux (dpkg --configure -a)",
+      "title_id": "Selesaikan konfigurasi paket setengah jadi pada Linux ini (dpkg --configure -a)",
+      "scope": "os",
+      "platforms": [
+        "linux-host"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "triggers": [
+        {
+          "check_id": "linux-package-state",
+          "status": [
+            "fail",
+            "warn"
+          ]
+        }
+      ],
+      "preconditions": [
+        {
+          "argv": [
+            "dpkg",
+            "--version"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "dpkg",
+          "--configure",
+          "-a"
+        ],
+        "timeout_seconds": 1800
+      },
+      "verify": {
+        "argv": [
+          "apt-get",
+          "check",
+          "-q"
+        ]
+      },
+      "rollback": {
+        "kind": "restore-backup",
+        "doc": "docs/os-repair.md#rollback-linux"
+      },
+      "backup": {
+        "required": true,
+        "what": "package-state"
+      },
+      "doc": "docs/os-repair.md#linux-dpkg-configure"
+    },
+    {
+      "action_id": "os-linux.apt-fix-broken",
+      "title": "Fix broken package dependencies on this Linux (apt-get --fix-broken install)",
+      "title_id": "Perbaiki dependensi paket rusak pada Linux ini (apt-get --fix-broken install)",
+      "scope": "os",
+      "platforms": [
+        "linux-host"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "triggers": [
+        {
+          "check_id": "linux-package-state",
+          "status": [
+            "fail"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "apt-get",
+          "--fix-broken",
+          "install",
+          "-y",
+          "-o",
+          "Dpkg::Options::=--force-confold"
+        ],
+        "timeout_seconds": 1800
+      },
+      "verify": {
+        "argv": [
+          "apt-get",
+          "check",
+          "-q"
+        ]
+      },
+      "rollback": {
+        "kind": "restore-backup",
+        "doc": "docs/os-repair.md#rollback-linux"
+      },
+      "backup": {
+        "required": true,
+        "what": "package-state"
+      },
+      "doc": "docs/os-repair.md#linux-apt-fix"
+    },
+    {
+      "action_id": "os-linux.restart-failed-units",
+      "title": "Restart one failed systemd unit on this Linux",
+      "title_id": "Restart satu unit systemd yang gagal pada Linux ini",
+      "scope": "os",
+      "platforms": [
+        "linux-host"
+      ],
+      "target_families": [
+        "linuxmint",
+        "linux-other"
+      ],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [
+        {
+          "check_id": "linux-failed-units",
+          "status": [
+            "warn",
+            "fail"
+          ]
+        }
+      ],
+      "params": [
+        {
+          "name": "unit",
+          "type": "service_name"
+        }
+      ],
+      "execute": {
+        "argv": [
+          "systemctl",
+          "restart",
+          "{unit}"
+        ],
+        "timeout_seconds": 120
+      },
+      "verify": {
+        "argv": [
+          "systemctl",
+          "is-failed",
+          "--quiet",
+          "{unit}"
+        ],
+        "expect_exit": [
+          1
+        ]
+      },
+      "rollback": {
+        "kind": "none"
+      },
+      "backup": {
+        "required": false
+      },
+      "doc": "docs/os-repair.md#linux-units"
+    }
+  ]
 }

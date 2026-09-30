@@ -9,12 +9,12 @@ Status labels: **Implemented** (source level, `make check`), **Hardware-required
 | Part | Status |
 |---|---|
 | Evidence schema 1.2 (`scope`, `repair_policy`, `repair_proposals`, `hw-*` / `sw-*` / new OS check IDs, up to 160 checks) | Implemented |
-| Catalog schema + invariants (`rescue-ai/v1/repair-catalog.schema.json`, `scripts/lib/repair_catalog.py`) | Implemented; `hardware.json` has 4 actions ([hardware](hardware.md)), `software.json` 6 ([software](software.md)); OS catalogs follow in #16 |
+| Catalog schema + invariants (`rescue-ai/v1/repair-catalog.schema.json`, `scripts/lib/repair_catalog.py`) | Implemented; `hardware.json` 4 actions ([hardware](hardware.md)), `software.json` 6 ([software](software.md)), `os-linux.json` 7 and `os-windows.json` 4 ([OS repair](os-repair.md)); `os-macos.json` is empty on purpose |
 | Policy engine `scripts/rescue-repair.py` (live USB and Linux host) | Implemented; real repairs on real disks are Hardware-required |
 | Hash-chained journal (`rescue-ai/v1/repair-journal.schema.json`) | Implemented |
 | Detection module hooks: `scripts/rescue_modules/` (scanner + Linux host), `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh` | Implemented (stubs; modules are filled by #15-#17) |
 | AI proposals (`rescue-proposals` block, validated against the catalog) | Implemented; the real model response is Environment-blocked |
-| Target mount provider for offline OS repairs (`scripts/lib/target_mount.py`) | Planned (#16); actions that need it are journaled as `unavailable` |
+| Target mount provider for offline OS repairs (`scripts/lib/target_mount.py`) | Implemented ([OS repair](os-repair.md)); real mounts are Hardware-required |
 | Repair execution on Windows and macOS hosts | Planned; those launchers record scope and policy but only detect |
 
 ```mermaid
@@ -116,9 +116,9 @@ Test hook: `RESCUE_REPAIR_TEST_PATH` replaces the fixed `PATH` (absolute directo
 
 Module output is data. The collectors validate every item against the evidence contract and drop anything else with a warning. A module that raises, exits non-zero, or emits garbage never breaks the collection. Hardware checks carry no `target_ref`. In host mode OS and software checks get `os-0`. Modules must be read-only: no writes, mounts, unlocking, or repairs; those are catalog actions.
 
-## Target mount provider (planned, #16)
+## Target mount provider
 
-`scripts/lib/target_mount.py` will expose `open_target(evidence_path, evidence, target_ref, rw)`, which returns a context manager yielding the target's mount point. It re-identifies the target the same way `scan-target-os.py` does, mounts it read-write only when `rw` is true (the operator approved an action with `requires_target_rw`), and always unmounts. Until it exists, actions with a `target_root` parameter are journaled `target-rw unavailable provider-unavailable` and never run.
+`scripts/lib/target_mount.py` exposes `open_target(evidence_path, evidence, target_ref, rw)`, which returns a context manager yielding the target's mount point. It re-identifies the target the same way `scan-target-os.py` does and mounts it read-write only when `rw` is true (the operator approved an action with `requires_target_rw`), and always unmounts. It is implemented; see [os-repair.md](os-repair.md) for mount options and refusal rules. Outside its fixture test mode it refuses to run unless the rescue live medium is mounted (`/cdrom`, `/run/live/medium`, or `/isodevice`). A refusal is journaled `target-rw fail` and the action never runs.
 
 ## Untuk operator (Bahasa Indonesia)
 

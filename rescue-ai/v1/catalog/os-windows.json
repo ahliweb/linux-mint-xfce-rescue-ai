@@ -1,5 +1,186 @@
 {
   "catalog_version": "1",
   "domain": "os-windows",
-  "actions": []
+  "actions": [
+    {
+      "action_id": "os-windows.sfc-verify",
+      "title": "Check protected Windows system files without repairing (sfc /verifyonly)",
+      "title_id": "Periksa file sistem Windows tanpa memperbaiki (sfc /verifyonly)",
+      "scope": "os",
+      "platforms": [
+        "windows-host"
+      ],
+      "target_families": [
+        "windows"
+      ],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [
+        {
+          "check_id": "windows-system-files",
+          "status": [
+            "warn",
+            "unknown"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "sfc.exe",
+          "/verifyonly"
+        ],
+        "timeout_seconds": 3600
+      },
+      "verify": {
+        "argv": [
+          "sfc.exe",
+          "/verifyonly"
+        ],
+        "timeout_seconds": 3600
+      },
+      "rollback": {
+        "kind": "none"
+      },
+      "backup": {
+        "required": false
+      },
+      "doc": "docs/os-repair.md#windows-sfc"
+    },
+    {
+      "action_id": "os-windows.sfc-scannow",
+      "title": "Repair protected Windows system files (sfc /scannow)",
+      "title_id": "Perbaiki file sistem Windows yang dilindungi (sfc /scannow)",
+      "scope": "os",
+      "platforms": [
+        "windows-host"
+      ],
+      "target_families": [
+        "windows"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "triggers": [
+        {
+          "check_id": "windows-system-files",
+          "status": [
+            "warn"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "sfc.exe",
+          "/scannow"
+        ],
+        "timeout_seconds": 3600
+      },
+      "verify": {
+        "argv": [
+          "sfc.exe",
+          "/verifyonly"
+        ],
+        "timeout_seconds": 3600
+      },
+      "rollback": {
+        "kind": "manual",
+        "doc": "docs/os-repair.md#rollback-windows"
+      },
+      "backup": {
+        "required": true,
+        "what": "system-restore-point"
+      },
+      "doc": "docs/os-repair.md#windows-sfc"
+    },
+    {
+      "action_id": "os-windows.dism-restorehealth",
+      "title": "Repair the Windows component store (DISM /Online /Cleanup-Image /RestoreHealth)",
+      "title_id": "Perbaiki component store Windows (DISM /Online /Cleanup-Image /RestoreHealth)",
+      "scope": "os",
+      "platforms": [
+        "windows-host"
+      ],
+      "target_families": [
+        "windows"
+      ],
+      "risk": "destructive",
+      "requires_root": true,
+      "triggers": [
+        {
+          "check_id": "windows-system-files",
+          "status": [
+            "warn"
+          ]
+        }
+      ],
+      "execute": {
+        "argv": [
+          "DISM.exe",
+          "/Online",
+          "/Cleanup-Image",
+          "/RestoreHealth"
+        ],
+        "timeout_seconds": 7200
+      },
+      "verify": {
+        "argv": [
+          "DISM.exe",
+          "/Online",
+          "/Cleanup-Image",
+          "/CheckHealth"
+        ],
+        "timeout_seconds": 600
+      },
+      "rollback": {
+        "kind": "manual",
+        "doc": "docs/os-repair.md#rollback-windows"
+      },
+      "backup": {
+        "required": true,
+        "what": "system-restore-point"
+      },
+      "doc": "docs/os-repair.md#windows-dism"
+    },
+    {
+      "action_id": "os-windows.chkdsk-scan",
+      "title": "Scan the system volume online, read-only (chkdsk C: /scan)",
+      "title_id": "Pindai volume sistem secara online, read-only (chkdsk C: /scan)",
+      "scope": "os",
+      "platforms": [
+        "windows-host"
+      ],
+      "target_families": [
+        "windows"
+      ],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [],
+      "execute": {
+        "argv": [
+          "chkdsk.exe",
+          "C:",
+          "/scan"
+        ],
+        "expect_exit": [
+          0,
+          1
+        ],
+        "timeout_seconds": 7200
+      },
+      "verify": {
+        "argv": [
+          "chkdsk.exe",
+          "C:",
+          "/scan"
+        ],
+        "timeout_seconds": 7200
+      },
+      "rollback": {
+        "kind": "none"
+      },
+      "backup": {
+        "required": false
+      },
+      "doc": "docs/os-repair.md#windows-chkdsk"
+    }
+  ]
 }
