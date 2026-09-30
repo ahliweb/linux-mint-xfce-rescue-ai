@@ -504,11 +504,13 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.calls()[0].startswith('sudo -n -- '), self.calls())
 
-    def test_target_root_without_provider_is_unavailable(self):
+    def test_target_root_provider_refusal_is_journaled_and_nothing_runs(self):
+        # scripts/lib/target_mount.py exists (ahliweb/linux-mint-xfce-rescue-ai#16): on this machine it
+        # cannot re-identify the fixture evidence's target, so the action must fail before running.
         r = self.engine('--select', 'os-linux.test-mount:os-0', '--approve', 'os-linux.test-mount', '--scope', 'os')
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(self.calls(), [])
-        self.assertEqual(self.stages('os-linux.test-mount')[-1], ('target-rw', 'unavailable'))
+        self.assertEqual(self.stages('os-linux.test-mount')[-1], ('target-rw', 'fail'))
 
     def test_select_is_validated(self):
         self.assertEqual(self.engine('--select', 'hw.nope').returncode, 2)

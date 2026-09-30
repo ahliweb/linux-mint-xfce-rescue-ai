@@ -19,16 +19,19 @@ The launcher has already scanned the internal disks read-only before Hermes star
 - `windows-pending-updates` warn: interrupted updates; suggest booting Windows Recovery / letting the update finish rather than editing files.
 - `windows-crash-dumps` count > 0: recurring blue screens; suggest reviewing them from within Windows or the Windows Recovery Environment.
 - `encryption: bitlocker`: the disk is not readable here. Stop and ask for the BitLocker recovery key that the operator holds; never try to unlock, guess, or bypass it.
-- `boot-loader-files` fail: the EFI System Partition lacks the Microsoft boot files; describe it, propose Windows Recovery Environment startup repair as an operator-approved step with a backup.
+- `boot-loader-files` fail: the EFI System Partition lacks the Microsoft boot files; describe it and point the operator to Windows Recovery Environment startup repair. There is no catalog action for it; never reinstall the Windows bootloader from here.
+- `windows-boot-config` fail/unknown, `windows-system-files` warn, `windows-restore-points` warn: report them as facts. On a running Windows host the catalog offers `os-windows.sfc-verify` (safe) and, after a restore point and typed approval, `os-windows.sfc-scannow` / `os-windows.dism-restorehealth`; there is no offline Windows repair from this live system.
 
 ## Linux Mint / other Linux
 
 - `linux-fstab-consistency` fail: an `/etc/fstab` entry points at a UUID/LABEL that is not present (disk replaced, partition changed). Propose reviewing the entry with the operator; do not edit the target's `fstab` yourself.
-- `linux-kernel-initrd` fail: a kernel has no matching initrd. Suggest a chroot-based initramfs rebuild only as an approved, backed-up step described in words.
-- `linux-package-state` warn/fail: half-installed or half-configured packages; suggest finishing the package configuration from the installed system after approval.
+- `linux-kernel-initrd` fail: a kernel has no matching initrd. Propose the catalog action `os-linux.initramfs-create` (or `os-linux.update-initramfs` for an existing one); it needs the operator's approval, a backup reference, and a read-write remount of the target.
+- `linux-package-state` warn/fail, `linux-dpkg-lock` warn: half-configured packages or an interrupted dpkg. Propose `os-linux.dpkg-configure-pending` (offline, with a package-state backup) and explain it in words; on a Linux host `os-linux.dpkg-configure-host` or `os-linux.apt-fix-broken`.
+- `linux-grub-config` fail/warn: `grub.cfg` is missing, empty, or points at removed kernels. Propose `os-linux.update-grub` (regenerates the file only, no bootloader reinstall).
+- `linux-boot-partition-space` warn/fail and `linux-apt-sources` warn: describe the finding; there is no catalog action, so ask the operator what may be removed or re-enabled.
 - `disk-free-space` warn/fail: a full root filesystem commonly breaks login and package tools; ask the operator what may be removed, never delete on your own.
 - `encryption: luks`: not unlocked here; needs the operator's passphrase and their decision.
-- `boot-loader-files` fail/warn: the boot entry may be missing; describe it and require approval, a backup, and a rollback plan before any bootloader change.
+- `boot-loader-files` fail/warn: the boot entry may be missing; describe it. There is no catalog action for `grub-install`/`efibootmgr`, so do not propose a bootloader reinstall.
 
 ## macOS
 
@@ -36,7 +39,7 @@ The launcher has already scanned the internal disks read-only before Hermes star
 - `access: not-mounted-unsupported`: APFS could not be read (`fsapfsmount` missing); say the macOS volume was not inspected.
 - `macos-filevault` warn / `encryption: filevault`: not unlocked; the operator needs the FileVault recovery key or account password.
 - `macos-crash-reports` count > 0: kernel panics were recorded; suggest reviewing them from macOS Recovery.
-- Direct the operator to macOS Recovery (Disk Utility First Aid) for any repair; do not attempt APFS repair from Linux.
+- `macos-disk-verify` is only a status (`unknown` from Linux). Direct the operator to macOS Recovery (Disk Utility First Aid) for any repair; there are no macOS catalog actions and APFS is never repaired from Linux.
 
 ## Forbidden actions
 

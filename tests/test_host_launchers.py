@@ -603,7 +603,7 @@ class MacLauncherTests(unittest.TestCase):
         # Detection modules (hw-*, sw-*) add their own checks; they are tested in their own test files.
         self.assertEqual([c for c in checks if not c.startswith(('hw-', 'sw-'))], ['os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status',
                                         'macos-crash-reports', 'macos-startup-disk', 'disk-free-space',
-                                        'network-connectivity'])
+                                        'network-connectivity', 'macos-disk-verify'])
         for name in ('os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status', 'macos-startup-disk'):
             self.assertEqual(checks[name]['status'], 'pass', name)
         self.assertEqual(checks['macos-crash-reports']['status'], 'warn')
