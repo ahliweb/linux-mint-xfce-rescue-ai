@@ -13,7 +13,7 @@ flowchart LR
     Q --> U
 ```
 
-This is the architecture as implemented at `VERSION` `0.4.1`. Status labels: **Implemented** (source level, `make check`), **Hardware-required**, **Environment-blocked**, **Planned** (see [testing](testing.md)). Feature details live in the linked documents; this page shows how the parts fit together.
+This is the architecture as implemented at `VERSION` `0.5.0`. Status labels: **Implemented** (source level, `make check`), **Hardware-required**, **Environment-blocked**, **Planned** (see [testing](testing.md)). Feature details live in the linked documents; this page shows how the parts fit together.
 
 The companion boots from Linux Mint XFCE selected through Ventoy (or runs from the USB on a running Windows, macOS, or Linux) and drives an isolated Hermes Rescue profile. The target PC's CPU/RAM/network are used by the live session; OpenCode Go provides cloud inference.
 

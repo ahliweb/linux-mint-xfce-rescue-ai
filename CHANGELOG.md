@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-01
+
+Fixes from the first physical boot on a Windows laptop. The live preflight no longer stops the run: under Ventoy the USB is detected through `/dev/mapper/ventoy`, and without Wi-Fi the local read-only scan, catalog repairs and report still run. The terminal never closes silently. New guide for the Secure Boot first boot.
+
 ### Added
 
 - `docs/secure-boot.md`: operator guide (Bahasa Indonesia) for the Secure Boot error on the first boot of the USB on a new machine. Covers the one-time Ventoy MOK enrollment (`ENROLL_THIS_KEY_IN_MOKMANAGER.cer` on `VTOYEFI`), firmware options to check when MokManager is not offered, a BitLocker recovery-key warning, and recording the state with `mokutil --sb-state`. The physical steps are Hardware-required. ahliweb/linux-mint-xfce-rescue-ai#38
