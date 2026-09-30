@@ -235,6 +235,30 @@ class LinuxLauncherTests(unittest.TestCase):
         self.assertNotIn(DUMMY_KEY, one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
 
     @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_failed_repair_exits_1_like_the_windows_and_macos_launchers(self):
+        # Only a fixture catalog: auto-safe must never reach real actions on the test machine.
+        catalog = self.bundle / 'rescue-ai' / 'v1' / 'catalog'
+        for f in catalog.glob('*.json'):
+            f.unlink()
+        (catalog / 'hardware.json').write_text(json.dumps({'catalog_version': '1', 'domain': 'hardware', 'actions': [{
+            'action_id': 'hw.test-fails', 'title': 'Test action that fails', 'title_id': 'Aksi uji yang gagal',
+            'scope': 'hardware.network', 'platforms': ['linux-host'], 'risk': 'safe',
+            'triggers': [{'check_id': 'network-connectivity', 'status': ['unknown']}],
+            'execute': {'argv': ['rescue-test-failer']}, 'verify': {'argv': ['rescue-test-failer']},
+            'rollback': {'kind': 'none'}, 'backup': {'required': False}, 'doc': 'docs/hardware.md'}]}))
+        fakebin = self.tmp / 'fakebin'
+        fakebin.mkdir()
+        (fakebin / 'rescue-test-failer').write_text('#!/bin/sh\nexit 3\n')
+        (fakebin / 'rescue-test-failer').chmod(0o755)
+        base = self._serve(200)
+        proc = self.run_launcher('--repair-policy', 'auto-safe', env=clean_env(
+            RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY, RESCUE_REPAIR_TEST_PATH=str(fakebin)))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        journal = self.bundle / 'reports' / 'repairs' / 'journal.jsonl'
+        stages = [(r['stage'], r['outcome']) for r in map(json.loads, journal.read_text().splitlines())]
+        self.assertIn(('execute', 'fail'), stages)
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
     def test_http_error_exit_4(self):
         base = self._serve(500)
         proc = self.run_launcher(env=clean_env(RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY))

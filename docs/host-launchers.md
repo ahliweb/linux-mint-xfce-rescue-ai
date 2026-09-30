@@ -104,13 +104,15 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | Kode | Arti |
 |---|---|
 | `0` | Berhasil (atau evidence-only / dry-run) |
-| `1` | Windows dan macOS: sebuah aksi perbaikan gagal atau di-rollback ([host-repair.md](host-repair.md)) |
-| `2` | Evidence tidak valid; tidak ada yang dikirim |
+| `1` | Sebuah aksi perbaikan gagal atau di-rollback, di ketiga launcher ([host-repair.md](host-repair.md), [repair-framework.md](repair-framework.md)) |
+| `2` | Evidence tidak valid (tidak ada yang dikirim), atau katalog perbaikan / pilihan aksi tidak valid |
 | `3` | `OPENCODE_GO_API_KEY` tidak ditemukan; evidence tetap tersimpan, panduan dwibahasa dicetak |
 | `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak |
-| `5` | Bundle tidak ditemukan atau `reports/` di USB tidak bisa ditulis (USB write-protect?) |
+| `5` | Bundle tidak ditemukan, `reports/` di USB tidak bisa ditulis (USB write-protect?), atau journal perbaikan tidak bisa ditulis |
 | `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle; evidence tetap tersimpan |
 | `64` | Argumen salah (termasuk `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
+
+Kode `3` dan `4` didahulukan atas `1` dan `2`: bila analisis gagal, kode analisis yang dilaporkan, dan hasil perbaikan tetap ada di journal dan laporan proses.
 
 ## Output (semuanya di USB)
 
