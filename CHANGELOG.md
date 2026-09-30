@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `docs/secure-boot.md`: operator guide (Bahasa Indonesia) for the Secure Boot error on the first boot of the USB on a new machine. Covers the one-time Ventoy MOK enrollment (`ENROLL_THIS_KEY_IN_MOKMANAGER.cer` on `VTOYEFI`), firmware options to check when MokManager is not offered, a BitLocker recovery-key warning, and recording the state with `mokutil --sb-state`. The physical steps are Hardware-required. ahliweb/linux-mint-xfce-rescue-ai#38
+
 ## [0.4.1] - 2026-09-30
 
 Documentation accuracy patch; no code or behavior change. The USB was updated to 0.4.0 (file-level, persistence image verified by read-back); the `rescue-boot-diagnosis` skill wording below reaches the USB with the next persistence rebuild.
