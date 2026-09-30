@@ -53,15 +53,15 @@ Contoh:
 ```powershell
 RESCUE-WINDOWS.cmd -ListRepairs
 RESCUE-WINDOWS.cmd -Approve os-windows.sfc-verify
-RESCUE-WINDOWS.cmd -Select sw.winget-upgrade -Param sw.winget-upgrade.package=Mozilla.Firefox -Scope software.selected -Packages Mozilla.Firefox
+RESCUE-WINDOWS.cmd -Select sw.winget-upgrade-package -Param sw.winget-upgrade-package.package=Mozilla.Firefox -BackupRef D:\restore-point.txt -Scope software.selected -Packages Mozilla.Firefox
 ```
 
 ```bash
 zsh RESCUE-MACOS.command --list-repairs
-zsh RESCUE-MACOS.command --approve os-macos.verify-volume --no-pause
+zsh RESCUE-MACOS.command --repair-policy detect-only --no-pause   # katalog macOS kosong: tidak ada aksi yang dapat dieksekusi
 ```
 
-Nama aksi di atas hanya contoh; daftar aktual ada di katalog dan tercetak sebagai "Repair plan".
+Daftar aksi aktual ada di katalog dan tercetak sebagai "Repair plan". `os-macos.json` sengaja kosong, jadi launcher macOS tidak punya aksi perbaikan untuk dieksekusi ([os-repair.md](os-repair.md)); flag perbaikan macOS tetap berlaku bila katalog kelak berisi aksi.
 
 ## Kebijakan
 
