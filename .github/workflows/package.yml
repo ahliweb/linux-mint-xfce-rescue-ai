@@ -1,0 +1,539 @@
+name: package
+
+# Publishes credential-free release packages to GitHub Packages (ghcr.io):
+#   <repo>/bundle:<version>       allowlisted rescue bundle + host launchers (also a GitHub Release asset)
+#   <repo>/persistence:<version>  credential-free casper-rw persistence image (zstd)
+# Only GITHUB_TOKEN is used. Build jobs are read-only; the two publish jobs are
+# the only ones with write permissions and never run on a pull request.
+# Pull requests run the same builds as a dry run (no push, no release).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to package (for example v0.5.0)"
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/package.yml"
+      - "scripts/build-persistence.sh"
+      - "scripts/lib/persistence-container-build.sh"
+      - "scripts/prepare-ventoy-usb.sh"
+      - "scripts/verify-mint-iso.sh"
+      - "Makefile"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.event.pull_request.number || inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # A tag is checked out as refs/tags/<tag> so the content is exactly that release;
+  # a pull request is checked out at its head commit.
+  TARGET_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
+  IS_PR: ${{ github.event_name == 'pull_request' }}
+  MINT_VERSION: "22.3"
+  MINT_ISO: linuxmint-22.3-xfce-64bit.iso
+  MINT_BASE_URL: https://mirrors.kernel.org/linuxmint/stable/22.3
+  MINT_SIGNER_FPR: 27DEB15644C6B3CF3BD7D291300F846BA25BAE09
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      revision: ${{ steps.meta.outputs.revision }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - name: Check out the release ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET_REF }}
+          persist-credentials: false
+
+      - name: Resolve version and revision
+        id: meta
+        run: |
+          set -Eeuo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid VERSION: $version" >&2; exit 1; }
+          tag=''
+          if [[ $IS_PR != true ]]; then
+            tag=${TARGET_REF#refs/tags/}
+            [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid tag: $tag" >&2; exit 1; }
+            [[ ${tag#v} == "$version" ]] || { echo "Tag $tag does not match VERSION $version" >&2; exit 1; }
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "epoch=$(git log -1 --format=%ct)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assemble the bundle (allowlist, same layout as the USB root)
+        env:
+          STAGE: ${{ runner.temp }}/stage
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$STAGE"
+          ./scripts/prepare-ventoy-usb.sh --bundle-only "$STAGE/rescue-omes"
+          # Host launchers go to the USB root, exactly as prepare-ventoy-usb.sh places them.
+          for launcher in RESCUE-WINDOWS.cmd RESCUE-MACOS.command rescue-linux.sh; do
+            [[ -f host/$launcher && ! -L host/$launcher ]] || { echo "Missing host launcher: $launcher" >&2; exit 1; }
+            cp -- "host/$launcher" "$STAGE/$launcher"
+          done
+
+      - name: Assert the bundle is credential-free
+        env:
+          STAGE: ${{ runner.temp }}/stage
+        run: |
+          set -Eeuo pipefail
+          python3 - "$STAGE" <<'PY'
+          import os
+          import re
+          import sys
+
+          stage = sys.argv[1]
+          # Same token shapes as scripts/check-docs.py (split so this file is not itself a hit).
+          patterns = [
+              ("GitHub token", re.compile("gh" + r"[pousr]_[A-Za-z0-9]{30,}")),
+              ("GitHub fine-grained token", re.compile("github" + r"_pat_[A-Za-z0-9_]{20,}")),
+              ("API key (sk- style)", re.compile(r"\bsk" + r"-[A-Za-z0-9_-]{20,}")),
+              ("AWS access key id", re.compile(r"\bAK" + r"IA[0-9A-Z]{16}\b")),
+              ("private key block", re.compile("-----BEGIN [A-Z ]*PRIV" + "ATE KEY-----")),
+              ("JWT", re.compile(r"\bey" + r"J[A-Za-z0-9_-]{8,}\.ey" + r"J[A-Za-z0-9_-]{8,}\.")),
+          ]
+          assignment = re.compile(
+              r"(?im)^\s*(?:export\s+)?[A-Z0-9_]*(?:API_?KEY|TOKEN|PASSWORD|SECRET)[A-Z0-9_]*\s*=\s*['\"]?([^'\"\s#]+)")
+          problems = []
+          for cur, dirs, files in os.walk(stage):
+              for d in list(dirs):
+                  if d == ".git":
+                      problems.append("%s: .git directory" % os.path.join(cur, d))
+              for name in files:
+                  path = os.path.join(cur, name)
+                  rel = os.path.relpath(path, stage)
+                  if name == ".env" or name.startswith(".env.") or (name.endswith(".env") and not name.endswith(".example")):
+                      problems.append("%s: dotenv file" % rel)
+                  if os.path.islink(path):
+                      problems.append("%s: symlink" % rel)
+                      continue
+                  try:
+                      text = open(path, encoding="utf-8").read()
+                  except (UnicodeDecodeError, OSError):
+                      continue
+                  for label, pattern in patterns:
+                      if pattern.search(text):
+                          problems.append("%s: %s" % (rel, label))
+                  if rel.startswith("rescue-omes/config/") or name.endswith(".env") or name.endswith(".env.example"):
+                      for m in assignment.finditer(text):
+                          if m.group(1):
+                              problems.append("%s: key or token assignment with a value" % rel)
+          if os.path.exists(os.path.join(stage, "rescue-omes", "config", "rescue.env")):
+              problems.append("rescue-omes/config/rescue.env must not be in a published bundle")
+          if problems:
+              print("Refusing to publish; findings (values not printed):", file=sys.stderr)
+              for p in sorted(set(problems)):
+                  print("  " + p, file=sys.stderr)
+              sys.exit(1)
+          print("bundle is clean: no dotenv files, .git, symlinks, or secret-shaped strings")
+          PY
+
+      - name: Create the deterministic tarball
+        id: pack
+        env:
+          STAGE: ${{ runner.temp }}/stage
+          VERSION: ${{ steps.meta.outputs.version }}
+          EPOCH: ${{ steps.meta.outputs.epoch }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          dist=$RUNNER_TEMP/dist
+          mkdir -p "$dist"
+          name=rescue-omes-bundle-$VERSION.tar.gz
+          pack() {
+            tar --sort=name --mtime="@$EPOCH" --owner=0 --group=0 --numeric-owner \
+              -cf - -C "$STAGE" . | gzip -n > "$1"
+          }
+          pack "$dist/$name"
+          pack "$RUNNER_TEMP/second.tar.gz"
+          cmp -- "$dist/$name" "$RUNNER_TEMP/second.tar.gz" || { echo 'Tarball is not reproducible' >&2; exit 1; }
+          ( cd "$dist" && sha256sum -- "$name" > "$name.sha256" && sha256sum --check "$name.sha256" )
+          # Release notes: the matching CHANGELOG section (a fallback line when absent).
+          python3 - "$VERSION" "$TAG" > "$dist/release-notes.md" <<'PY'
+          import re
+          import sys
+
+          version, tag = sys.argv[1:3]
+          lines = open("CHANGELOG.md", encoding="utf-8").read().splitlines()
+          out, inside = [], False
+          for line in lines:
+              if re.match(r"^## \[", line):
+                  if inside:
+                      break
+                  inside = line.startswith("## [%s]" % version)
+                  continue
+              if inside:
+                  out.append(line)
+          body = "\n".join(out).strip()
+          if not body:
+              body = "No CHANGELOG section found for %s." % version
+          print(body)
+          print()
+          print("Verify the download with the attached `.sha256` file. The matching OCI packages are")
+          print("`ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/bundle:%s` (credential-free)." % version)
+          PY
+          {
+            echo "tarball=$name"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Bundle $VERSION"
+            echo
+            echo "- revision: \`$REVISION\`"
+            echo "- tarball: \`$name\` ($(stat -c %s "$dist/$name") bytes)"
+            echo "- sha256: \`$(cut -d' ' -f1 "$dist/$name.sha256")\`"
+            echo "- reproducible: two packs are byte-identical"
+            echo "- dry run (pull request): $IS_PR"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the bundle for the publish job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  bundle-publish:
+    if: github.event_name != 'pull_request'
+    needs: bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.bundle.outputs.version }}
+      TAG: ${{ needs.bundle.outputs.tag }}
+      REVISION: ${{ needs.bundle.outputs.revision }}
+      TARBALL: ${{ needs.bundle.outputs.tarball }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download the bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bundle
+          path: dist
+
+      - name: Re-verify the bundle checksum
+        run: |
+          set -Eeuo pipefail
+          cd dist
+          sha256sum --check "$TARBALL.sha256"
+
+      - name: Install oras
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: 1.3.4
+
+      - name: Push the OCI artifact to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          # Password on stdin, never on a command line.
+          printf '%s' "$REGISTRY_PASSWORD" | oras login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          repo=ghcr.io/${GITHUB_REPOSITORY,,}/bundle
+          cd dist
+          oras push "$repo:$VERSION" \
+            --artifact-type application/vnd.ahliweb.rescue-omes.bundle.v1 \
+            --annotation "org.opencontainers.image.source=https://github.com/ahliweb/linux-mint-xfce-rescue-ai" \
+            --annotation "org.opencontainers.image.version=$VERSION" \
+            --annotation "org.opencontainers.image.revision=$REVISION" \
+            --annotation "org.opencontainers.image.description=Credential-free Rescue OMES bundle with host launchers" \
+            --annotation "org.opencontainers.image.licenses=MIT" \
+            "$TARBALL:application/gzip" \
+            "$TARBALL.sha256:text/plain"
+          if [[ $VERSION != *-* ]]; then
+            oras tag "$repo:$VERSION" latest
+          fi
+          oras logout ghcr.io
+
+      - name: Create or update the GitHub Release
+        run: |
+          set -Eeuo pipefail
+          cd dist
+          flags=()
+          [[ $VERSION != *-* ]] || flags+=(--prerelease)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md "${flags[@]}"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$TAG" --notes-file release-notes.md "${flags[@]}"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$TARBALL" "$TARBALL.sha256"
+          {
+            echo "### Published bundle $VERSION"
+            echo
+            echo "- \`ghcr.io/${GITHUB_REPOSITORY,,}/bundle:$VERSION\`"
+            echo "- GitHub Release \`$TAG\` with the tarball and its sha256"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  persistence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      revision: ${{ steps.meta.outputs.revision }}
+      dat_name: ${{ steps.pack.outputs.dat_name }}
+      zst_name: ${{ steps.pack.outputs.zst_name }}
+      dat_sha256: ${{ steps.pack.outputs.dat_sha256 }}
+      zst_sha256: ${{ steps.pack.outputs.zst_sha256 }}
+    steps:
+      - name: Check out the release ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET_REF }}
+          persist-credentials: false
+
+      - name: Resolve version and revision
+        id: meta
+        run: |
+          set -Eeuo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid VERSION: $version" >&2; exit 1; }
+          if [[ $IS_PR != true ]]; then
+            tag=${TARGET_REF#refs/tags/}
+            [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid tag: $tag" >&2; exit 1; }
+            [[ ${tag#v} == "$version" ]] || { echo "Tag $tag does not match VERSION $version" >&2; exit 1; }
+          fi
+          {
+            echo "version=$version"
+            echo "revision=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Free runner disk space
+        run: |
+          set -Eeuo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af
+          df -h
+
+      - name: Install tooling
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnupg xorriso p7zip-full e2fsprogs zstd squashfs-tools fakeroot
+          docker info >/dev/null
+
+      - name: Download the Linux Mint ISO and its signed checksums
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/mint"
+          cd "$RUNNER_TEMP/mint"
+          for f in "$MINT_ISO" sha256sum.txt sha256sum.txt.gpg; do
+            curl --fail --location --silent --show-error --retry 5 --retry-delay 10 \
+              --output "$f" "$MINT_BASE_URL/$f"
+          done
+          ls -l
+
+      - name: Verify the ISO (GPG signature by the pinned Linux Mint key, then SHA-256)
+        run: |
+          set -Eeuo pipefail
+          export GNUPGHOME=$RUNNER_TEMP/gnupg
+          mkdir -m 0700 "$GNUPGHOME"
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            if gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$MINT_SIGNER_FPR"; then ok=1; break; fi
+            sleep $((attempt * 5))
+          done
+          ((ok)) || { echo 'Could not fetch the Linux Mint signing key' >&2; exit 1; }
+          ./scripts/verify-mint-iso.sh \
+            --iso "$RUNNER_TEMP/mint/$MINT_ISO" \
+            --sha256sums "$RUNNER_TEMP/mint/sha256sum.txt" \
+            --signature "$RUNNER_TEMP/mint/sha256sum.txt.gpg" \
+            --signer-fingerprint "$MINT_SIGNER_FPR" \
+            --gpg-homedir "$GNUPGHOME"
+
+      - name: Build the credential-free persistence image
+        id: build
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          ./scripts/build-persistence.sh \
+            --iso "$RUNNER_TEMP/mint/$MINT_ISO" \
+            --output "$RUNNER_TEMP/out/rescue-omes-casper-rw-$VERSION.dat" \
+            --no-provision-secrets 2>&1 | tee "$RUNNER_TEMP/build.log"
+          if grep -q 'Hermes installer is not pinned' "$RUNNER_TEMP/build.log"; then
+            {
+              echo '### Warning: Hermes installer is not pinned'
+              echo
+              echo "The build printed the unpinned-installer warning. Pass --installer-sha256 to pin it."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo '::warning::Hermes installer is not pinned (see docs/persistence.md)'
+          fi
+
+      - name: Assert the image is credential-free (debugfs)
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          img=$RUNNER_TEMP/out/rescue-omes-casper-rw-$VERSION.dat
+          e2fsck -fn "$img"
+          envpath=/upper/home/mint/.local/share/rescue-omes/hermes/env
+          # debugfs exits 0 for a missing path, so look for its "File not found" message.
+          in_image() { ! debugfs -R "stat $1" "$img" 2>&1 | grep -q 'File not found'; }
+          in_image "$envpath" || { echo "hermes/env missing from the image" >&2; exit 1; }
+          debugfs -R "cat $envpath" "$img" > "$RUNNER_TEMP/hermes-env.check" 2>/dev/null
+          # Only the assignment line may mention the key, and its value must be empty.
+          if grep -E '^OPENCODE_GO_API_KEY=' "$RUNNER_TEMP/hermes-env.check" | grep -qvE "^OPENCODE_GO_API_KEY=(''|\"\")?$"; then
+            echo 'hermes/env holds a non-empty OPENCODE_GO_API_KEY; refusing to publish' >&2
+            rm -f "$RUNNER_TEMP/hermes-env.check"
+            exit 1
+          fi
+          if grep -qE "^[A-Z_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z_]*=." "$RUNNER_TEMP/hermes-env.check" \
+             && grep -E "^[A-Z_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z_]*=." "$RUNNER_TEMP/hermes-env.check" | grep -qvE "=(''|\"\")$"; then
+            echo 'hermes/env holds a secret-shaped assignment; refusing to publish' >&2
+            rm -f "$RUNNER_TEMP/hermes-env.check"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/hermes-env.check"
+          # config/rescue.env must not be inside the image's bundle either.
+          if in_image /upper/usr/local/lib/rescue-omes/config/rescue.env; then
+            echo 'config/rescue.env found in the image bundle; refusing to publish' >&2
+            exit 1
+          fi
+          echo 'credential-free assertion: PASS'
+
+      - name: Hash and compress
+        id: pack
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP/out"
+          dat=rescue-omes-casper-rw-$VERSION.dat
+          dat_sha=$(sha256sum -- "$dat" | cut -d' ' -f1)
+          {
+            echo "### Persistence image $VERSION"
+            echo
+            echo "- raw \`.dat\`: $(stat -c %s "$dat") bytes (apparent), sha256 \`$dat_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ $IS_PR == true ]]; then
+            echo '- pull request: built and verified; compression and publishing skipped' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          zstd -T0 -10 --long=27 -q -o "$dat.zst" -- "$dat"
+          zst_sha=$(sha256sum -- "$dat.zst" | cut -d' ' -f1)
+          # Round trip: the compressed file must decompress to the identical image.
+          back=$(zstd -d --long=27 -c -- "$dat.zst" | sha256sum | cut -d' ' -f1)
+          [[ $back == "$dat_sha" ]] || { echo 'zstd round trip mismatch' >&2; exit 1; }
+          {
+            echo "- compressed \`.dat.zst\`: $(stat -c %s "$dat.zst") bytes, sha256 \`$zst_sha\`"
+            echo "- zstd round trip: identical"
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "dat_name=$dat"
+            echo "zst_name=$dat.zst"
+            echo "dat_sha256=$dat_sha"
+            echo "zst_sha256=$zst_sha"
+          } >> "$GITHUB_OUTPUT"
+          printf '%s  %s\n' "$zst_sha" "$dat.zst" > "$dat.zst.sha256"
+          printf '%s  %s\n' "$dat_sha" "$dat" > "$dat.sha256"
+          rm -f -- "$dat"
+          df -h .
+
+      - name: Upload the image for the publish job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: persistence
+          path: ${{ runner.temp }}/out/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  persistence-publish:
+    if: github.event_name != 'pull_request'
+    needs: persistence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.persistence.outputs.version }}
+      REVISION: ${{ needs.persistence.outputs.revision }}
+      DAT_NAME: ${{ needs.persistence.outputs.dat_name }}
+      ZST_NAME: ${{ needs.persistence.outputs.zst_name }}
+      DAT_SHA256: ${{ needs.persistence.outputs.dat_sha256 }}
+      ZST_SHA256: ${{ needs.persistence.outputs.zst_sha256 }}
+    steps:
+      - name: Download the image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: persistence
+          path: out
+
+      - name: Re-verify the compressed image checksum
+        run: |
+          set -Eeuo pipefail
+          cd out
+          actual=$(sha256sum -- "$ZST_NAME" | cut -d' ' -f1)
+          [[ $actual == "$ZST_SHA256" ]] || { echo 'Checksum changed between jobs' >&2; exit 1; }
+
+      - name: Install oras
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: 1.3.4
+
+      - name: Push the OCI artifact to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s' "$REGISTRY_PASSWORD" | oras login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          repo=ghcr.io/${GITHUB_REPOSITORY,,}/persistence
+          cd out
+          oras push "$repo:$VERSION" \
+            --artifact-type application/vnd.ahliweb.rescue-omes.persistence.v1 \
+            --annotation "org.opencontainers.image.source=https://github.com/ahliweb/linux-mint-xfce-rescue-ai" \
+            --annotation "org.opencontainers.image.version=$VERSION" \
+            --annotation "org.opencontainers.image.revision=$REVISION" \
+            --annotation "org.opencontainers.image.description=Credential-free Rescue OMES persistence image (casper-rw, zstd)" \
+            --annotation "org.opencontainers.image.licenses=MIT" \
+            --annotation "org.ahliweb.rescue-omes.dat.sha256=$DAT_SHA256" \
+            --annotation "org.ahliweb.rescue-omes.credential-free=true" \
+            --annotation "org.ahliweb.rescue-omes.note=Built with --no-provision-secrets; contains no API key. Enter OPENCODE_GO_API_KEY in the live session." \
+            "$ZST_NAME:application/zstd" \
+            "$ZST_NAME.sha256:text/plain" \
+            "$DAT_NAME.sha256:text/plain"
+          if [[ $VERSION != *-* ]]; then
+            oras tag "$repo:$VERSION" latest
+          fi
+          oras logout ghcr.io
+          {
+            echo "### Published persistence image $VERSION"
+            echo
+            echo "- \`$repo:$VERSION\`"
+            echo "- raw .dat sha256 \`$DAT_SHA256\`"
+            echo "- .dat.zst sha256 \`$ZST_SHA256\` ($(stat -c %s "$ZST_NAME") bytes)"
+            echo "- credential-free: asserted with debugfs before publishing"
+          } >> "$GITHUB_STEP_SUMMARY"

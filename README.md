@@ -55,6 +55,7 @@ Legend: **Implemented** (source level, covered by `make check`), **Hardware-requ
 | Evidence collector and validator, schema 1.2, config parser | Implemented | [design](docs/design.md), [security model](docs/security-model.md) |
 | Ventoy download, install, preparation, signer-pinned ISO check | Implemented; the USB write and the physical boot are Hardware-required | [below](#prepare-an-existing-ventoy-usb) |
 | Persistence image with Hermes pre-installed | Implemented (needs docker and network); boot with persistence is Hardware-required | [persistence](docs/persistence.md) |
+| Credential-free release packages on GitHub Packages (`bundle`, `persistence`), built in CI | Implemented at source level; the first real publish runs on GitHub (Environment-blocked here) | [persistence](docs/persistence.md#paket-github-tanpa-kredensial) |
 | Hardware readiness preflight | Implemented; meaningful only on the target PC | [design](docs/design.md#hardware-readiness-gate) |
 | Live USB scan of the internal disks and cloud analysis | Implemented; real disks are Hardware-required, the cloud call is Environment-blocked | [target OS scan](docs/target-os-scan.md) |
 | Detection: hardware, OS, software, malware | Implemented; real machines are Hardware-required | [hardware](docs/hardware.md), [OS](docs/os-repair.md), [software](docs/software.md), [malware](docs/malware.md) |

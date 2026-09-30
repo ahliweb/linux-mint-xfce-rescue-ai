@@ -11,6 +11,7 @@ Dokumen ini menjelaskan cara membuat USB rescue yang boot ke Linux Mint 22.3 XFC
 | `scripts/build-persistence.sh` membangun image `casper-rw` (ext4) dari ISO Mint 22.3 yang sudah diverifikasi | Implemented; membutuhkan docker dan jaringan (environment-dependent) |
 | `prepare-ventoy-usb.sh --persistence` menyalin image, verifikasi sha256 read-back, dan menggabungkan entri `persistence` ke `/ventoy/ventoy.json` | Implemented; penulisan ke USB nyata Hardware-required |
 | Autostart XFCE membuka `xfce4-terminal` lalu menjalankan `launch-hermes-rescue.sh --hardware-mode auto`; entri menu aplikasi yang sama untuk menjalankan ulang | Implemented di image; perilaku saat boot Hardware-required |
+| Paket GitHub `bundle` dan `persistence` tanpa kredensial, dibangun di CI ([bagian ini](#paket-github-tanpa-kredensial)) | Implemented di source level; eksekusi pertama di GitHub Environment-blocked dari lingkungan ini |
 | Boot dengan persistence (Ventoy memilih image, casper me-mount `casper-rw`, overlay berfungsi, Hermes tetap ada setelah reboot) | **Hardware-required; belum diverifikasi di lingkungan ini** |
 | Login Hermes ke OpenCode Go dari sesi live | Environment-blocked (butuh API key dan jaringan) |
 | Pembaruan Hermes di dalam sesi live (`hermes update`) | Planned / tidak diuji |
@@ -97,7 +98,7 @@ Catatan: `hermes/.env` di dalam state adalah template milik installer Hermes (ta
 scripts/prepare-ventoy-usb.sh \
   --ventoy-mount /mnt/ventoy \
   --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
-  --sha256sums sha256sum.txt --signature sha256sum.txt.gpg \
+  --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
   --no-provision-secrets \
   --persistence /path/rescue-omes-casper-rw.dat
 ```
@@ -127,6 +128,67 @@ Casper me-mount filesystem berlabel `casper-rw` di `/cow` dan menyusun overlay `
 | Kode Hermes + Python terkelola | `.../hermes/hermes-agent`, `/home/mint/.local/share/uv` |
 
 Konsekuensi: kalau `.dat` hilang, rusak, atau di-replace, state Hermes ikut hilang. Cadangkan `.dat` (saat live session tidak berjalan) sebelum `--replace-persistence`. Data kasus milik target yang dirawat tidak boleh disalin ke media lain tanpa persetujuan: laporan, journal, daftar deteksi, dan karantina menggambarkan mesin pelanggan, sehingga file `.dat` yang berisi run nyata harus diperlakukan sebagai data rahasia.
+
+## Paket GitHub (tanpa kredensial)
+
+```mermaid
+flowchart LR
+    T[Tag v* atau workflow_dispatch] --> W[".github/workflows/package.yml"]
+    W --> V[ISO Mint: GPG + SHA-256]
+    V --> B["build-persistence.sh --no-provision-secrets"]
+    B --> A[Assert debugfs: tanpa key]
+    A --> O["ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/persistence"]
+    W --> U["ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/bundle + GitHub Release"]
+```
+
+Setiap rilis (`ahliweb/linux-mint-xfce-rescue-ai#42`) dipaketkan oleh GitHub Actions ke GitHub Packages dengan `GITHUB_TOKEN` saja. Tidak ada secret repository yang dipakai dan image yang berisi kredensial tidak pernah diunggah. Status: **Implemented** di source level (`tests/test_package_workflow.py`); eksekusi workflow di GitHub dan boot dari image hasil unduhan adalah **Environment-blocked / Hardware-required** sampai dijalankan.
+
+| Paket | Isi |
+|---|---|
+| `ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/bundle:<versi>` | `rescue-omes-bundle-<versi>.tar.gz` (bundle allowlist `rescue-omes/` plus `RESCUE-WINDOWS.cmd`, `RESCUE-MACOS.command`, `rescue-linux.sh` di root) dan file `.sha256`. Tarball dan sha256 yang sama juga menjadi aset GitHub Release. |
+| `ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/persistence:<versi>` | `rescue-omes-casper-rw-<versi>.dat.zst` (zstd) dibangun dari ISO Mint 22.3 yang sudah lolos GPG + SHA-256, dengan `--no-provision-secrets`. Anotasi `org.ahliweb.rescue-omes.dat.sha256` memuat sha256 file `.dat` mentah dan `org.ahliweb.rescue-omes.credential-free=true`. Bukan aset Release karena batas 2 GiB. |
+
+Sebelum diunggah, workflow memastikan dengan `debugfs` bahwa `hermes/env` di image tidak berisi `OPENCODE_GO_API_KEY` yang terisi, bahwa `config/rescue.env` tidak ada, dan bahwa bundle tidak mengandung `.env`, `.git`, atau string berbentuk secret. Bila peringatan installer Hermes tanpa pin muncul saat build, peringatan itu tampil di ringkasan job. Pull request yang menyentuh workflow atau script build hanya menjalankan build kering (tanpa kompresi dan tanpa unggah).
+
+Mengunduh dan memverifikasi (paket harus berstatus public; jika `oras pull` ditolak, admin repository perlu mengubah visibilitas paket sekali di halaman Packages):
+
+```bash
+V=0.5.0
+oras pull ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/persistence:$V -o pkg
+cd pkg
+sha256sum -c rescue-omes-casper-rw-$V.dat.zst.sha256
+zstd -d --long=27 rescue-omes-casper-rw-$V.dat.zst -o rescue-omes-casper-rw-$V.dat
+sha256sum -c rescue-omes-casper-rw-$V.dat.sha256      # cocok dengan anotasi dat.sha256 paket
+oras manifest fetch ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/persistence:$V   # lihat anotasi
+
+oras pull ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/bundle:$V -o bundle
+( cd bundle && sha256sum -c rescue-omes-bundle-$V.tar.gz.sha256 && tar -xzf rescue-omes-bundle-$V.tar.gz )
+```
+
+Menulis ke USB Ventoy memakai `prepare-ventoy-usb.sh` dari bundle yang diekstrak (atau clone repo pada tag yang sama). ISO tetap diverifikasi oleh script itu sendiri:
+
+```bash
+cd bundle/rescue-omes
+scripts/prepare-ventoy-usb.sh \
+  --ventoy-mount /mnt/ventoy \
+  --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
+  --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
+  --no-provision-secrets \
+  --persistence ../../rescue-omes-casper-rw-$V.dat
+# USB sudah punya persistence lama (state Hermes akan HILANG): tambahkan --replace-persistence
+```
+
+`--no-provision-secrets` (atau tanpa `--env-file`, lihat [Menyalin ke USB](#menyalin-ke-usb)) menentukan apakah `config/rescue.env` berisi key di bundle pada USB; itu tidak mengubah image `.dat`, yang dari paket ini selalu tanpa key. `--env-file FILE` menyalin hanya `OPENCODE_GO_API_KEY` ke `config/rescue.env` USB dan membuat USB credential-bearing.
+
+Menambahkan key di sesi live (launcher membaca `<state-dir>/hermes/env` lewat parser allowlist; tanpa key ia mencetak outcome `no-key`, tetap menjalankan scan lokal read-only dan laporan, lalu melewati analisis cloud). Di terminal sesi live:
+
+```bash
+nano /home/mint/.local/share/rescue-omes/hermes/env
+# ubah hanya baris: OPENCODE_GO_API_KEY=''  menjadi  OPENCODE_GO_API_KEY='KEY_ANDA'
+ls -l /home/mint/.local/share/rescue-omes/hermes/env   # harus tetap -rw------- (0600)
+```
+
+Setelah itu jalankan ulang "Hermes Rescue AI" dari menu aplikasi. Key tersimpan di persistence sehingga USB menjadi credential-bearing (lihat [Risiko kredensial](#risiko-kredensial)). Image publik tidak berisi key, dan image yang berisi kredensial tidak boleh diunggah ke paket mana pun; pembangunan paket hanya terjadi di CI.
 
 ## Risiko kredensial
 
