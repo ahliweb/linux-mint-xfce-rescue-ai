@@ -11,3 +11,4 @@ ventoy-download/
 config/*.env
 *.pyc
 evidence.json
+*.dat
