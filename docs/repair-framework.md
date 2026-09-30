@@ -9,7 +9,7 @@ Status labels: **Implemented** (source level, `make check`), **Hardware-required
 | Part | Status |
 |---|---|
 | Evidence schema 1.2 (`scope`, `repair_policy`, `repair_proposals`, `hw-*` / `sw-*` / new OS check IDs, up to 160 checks) | Implemented |
-| Catalog schema + invariants (`rescue-ai/v1/repair-catalog.schema.json`, `scripts/lib/repair_catalog.py`) | Implemented; the shipped catalogs are **empty** until #15-#17 land |
+| Catalog schema + invariants (`rescue-ai/v1/repair-catalog.schema.json`, `scripts/lib/repair_catalog.py`) | Implemented; `hardware.json` has 4 actions ([hardware](hardware.md)); OS and software catalogs follow in #16/#17 |
 | Policy engine `scripts/rescue-repair.py` (live USB and Linux host) | Implemented; real repairs on real disks are Hardware-required |
 | Hash-chained journal (`rescue-ai/v1/repair-journal.schema.json`) | Implemented |
 | Detection module hooks: `scripts/rescue_modules/` (scanner + Linux host), `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh` | Implemented (stubs; modules are filled by #15-#17) |

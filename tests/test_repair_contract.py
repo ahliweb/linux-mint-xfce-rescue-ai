@@ -634,8 +634,9 @@ class ModuleHookTests(unittest.TestCase):
         self.assertIn('failed', ctx.warnings[0])
 
     def test_shipped_stubs_return_nothing(self):
+        # hardware is implemented (tests/test_hardware.py); os and software are still stubs
         for mode in ('live', 'host'):
-            ctx = rescue_modules.Context(mode=mode)
+            ctx = rescue_modules.Context(mode=mode, scope=('os', 'software'))
             self.assertEqual(rescue_modules.collect_system(ctx), [])
             self.assertEqual(rescue_modules.collect_offline_target(ctx, '/nonexistent', {'family': 'linuxmint'}), [])
             self.assertEqual(ctx.warnings, [])
@@ -684,8 +685,12 @@ class ScannerAndAnalyzerTests(unittest.TestCase):
                                 '--scope', 'all,os'], capture_output=True, text=True)
             self.assertEqual(r.returncode, 2)
 
-    def test_analyzer_catalog_text_is_empty_for_the_empty_shipped_catalog(self):
-        self.assertEqual(analyzer.catalog_text(json.loads(LIVE_12.read_text())), '')
+    def test_analyzer_catalog_text_lists_ids_but_never_commands(self):
+        text = analyzer.catalog_text(json.loads(LIVE_12.read_text()))
+        self.assertNotIn('argv', text)
+        self.assertNotIn('execute', text)
+        if text:
+            self.assertTrue(all(row['action_id'] for row in json.loads(text)))
 
     def test_prompt_documents_the_proposal_block(self):
         text = (ROOT / 'profiles/rescue-hermes/analysis-prompt.md').read_text()

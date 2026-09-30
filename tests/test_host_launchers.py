@@ -47,6 +47,8 @@ BASH = shutil.which('bash') or '/bin/bash'
 def clean_env(**extra):
     env = {k: v for k, v in os.environ.items()
            if k not in ('OPENCODE_GO_API_KEY', 'RESCUE_TEST_BASE_URL', 'RESCUE_PS_LIBRARY_ONLY')}
+    # hardware detection reads a (nonexistent) fixture root, never the machine running the tests
+    env.setdefault('RESCUE_HARDWARE_FIXTURE_ROOT', '/nonexistent-hardware-fixture')
     env.update(extra)
     return env
 

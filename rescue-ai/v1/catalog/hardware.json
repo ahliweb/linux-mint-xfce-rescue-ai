@@ -1,5 +1,69 @@
 {
   "catalog_version": "1",
   "domain": "hardware",
-  "actions": []
+  "actions": [
+    {
+      "action_id": "hw.smart-short-selftest",
+      "title": "Run a SMART short self-test (read-only)",
+      "title_id": "Jalankan SMART short self-test (hanya baca)",
+      "scope": "hardware.disk",
+      "platforms": ["live-linux", "linux-host"],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [{"check_id": "smart-health", "status": ["warn", "fail"]}],
+      "params": [{"name": "device", "type": "block_device"}],
+      "execute": {"argv": ["smartctl", "-t", "short", "{device}"], "timeout_seconds": 60},
+      "verify": {"argv": ["smartctl", "-l", "selftest", "{device}"], "timeout_seconds": 60},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/hardware.md#smart"
+    },
+    {
+      "action_id": "hw.nvme-short-selftest",
+      "title": "Run an NVMe short device self-test (read-only)",
+      "title_id": "Jalankan NVMe short device self-test (hanya baca)",
+      "scope": "hardware.disk",
+      "platforms": ["live-linux", "linux-host"],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [{"check_id": "nvme-health", "status": ["warn"]}],
+      "params": [{"name": "device", "type": "block_device"}],
+      "execute": {"argv": ["nvme", "device-self-test", "{device}", "-s", "1"], "timeout_seconds": 60},
+      "verify": {"argv": ["nvme", "self-test-log", "{device}"], "timeout_seconds": 60},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/hardware.md#nvme"
+    },
+    {
+      "action_id": "hw.network-service-restart",
+      "title": "Restart the network manager service",
+      "title_id": "Mulai ulang layanan pengelola jaringan",
+      "scope": "hardware.network",
+      "platforms": ["live-linux", "linux-host"],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [{"check_id": "hw-network-adapter", "status": ["warn"]}],
+      "params": [{"name": "service", "type": "enum", "values": ["NetworkManager", "systemd-networkd"], "default": "NetworkManager"}],
+      "execute": {"argv": ["systemctl", "restart", "{service}"], "timeout_seconds": 60},
+      "verify": {"argv": ["systemctl", "is-active", "{service}"], "timeout_seconds": 30},
+      "rollback": {"kind": "step", "step": {"argv": ["systemctl", "start", "{service}"], "timeout_seconds": 60}},
+      "backup": {"required": false},
+      "doc": "docs/hardware.md#network"
+    },
+    {
+      "action_id": "hw.wifi-rfkill-unblock",
+      "title": "Unblock the Wi-Fi radio (software block only)",
+      "title_id": "Buka blokir radio Wi-Fi (blokir perangkat lunak saja)",
+      "scope": "hardware.network",
+      "platforms": ["live-linux", "linux-host"],
+      "risk": "reversible",
+      "requires_root": true,
+      "triggers": [{"check_id": "hw-wifi", "status": ["warn"]}],
+      "execute": {"argv": ["rfkill", "unblock", "wlan"], "timeout_seconds": 15},
+      "verify": {"argv": ["rfkill", "list", "wlan"], "timeout_seconds": 15},
+      "rollback": {"kind": "step", "step": {"argv": ["rfkill", "block", "wlan"], "timeout_seconds": 15}},
+      "backup": {"required": false},
+      "doc": "docs/hardware.md#wifi"
+    }
+  ]
 }
