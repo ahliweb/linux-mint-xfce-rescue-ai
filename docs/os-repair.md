@@ -13,8 +13,8 @@ Label status: **Implemented** (level source, `make check`), **Hardware-required*
 | Penyedia mount target `scripts/lib/target_mount.py` (mode fixture untuk uji) | Implemented; mount read-write nyata: Hardware-required |
 | Perbaikan Linux offline lewat chroot (`os-linux.dpkg-configure-pending`, `initramfs-create`, `update-initramfs`, `update-grub`) | Implemented di source; eksekusi pada disk nyata: Hardware-required |
 | Perbaikan Linux host (`os-linux.dpkg-configure-host`, `apt-fix-broken`, `restart-failed-units`) | Implemented; `apt-fix-broken` butuh jaringan: Environment-blocked |
-| Tindakan Windows host (`os-windows.*`) | Planned untuk eksekusi: engine Python hanya merencanakan (`--list`); launcher Windows belum mengeksekusi katalog |
-| Perbaikan macOS | Tidak ada tindakan otomatis (lihat bagian Yang sengaja tidak diotomatisasi) |
+| Tindakan Windows host (`os-windows.*`) | Implemented: engine native di `host/rescue-windows.ps1` ([host-repair.md](host-repair.md)), di bawah kebijakan yang sama; engine Python hanya merencanakan (`--list`) untuk `windows-host`. Eksekusi di Windows 10/11 nyata: Hardware-required |
+| Perbaikan macOS | Tidak ada tindakan katalog, sengaja (lihat bagian Yang sengaja tidak diotomatisasi); launcher macOS hanya mendeteksi dan memuat katalog `os-macos.json` yang kosong |
 
 ```mermaid
 flowchart TD

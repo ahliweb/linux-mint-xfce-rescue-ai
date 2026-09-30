@@ -54,7 +54,7 @@ Destructive actions also need `--backup-ref FILE`. The journal records the file'
 
 One file per domain, each owned by one workstream: `hardware.json` (#15), `os-linux.json` / `os-windows.json` / `os-macos.json` (#16), `software.json` (#17), `malware.json` (#20). Action IDs are `<prefix>.<name>` with prefix `hw`, `os-linux`, `os-windows`, `os-macos`, `sw`, or `mw`, and are unique across files. `python3 scripts/lib/repair_catalog.py` validates them (part of `make check`).
 
-Example (illustrative only; the real entries belong to #15):
+Example (abridged from the real `hw.smart-short-selftest` entry in `hardware.json`):
 
 ```json
 {
@@ -101,7 +101,7 @@ Proposals come from catalog triggers (deterministic), the last `rescue-proposals
 
 Exit codes: `0` finished and nothing failed | `1` an action failed or was rolled back, or `--verify-journal` found a broken chain | `2` invalid arguments, evidence, catalog, or analysis | `3` journal not writable.
 
-Test hook: `RESCUE_REPAIR_TEST_PATH` replaces the fixed `PATH` (absolute directories only, announced on stderr). It exists for the offline tests' fake programs.
+Test hooks (for the offline tests only): `RESCUE_REPAIR_TEST_PATH` replaces the fixed `PATH` (absolute directories only, announced on stderr) so fake programs can stand in, and `--catalog-dir DIR` reads the catalog from another directory.
 
 ## Journal
 
