@@ -36,6 +36,8 @@ approved target reachable, and always puts the machine back:
 * Every mount is undone in reverse order in ``__exit__``, also on exceptions and on
   SIGINT/SIGTERM/SIGHUP (the signal is re-delivered after the cleanup). A mount that cannot be
   unmounted is reported loudly and never walked or deleted.
+* Outside the fixture test mode it refuses to run unless the rescue live medium is mounted
+  (``/cdrom``, ``/run/live/medium`` or ``/isodevice``), so it never touches a developer machine or CI runner.
 * Mount and umount run through ``sudo -n`` when the engine is not root. Only fixed argv lists
   are used; no shell.
 
@@ -65,6 +67,8 @@ REF_RE = re.compile(r'^os-[0-7]$')
 BINDS = ('/dev', '/dev/pts', '/proc', '/sys')
 RW_LINUX = 'rw,nosuid,nodev'
 RW_WINDOWS = 'rw,noexec,nosuid,nodev'
+# The provider only touches real disks from the rescue live session (casper/live medium mounted).
+LIVE_MARKERS = ('/cdrom', '/run/live/medium', '/isodevice')
 
 
 class TargetMountError(Exception):
@@ -278,6 +282,10 @@ class TargetMount:
         if wanted.get('encryption') != 'none' or wanted.get('access') != 'read-only-mounted':
             raise TargetMountError('the target is encrypted or was not inspected; it is never unlocked '
                                    '/ target terenkripsi atau tidak diperiksa, tidak pernah dibuka')
+        if not self.fixture_root and not in_live_session():
+            # Never enumerate or mount the disks of a developer machine, CI runner, or running host.
+            raise TargetMountError('offline targets are only mounted from the rescue live session '
+                                   '/ target offline hanya di-mount dari sesi live rescue')
         scanner = load_scanner()
         self._mounter = self._make_mounter(scanner)
         part, kind, target, records = self._identify(scanner, wanted)
@@ -451,6 +459,11 @@ class TargetMount:
                 except OSError:
                     pass
         self.base = None
+
+
+def in_live_session():
+    """True when running from the rescue live USB (test seam)."""
+    return any(os.path.ismount(m) for m in LIVE_MARKERS)
 
 
 def scanner_device_ok(dev):

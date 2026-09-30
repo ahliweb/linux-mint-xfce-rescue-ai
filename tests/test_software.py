@@ -73,7 +73,7 @@ def make_dpkg_root(base, stanzas, lists=True, skip_lists=()):
     return base
 
 
-def run_target(root, family='linuxmint', scope=('all',), packages=()):
+def run_target(root, family='linuxmint', scope=('software',), packages=()):
     ctx = rescue_modules.Context(mode='live', scope=scope, packages=packages)
     checks = rescue_modules.collect_offline_target(ctx, str(root), {'family': family, 'release': 'x'})
     return {c['check_id']: c for c in checks}, ctx
@@ -412,7 +412,10 @@ class EngineTests(unittest.TestCase):
         self.backup = self.tmp / 'pkgstate.tar'
         self.backup.write_bytes(b'x' * 2048)
         self.journal = self.tmp / 'state/repairs/journal.jsonl'
-        self.env = dict(os.environ, RESCUE_REPAIR_TEST_PATH=str(self.bin))
+        (self.tmp / 'no-targets').mkdir()
+        # The mount provider never looks at real disks in tests.
+        self.env = dict(os.environ, RESCUE_REPAIR_TEST_PATH=str(self.bin),
+                        RESCUE_TARGET_MOUNT_FIXTURE_ROOT=str(self.tmp / 'no-targets'))
         self.host_evidence = self.make_host_evidence()
 
     def make_host_evidence(self):
@@ -512,13 +515,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn('docs/software.md#rollback-dpkg', r.stderr + r.stdout)
 
-    def test_target_action_is_unavailable_until_the_mount_provider_exists(self):
+    def test_target_action_fails_closed_when_the_target_cannot_be_mounted(self):
+        # The provider (scripts/lib/target_mount.py) cannot re-identify the target in an empty fixture root.
         r = self.engine('--select', 'sw.dpkg-configure-target:os-0', '--approve', 'sw.dpkg-configure-target',
                         '--backup-ref', self.backup, evidence=self.live_evidence)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(self.calls(), [])
         last = [x for x in self.records() if x['action_id'] == 'sw.dpkg-configure-target'][-1]
-        self.assertEqual((last['stage'], last['outcome']), ('target-rw', 'unavailable'))
+        self.assertEqual((last['stage'], last['outcome']), ('target-rw', 'fail'))
 
     def test_detect_only_never_executes(self):
         r = self.engine('--policy', 'detect-only', '--approve', 'sw.apt-fix-broken', '--backup-ref', self.backup)

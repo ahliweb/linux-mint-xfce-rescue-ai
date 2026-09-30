@@ -199,7 +199,8 @@ class CatalogTests(unittest.TestCase):
 # ------------------------------------------------------------- detection modules
 
 def Ctx(mode='live', fixture_root=None):
-    return rescue_modules.Context(mode=mode, fixture_root=fixture_root)
+    # scope os: the hardware and software modules have their own tests
+    return rescue_modules.Context(mode=mode, scope=('os',), fixture_root=fixture_root)
 
 
 class LinuxChecks(Base):
@@ -515,6 +516,10 @@ class RecordingTarget(tm.TargetMount):
 class RealPathWithFakeMount(Base):
     def setUp(self):
         super().setUp()
+        # These tests drive the real-disk code path with a recorded PRIV_RUN: pretend to be the live session.
+        original_live = tm.in_live_session
+        tm.in_live_session = lambda: True
+        self.addCleanup(setattr, tm, 'in_live_session', original_live)
         linux_tree(self.fx / 'mint', fstab_boot='BOOT-1')
         meta(self.fx, 'mint', fstype='ext4', uuid='ABCD-1234')
         (self.fx / 'bootp').mkdir()
@@ -871,6 +876,31 @@ class RealDiskNtfsProbeTests(unittest.TestCase):
                     self.probe(value)
                 self.assertIn(needle, str(ctx.exception))
         self.assertEqual(self.probe(False), {'subvol': None, 'boot': None})
+
+
+
+class LiveSessionGuardTests(unittest.TestCase):
+    def test_real_disks_are_never_touched_outside_the_live_session(self):
+        evidence = {'target_systems': [{'ref': 'os-0', 'family': 'linuxmint', 'detection': 'live-offline',
+                                        'encryption': 'none', 'access': 'read-only-mounted'}]}
+        env = {k: v for k, v in os.environ.items() if k != tm.FIXTURE_ENV}
+        original, calls = tm.PRIV_RUN, []
+        tm.PRIV_RUN = lambda cmd, timeout=60: calls.append(cmd)
+        saved = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(env)
+        original_live = tm.in_live_session
+        tm.in_live_session = lambda: False
+        try:
+            with self.assertRaises(tm.TargetMountError) as ctx:
+                with tm.open_target(None, evidence, 'os-0', True):
+                    pass
+        finally:
+            tm.PRIV_RUN, tm.in_live_session = original, original_live
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertIn('live session', str(ctx.exception))
+        self.assertEqual(calls, [])
 
 
 if __name__ == '__main__':

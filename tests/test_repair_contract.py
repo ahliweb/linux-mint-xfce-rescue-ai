@@ -375,7 +375,11 @@ class EngineTests(unittest.TestCase):
             backup={'required': True, 'what': 'package-state'},
             rollback={'kind': 'manual', 'doc': 'docs/repair-framework.md#rollback'})])
         self.journal = self.tmp / 'state' / 'repairs' / 'journal.jsonl'
-        self.env = dict(os.environ, RESCUE_REPAIR_TEST_PATH=str(self.bin))
+        provider_fixture = self.tmp / 'no-targets'
+        provider_fixture.mkdir()
+        # The mount provider never looks at real disks in tests.
+        self.env = dict(os.environ, RESCUE_REPAIR_TEST_PATH=str(self.bin),
+                        RESCUE_TARGET_MOUNT_FIXTURE_ROOT=str(provider_fixture))
 
     def engine(self, *args, evidence=LIVE_12):
         cmd = [sys.executable, SCRIPTS / 'rescue-repair.py', '--evidence', evidence, '--catalog-dir', self.catalog,
@@ -505,8 +509,8 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(self.calls()[0].startswith('sudo -n -- '), self.calls())
 
     def test_target_root_provider_refusal_is_journaled_and_nothing_runs(self):
-        # scripts/lib/target_mount.py exists (ahliweb/linux-mint-xfce-rescue-ai#16): on this machine it
-        # cannot re-identify the fixture evidence's target, so the action must fail before running.
+        # scripts/lib/target_mount.py exists (ahliweb/linux-mint-xfce-rescue-ai#16): with an empty provider
+        # fixture it cannot re-identify the evidence's target, so the action must fail before running.
         r = self.engine('--select', 'os-linux.test-mount:os-0', '--approve', 'os-linux.test-mount', '--scope', 'os')
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(self.calls(), [])
