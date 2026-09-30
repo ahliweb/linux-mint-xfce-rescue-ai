@@ -22,6 +22,8 @@ flowchart TD
     R --> H[Hermes + skill rescue-target-os]
 ```
 
+Sejak schema 1.2, launcher meneruskan `--scope`, `--packages`, dan `--repair-policy` (default `approve-each`) ke pemindai, lalu menjalankan `scripts/rescue-repair.py` setelah analisis; lihat [repair-framework.md](repair-framework.md). Pemindai memanggil modul deteksi `scripts/rescue_modules/` untuk PC itu sendiri dan untuk setiap OS yang di-mount read-only, dan menambahkan usulan `catalog-trigger` (hanya `action_id`) ke evidence.
+
 Pemindaian atau analisis yang gagal **tidak** memblokir Hermes: launcher mencetak peringatan dwibahasa dan tetap membuka Hermes. Lewati seluruh langkah ini dengan `--no-target-scan`.
 
 ## Cara menjalankan
@@ -31,6 +33,7 @@ Otomatis lewat autostart XFCE (`launch-hermes-rescue.sh`). Manual:
 ```bash
 ./scripts/launch-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state
 ./scripts/launch-hermes-rescue.sh --state-dir ... --no-target-scan   # tanpa pemindaian/analisis
+./scripts/launch-hermes-rescue.sh --state-dir ... --scope hardware.disk,os --repair-policy detect-only
 ```
 
 Komponen terpisah (untuk uji):
@@ -69,7 +72,7 @@ Partisi data biasa (tanpa OS), partisi Windows Recovery/MSR, dan container recov
 
 ## Check yang dihasilkan
 
-Semua check per target memakai source `offline-target-scan` dan `target_ref` `os-0`..`os-7` (maksimal 8 target; total maksimal 64 check, target yang tidak muat dibuang seluruhnya).
+Semua check per target memakai source `offline-target-scan` dan `target_ref` `os-0`..`os-7` (maksimal 8 target; total maksimal 160 check, target yang tidak muat dibuang seluruhnya).
 
 | Check | Isi |
 |---|---|

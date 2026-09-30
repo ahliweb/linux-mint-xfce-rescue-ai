@@ -38,7 +38,10 @@ flowchart TD
 | Evidence or reports readable by others | Evidence and hardware reports are created `0600` atomically (temp file plus rename) | Implemented |
 | Rescue runs on unsuitable hardware | `check-hardware-readiness.py` gates Hermes on CPU, RAM, display, internet, and USB media; `fail` or `unknown` required checks block | Implemented; results depend on the target PC |
 | Silent provider substitution | OpenCode Go is the only configured provider; `check-hermes-rescue.sh` verifies `provider: custom`, model, and base URL and does not fall back | Implemented |
-| Unsafe repair or disk write | Read-only by default; mutations need approval, backup/image reference, rollback plan, and read-back | Policy Implemented in profile; learning promotion Planned |
+| Unsafe repair or disk write | Read-only by default. Repairs exist only as typed catalog actions (fixed argv, forbidden shells/interpreters/`dd`, typed parameters, risk classes). `rescue-repair.py` requires approval under `approve-each` (default); `auto-safe` is opt-in and limited to `safe` catalog-trigger actions. Destructive actions need `--backup-ref` and the typed `action_id`. Every action runs verify, then an automatic rollback or a manual rollback doc | Implemented (catalogs empty until #15-#17); real repairs Hardware-required |
+| Model output becomes a repair command | The model can only name `action_id`s in a `rescue-proposals` block (size-limited, exact catalog IDs, applicable platform/scope/family); argv and parameter values never come from it; AI proposals are never auto-run | Implemented |
+| Repair history altered after the fact | Append-only journal with `seq` and a SHA-256 chain; `--verify-journal` detects edits and deletions; no raw output or identities stored | Implemented |
+| Detection module injects data or code | Modules are repository code; their output is validated against the evidence contract and invalid items are dropped; macOS modules run as child processes and Windows modules in a child scope (no string evaluation) | Implemented |
 | Firmware boots the internal disk instead of the USB | Cannot be controlled by files; must be tested physically | Hardware-required |
 
 ## Residual risks

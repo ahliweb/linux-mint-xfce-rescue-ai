@@ -130,7 +130,7 @@ class TestScanFixtures(ScanFixtureCase):
         self.validate(out)
         self.assertEqual(oct(out.stat().st_mode & 0o777), "0o600")
         data = json.loads(out.read_text())
-        self.assertEqual(data["schema_version"], "1.1")
+        self.assertEqual(data["schema_version"], "1.2")
         self.assertEqual(data["source_platform"], "linux-mint-xfce-live")
         self.assertEqual(data["evidence_manifest"]["storage_class"], "usb-rescue-state")
         self.assertEqual(data["evidence_manifest"]["entry_count"], len(data["checks"]))
@@ -284,7 +284,8 @@ class TestScanVariants(ScanFixtureCase):
         for i in range(10):
             self.build_windows("w%02d" % i)
         data = json.loads(self.scan()[0].read_text())
-        self.assertLessEqual(len(data["checks"]), 64)
+        self.assertLessEqual(len(data["checks"]), 160)
+        self.assertLessEqual(len(data["target_systems"]), 8)
         refs = {t["ref"] for t in data["target_systems"]}
         self.assertEqual({c["target_ref"] for c in data["checks"] if "target_ref" in c}, refs)
         self.validate(self.tmp / "out" / "evidence.json")

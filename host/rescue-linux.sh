@@ -2,7 +2,8 @@
 # Host launcher for a RUNNING Linux / Linux Mint (not the live USB session).
 # Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 #
-# Read-only OS checks -> schema 1.1 evidence -> direct OpenCode Go analysis.
+# Read-only checks (OS + rescue_modules) -> schema 1.2 evidence -> direct OpenCode Go analysis
+# -> catalog repairs under the operator's policy (scripts/rescue-repair.py).
 # Everything is read from and written to the rescue USB (<bundle>/reports/).
 # Nothing is installed and nothing is written to the host disk.
 #
@@ -14,8 +15,12 @@ umask 077
 usage() {
   cat >&2 <<'EOF'
 usage: rescue-linux.sh [--evidence-only] [--dry-run] [--bundle DIR] [--pause]
-  --evidence-only  collect + validate + save evidence; no network, no AI call
+                       [--scope LIST] [--packages LIST] [--repair-policy POLICY]
+  --evidence-only  collect + validate + save evidence; no network, no AI call; repairs listed only
   --dry-run        like --evidence-only, and ask the analyzer to show what it would send
+  --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected
+  --packages LIST  comma list of packages for --scope software.selected
+  --repair-policy  detect-only | approve-each (default) | auto-safe
   --bundle DIR     rescue-omes bundle directory (default: auto-detect next to this script)
   --pause          wait for Enter before exiting (for double-click terminals)
 EOF
@@ -26,16 +31,26 @@ evidence_only=0
 dry_run=0
 pause=0
 bundle=''
+scope=all
+packages=''
+repair_policy=approve-each
 while (($#)); do
   case "$1" in
     --evidence-only) evidence_only=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --pause) pause=1; shift ;;
     --bundle) bundle=${2:?--bundle needs a directory}; shift 2 ;;
+    --scope) scope=${2:?--scope needs a list}; shift 2 ;;
+    --packages) packages=${2:?--packages needs a list}; shift 2 ;;
+    --repair-policy) repair_policy=${2:?--repair-policy needs a policy}; shift 2 ;;
     -h | --help) usage ;;
     *) usage ;;
   esac
 done
+
+case $repair_policy in detect-only | approve-each | auto-safe) ;; *) usage ;; esac
+[[ $scope =~ ^[a-z.,]+$ ]] || usage
+[[ -z $packages || $packages =~ ^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$ ]] || usage
 
 finish() {
   local rc=$1
@@ -83,11 +98,25 @@ printf 'Rescue host launcher (Linux) - read-only checks; output goes to the USB 
 
 # Collector: allowlisted read-only commands; only closed-set statuses, bounded numbers.
 rc=0
-python3 - "$evidence" "$skip_network" "$reports" <<'PY' || rc=$?
+python3 - "$evidence" "$skip_network" "$reports" "$bundle" "$scope" "$packages" "$repair_policy" <<'PY' || rc=$?
 import hashlib, json, os, platform, re, shutil, socket, subprocess, sys, tempfile
 from datetime import datetime, timezone
 
 out, skip_network, reports = sys.argv[1], sys.argv[2] == '1', sys.argv[3]
+bundle, scope_arg, packages_arg, policy = sys.argv[4:8]
+sys.path[:0] = [os.path.join(bundle, 'scripts'), os.path.join(bundle, 'scripts', 'lib')]
+try:
+    import repair_catalog
+    import rescue_modules
+except Exception as exc:  # older bundle or missing python3-jsonschema: OS checks only
+    repair_catalog = rescue_modules = None
+    print('note: detection modules/repair catalog unavailable (%s)' % exc.__class__.__name__, file=sys.stderr)
+try:
+    scope = repair_catalog.normalize_scope(scope_arg) if repair_catalog else ('all',)
+except ValueError as exc:
+    print('invalid --scope: %s' % exc, file=sys.stderr)
+    raise SystemExit(64)
+packages = tuple(x for x in packages_arg.split(',') if x)
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 REF = 'os-0'
 
@@ -268,6 +297,12 @@ checks = [
     check_smart(),
     check_network(),
 ]
+if rescue_modules is not None:
+    mctx = rescue_modules.Context(mode='host', scope=scope, packages=packages)
+    checks += [rec(c['check_id'], c['status'], c.get('kind'), c.get('number'), ref=c.get('target_ref'))
+               for c in rescue_modules.collect_system(mctx)]
+    rescue_modules.flush_warnings(mctx)
+checks = checks[:160]
 
 
 def opaque_seed():
@@ -292,7 +327,7 @@ else:
 
 compact = json.dumps(checks, sort_keys=True, separators=(',', ':'))
 report = {
-    'schema_version': '1.1',
+    'schema_version': '1.2',
     'run_id': 'rescue-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-lh',
     'source_platform': 'linux-host',
     'boot_mode': boot_mode,
@@ -312,7 +347,16 @@ report = {
     'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},
     'classification': 'confidential',
     'source_references': ['opencode-go:provider', 'nist:sp-800-86'],
+    'scope': list(scope),
+    'repair_policy': policy,
 }
+if repair_catalog is not None:
+    try:
+        proposals = repair_catalog.triggered(repair_catalog.load(), report, scope)[:32]
+        if proposals:
+            report['repair_proposals'] = proposals
+    except Exception as exc:
+        print('note: repair catalog unusable, no proposals (%s)' % exc.__class__.__name__, file=sys.stderr)
 
 # Structural self-check (the full JSON Schema check runs afterwards when jsonschema is available).
 STATUSES = {'pass', 'fail', 'warn', 'not_applicable', 'unknown'}
@@ -354,6 +398,7 @@ except BaseException:
         pass
     raise
 PY
+if ((rc == 64)); then usage; fi
 if ((rc != 0)); then
   printf 'ERROR: evidence gagal dibuat / evidence could not be created (exit %d).\n' "$rc" >&2
   finish 2
@@ -370,8 +415,23 @@ else
   printf 'Catatan / note: python3-jsonschema atau validator tidak tersedia; hanya pemeriksaan struktur internal yang dilakukan.\n'
 fi
 
+# Catalog repairs (typed actions only; see docs/repair-framework.md). The journal and every
+# result stay on the USB. --list only plans; it never executes or journals.
+run_repair() {
+  local repairer="$bundle/scripts/rescue-repair.py" rargs
+  [[ -f $repairer ]] || return 0
+  rargs=(python3 "$repairer" --evidence "$evidence" --policy "$repair_policy" --scope "$scope"
+    --journal "$reports/repairs/journal.jsonl")
+  [[ -z $packages ]] || rargs+=(--packages "$packages")
+  [[ ! -s $analysis ]] || rargs+=(--analysis "$analysis")
+  [[ ${1:-} != list ]] || rargs+=(--list)
+  printf '\n'
+  "${rargs[@]}" || printf 'PERINGATAN / WARNING: repair step reported a failure; see %s\n' "$reports/repairs/journal.jsonl" >&2
+}
+
 if ((evidence_only && !dry_run)); then
   printf 'Mode --evidence-only: tidak ada panggilan jaringan / no network call was made.\n'
+  run_repair list
   finish 0
 fi
 
@@ -388,6 +448,7 @@ set +e
 "${args[@]}"
 rc=$?
 set -e
+if ((dry_run)); then run_repair list; else run_repair; fi
 
 case $rc in
   0)

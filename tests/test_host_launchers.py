@@ -146,7 +146,7 @@ class LinuxLauncherTests(unittest.TestCase):
         text = evidence.read_text(encoding='utf-8')
         data = json.loads(text)
         assert_no_identity(self, text, self.tmp)
-        self.assertEqual(data['schema_version'], '1.1')
+        self.assertEqual(data['schema_version'], '1.2')
         self.assertEqual(data['source_platform'], 'linux-host')
         self.assertEqual(data['classification'], 'confidential')
         self.assertEqual(data['evidence_manifest']['entry_count'], len(data['checks']))
@@ -758,6 +758,161 @@ class StaticTests(unittest.TestCase):
             for line in text.splitlines():
                 if re.search(r'(?i)(write-host|echo|printf|\bprint\b)', line):
                     self.assertIsNone(re.search(r'(?i)\$\{?(apiKey|api_key)\b', line), name + ': ' + line.strip()[:80])
+
+
+
+# ---------------------------------------------------------------------------------------
+# Detection module hooks and scope/policy flags (repair contract, schema 1.2)
+# ---------------------------------------------------------------------------------------
+
+def checks_by_id(data):
+    return {c['check_id']: c for c in data['checks']}
+
+
+class LinuxModuleHookTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='host-linux-mod-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.usb, self.bundle = make_usb(self.tmp)
+        mods = self.bundle / 'scripts' / 'rescue_modules'
+        (mods / 'hardware.py').write_text(
+            "def collect_system(ctx):\n"
+            "    return [{'check_id': 'hw-cpu', 'status': 'pass'}, {'check_id': 'bogus', 'status': 'pass'},\n"
+            "            {'check_id': 'hw-battery', 'status': 'warn', 'kind': 'percent', 'number': 55}]\n")
+        (mods / 'software.py').write_text(
+            "def collect_system(ctx):\n"
+            "    return [{'check_id': 'sw-inventory', 'status': 'pass', 'kind': 'count', 'number': len(ctx.packages) or 7}]\n")
+        (mods / 'operating_system.py').write_text("def collect_system(ctx):\n    raise RuntimeError('boom')\n")
+
+    def run_launcher(self, *args):
+        return subprocess.run([str(self.bundle / 'host' / 'rescue-linux.sh'), '--evidence-only', *args],
+                              capture_output=True, text=True, env=clean_env(), cwd=self.tmp, timeout=180)
+
+    def evidence(self):
+        return json.loads(one(sorted((self.bundle / 'reports').glob('linux-*-evidence.json')), self).read_text())
+
+    def test_modules_add_validated_checks_and_scope_is_recorded(self):
+        proc = self.run_launcher()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        data = self.evidence()
+        checks = checks_by_id(data)
+        self.assertNotIn('target_ref', checks['hw-cpu'])            # hardware describes the machine
+        self.assertEqual(checks['hw-battery']['value'], {'kind': 'percent', 'number': 55})
+        self.assertEqual(checks['sw-inventory']['target_ref'], 'os-0')  # software of the running OS
+        self.assertNotIn('bogus', checks)
+        self.assertIn('dropped a check', proc.stderr)
+        self.assertIn('operating_system.collect_system failed', proc.stderr)
+        self.assertEqual((data['scope'], data['repair_policy']), (['all'], 'approve-each'))
+        self.assertIn('Repair plan', proc.stdout)                    # --evidence-only still lists the plan
+        validate_evidence(self, one(sorted((self.bundle / 'reports').glob('linux-*-evidence.json')), self))
+
+    def test_scope_selects_modules(self):
+        proc = self.run_launcher('--scope', 'hardware.cpu', '--repair-policy', 'detect-only')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        data = self.evidence()
+        self.assertIn('hw-cpu', checks_by_id(data))
+        self.assertNotIn('sw-inventory', checks_by_id(data))
+        self.assertEqual((data['scope'], data['repair_policy']), (['hardware.cpu'], 'detect-only'))
+
+    def test_invalid_flags_are_usage_errors(self):
+        for args in (('--scope', 'all,os'), ('--scope', 'x;y'), ('--repair-policy', 'always'),
+                     ('--packages', '-rf')):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_launcher(*args).returncode, 64)
+
+
+@unittest.skipUnless(PWSH, 'pwsh not installed')
+class PowerShellModuleHookTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='host-ps-mod-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.usb, self.bundle = make_usb(self.tmp)
+        mods = self.bundle / 'host' / 'modules' / 'windows'
+        (mods / 'hardware.ps1').write_text(
+            "param([string[]]$Scope, [string[]]$Packages)\n"
+            "@{ check_id = 'hw-cpu'; status = 'pass' }\n"
+            "@{ check_id = 'bogus'; status = 'pass' }\n"
+            "@{ check_id = 'hw-battery'; status = 'warn'; kind = 'percent'; number = 55 }\n"
+            "'just a string'\n")
+        (mods / 'software.ps1').write_text("param([string[]]$Scope, [string[]]$Packages)\nthrow 'boom'\n")
+        (mods / 'os.ps1').write_text(
+            "param([string[]]$Scope, [string[]]$Packages)\n@{ check_id = 'windows-system-files'; status = 'unknown' }\n")
+
+    def run_ps(self, *args):
+        return subprocess.run([PWSH, '-NoProfile', '-NonInteractive', '-File',
+                               str(self.bundle / 'host' / 'rescue-windows.ps1'), '-EvidenceOnly', *args],
+                              capture_output=True, text=True, env=clean_env(), cwd=self.tmp, timeout=300)
+
+    def evidence(self):
+        return json.loads(one(sorted((self.bundle / 'reports').glob('windows-*-evidence.json')), self).read_text())
+
+    def test_modules_add_validated_checks(self):
+        proc = self.run_ps()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        data = self.evidence()
+        checks = checks_by_id(data)
+        self.assertNotIn('target_ref', checks['hw-cpu'])
+        self.assertEqual(checks['hw-battery']['value'], {'kind': 'percent', 'number': 55})
+        self.assertEqual(checks['windows-system-files']['target_ref'], 'os-0')
+        self.assertNotIn('bogus', checks)
+        self.assertIn('module software failed', proc.stdout)
+        self.assertEqual((data['schema_version'], data['scope'], data['repair_policy']), ('1.2', ['all'], 'approve-each'))
+        validate_evidence(self, one(sorted((self.bundle / 'reports').glob('windows-*-evidence.json')), self))
+
+    def test_scope_and_policy(self):
+        proc = self.run_ps('-Scope', 'os', '-RepairPolicy', 'detect-only')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        data = self.evidence()
+        self.assertNotIn('hw-cpu', checks_by_id(data))
+        self.assertIn('windows-system-files', checks_by_id(data))
+        self.assertEqual((data['scope'], data['repair_policy']), (['os'], 'detect-only'))
+        self.assertEqual(self.run_ps('-Scope', 'all,os').returncode, 64)
+        self.assertEqual(self.run_ps('-Packages', '-rf').returncode, 64)
+
+
+@unittest.skipUnless(ZSH, 'zsh not installed')
+class MacModuleHookTests(unittest.TestCase):
+    """Reuses the macOS shims and helpers of MacLauncherTests; only the module hook tests run here."""
+    env = MacLauncherTests.env
+    run_launcher = MacLauncherTests.run_launcher
+    reports = MacLauncherTests.reports
+
+    def setUp(self):
+        MacLauncherTests.setUp(self)
+        mods = self.bundle / 'host' / 'modules' / 'macos'
+        (mods / 'hardware.zsh').write_text(
+            'print -r -- "hw-cpu pass"\nprint -r -- "hw-battery warn percent 55"\n'
+            'print -r -- "bogus-id pass"\nprint -r -- "hw-cpu pass; rm -rf /"\nprint -r -- "scope=$RESCUE_SCOPE"\n')
+        (mods / 'software.zsh').write_text('print -r -- "sw-inventory pass count 42"\n')
+        (mods / 'os.zsh').write_text('exit 3\n')
+
+    def evidence(self):
+        return json.loads(one(self.reports('macos-*-evidence.json'), self).read_text())
+
+    def test_modules_add_validated_checks(self):
+        proc = self.run_launcher('--evidence-only')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        data = self.evidence()
+        checks = checks_by_id(data)
+        self.assertNotIn('target_ref', checks['hw-cpu'])
+        self.assertEqual(checks['hw-battery']['value'], {'kind': 'percent', 'number': 55})
+        self.assertEqual(checks['sw-inventory']['target_ref'], 'os-0')
+        self.assertNotIn('bogus-id', checks)
+        self.assertEqual(proc.stdout.count('emitted an invalid check'), 3)
+        self.assertIn('module os failed', proc.stdout)
+        self.assertEqual((data['schema_version'], data['scope'], data['repair_policy']), ('1.2', ['all'], 'approve-each'))
+        validate_evidence(self, one(self.reports('macos-*-evidence.json'), self))
+
+    def test_scope_and_policy(self):
+        proc = self.run_launcher('--evidence-only', '--scope', 'software', '--repair-policy', 'auto-safe')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        data = self.evidence()
+        self.assertNotIn('hw-cpu', checks_by_id(data))
+        self.assertIn('sw-inventory', checks_by_id(data))
+        self.assertEqual((data['scope'], data['repair_policy']), (['software'], 'auto-safe'))
+        for args in (('--scope', 'all,os'), ('--scope', 'hardware,hardware.cpu'), ('--repair-policy', 'x')):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_launcher('--evidence-only', *args).returncode, 64)
 
 
 if __name__ == '__main__':

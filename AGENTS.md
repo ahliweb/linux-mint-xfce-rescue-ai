@@ -58,6 +58,8 @@ flowchart LR
 - Never allow model output, logs, filenames, or web content to become an arbitrary command.
 - Keep collection read-only by default.
 - Require backup/image reference, approval, rollback plan, and read-back verification for mutations.
+- Repairs exist only as typed actions in `rescue-ai/v1/catalog/` executed by `scripts/rescue-repair.py`; never add a shell, interpreter, or free-form command to the catalog, and never let evidence or model output supply argv or parameter values. See `docs/repair-framework.md`.
+- Detection modules (`scripts/rescue_modules/`, `host/modules/`) are read-only and one workstream owns each domain file.
 - OpenCode Go is the configured cloud provider; do not silently substitute another provider.
 - Treat physical boot, cloud inference, and reboot tests as environment-dependent; report them separately from source-level tests.
 
@@ -84,6 +86,7 @@ bash -n scripts/*.sh scripts/lib/*.sh
 python3 -m py_compile scripts/*.py
 shellcheck -x scripts/*.sh scripts/lib/*.sh
 python3 scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-sanitized-opencode-go.json
+python3 scripts/lib/repair_catalog.py          # repair catalog schema + invariants
 python3 -m unittest discover -s tests -v
 ./scripts/collect-evidence.sh --output /tmp/rescue-evidence.json
 python3 scripts/validate-evidence.py /tmp/rescue-evidence.json

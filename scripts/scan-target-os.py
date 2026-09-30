@@ -3,7 +3,7 @@
 
 Runs inside the Linux Mint XFCE live session (as root, via `sudo -n`), detects
 Windows, Linux Mint / other Linux and macOS partitions, inspects each strictly
-read-only and writes schema 1.1 evidence (rescue-ai/v1) containing only bounded
+read-only and writes schema 1.2 evidence (rescue-ai/v1) containing only bounded
 status codes and numbers: no usernames, hostnames, file names, paths, serials or
 raw text.
 
@@ -19,7 +19,12 @@ Safety properties (see docs/target-os-scan.md and docs/security-model.md):
 
 Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 
-Usage: scan-target-os.py --output FILE [--fixture-root DIR]
+Usage: scan-target-os.py --output FILE [--scope LIST] [--packages LIST] [--repair-policy P]
+                         [--fixture-root DIR]
+  --scope / --packages select the detection modules in scripts/rescue_modules/
+  (hardware, operating_system, software); --repair-policy is recorded in the
+  evidence. Catalog-trigger repair proposals (action IDs only) are added from
+  rescue-ai/v1/catalog/; nothing is repaired here (see scripts/rescue-repair.py).
   --fixture-root is a TEST hook: every subdirectory NAME of DIR is treated as an
   already-mounted partition root, described by the sidecar DIR/NAME.meta.json
   (fstype, label, parttype, uuid, partuuid, size, encryption, ...). A
@@ -43,12 +48,18 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
+import repair_catalog  # noqa: E402
+import rescue_modules  # noqa: E402
 
 SOURCE = 'offline-target-scan'
 ENV_SOURCE = 'collector-allowlist'
 MODEL_ID = 'mimo-v2.6-flash'
 MAX_TARGETS = 8
-MAX_CHECKS = 64
+MAX_CHECKS = 160
 MIN_UNMOUNTABLE_BYTES = 8 * 1024 ** 3
 
 LSBLK_COLUMNS = 'PATH,TYPE,FSTYPE,PARTTYPE,LABEL,SIZE,MOUNTPOINTS,RM,TRAN,PKNAME,UUID,PARTUUID,PARTLABEL'
@@ -886,6 +897,18 @@ def encrypted_target(kind, part):
     return None
 
 
+MODULE_CTX = None  # rescue_modules.Context set by main(); None disables the module hooks
+
+
+def module_checks(root, info):
+    """Checks from the domain modules for one target mounted read-only at *root*."""
+    if MODULE_CTX is None:
+        return []
+    target = {k: info.get(k) for k in ('family', 'release')}
+    return [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
+            for c in rescue_modules.collect_offline_target(MODULE_CTX, root, target)]
+
+
 def inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boot_mode):
     """Return a target dict {family, release, encryption, access, arch, checks} or None."""
     enc = encrypted_target(kind, part)
@@ -913,6 +936,7 @@ def inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boo
             info = inspect_macos(result.root, part)
             info['checks'].append(boot_loader_check('macos', [], boot_mode))
             info.update({'encryption': 'none', 'access': 'read-only-mounted'})
+            info['checks'].extend(module_checks(result.root, info))
             return info
 
         if result.status != 'ok':
@@ -933,6 +957,7 @@ def inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boo
             return None  # a data partition, not an operating system
         info['checks'].append(boot_loader_check(info['family'], esps_for(part), boot_mode))
         info.update({'encryption': 'none', 'access': 'read-only-mounted'})
+        info['checks'].extend(module_checks(result.root, info))
         return info
     finally:
         mounter.release(result)
@@ -977,7 +1002,7 @@ def live_release():
 
 # ------------------------------------------------------------------------ evidence
 
-def build_evidence(targets, env_checks, now, boot_mode):
+def build_evidence(targets, env_checks, now, boot_mode, scope=('all',), policy='approve-each'):
     stamp = iso(now)
 
     def emit(c, ref=None):
@@ -1001,7 +1026,7 @@ def build_evidence(targets, env_checks, now, boot_mode):
             'encryption': target['encryption'], 'access': target['access']})
         checks.extend(emit(c, ref) for c in target['checks'])
     return {
-        'schema_version': '1.1',
+        'schema_version': '1.2',
         'run_id': 'rescue-' + now.strftime('%Y%m%d-%H%M%S'),
         'source_platform': 'linux-mint-xfce-live',
         'boot_mode': boot_mode,
@@ -1022,7 +1047,22 @@ def build_evidence(targets, env_checks, now, boot_mode):
         'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},
         'classification': 'confidential',
         'source_references': ['opencode-go:provider', 'nist:sp-800-86'],
+        'scope': list(scope),
+        'repair_policy': policy,
     }
+
+
+def add_proposals(report, scope, catalog_dir=None):
+    """Attach catalog-trigger proposals (IDs only). A broken catalog never breaks the scan."""
+    try:
+        catalog = repair_catalog.load(catalog_dir or repair_catalog.CATALOG_DIR)
+    except (repair_catalog.CatalogError, OSError, ValueError) as exc:
+        print('warning: repair catalog unusable, no proposals added: %s' % exc, file=sys.stderr)
+        return report
+    proposals = repair_catalog.triggered(catalog, report, scope)[:32]
+    if proposals:
+        report['repair_proposals'] = proposals
+    return report
 
 
 def write_atomic(report, out):
@@ -1058,7 +1098,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Read-only multi-OS scan of internal disks (live USB).')
     parser.add_argument('--output', required=True, metavar='FILE')
     parser.add_argument('--fixture-root', metavar='DIR', help='test hook: directories treated as mounted partitions')
+    parser.add_argument('--scope', default='all', help='comma list: %s' % ', '.join(repair_catalog.SCOPE_VALUES))
+    parser.add_argument('--packages', default='', help='comma list of packages for scope software.selected')
+    parser.add_argument('--repair-policy', choices=('detect-only', 'approve-each', 'auto-safe'), default='approve-each')
+    parser.add_argument('--catalog-dir', metavar='DIR', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    try:
+        scope = repair_catalog.normalize_scope(args.scope)
+    except ValueError as exc:
+        parser.error(str(exc))
+    packages = tuple(p for p in args.packages.split(',') if p)
+    if any(not repair_catalog.PACKAGE_RE.match(p) for p in packages):
+        parser.error('invalid package name in --packages')
+    global MODULE_CTX
+    MODULE_CTX = rescue_modules.Context(mode='live', scope=scope, packages=packages, fixture_root=args.fixture_root)
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, _on_signal)
@@ -1127,7 +1180,11 @@ def main(argv=None):
     env_checks = [check('block-device-discovery', discovery), check('network-connectivity', network_status())]
     if not targets:
         env_checks.append(check('os-detection', 'warn'))
-    report = build_evidence(targets, env_checks, now, boot_mode)
+    env_checks += [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
+                   for c in rescue_modules.collect_system(MODULE_CTX)]
+    rescue_modules.flush_warnings(MODULE_CTX)
+    report = add_proposals(build_evidence(targets, env_checks, now, boot_mode, scope, args.repair_policy),
+                           scope, args.catalog_dir)
     write_atomic(report, args.output)
     print(args.output)
     print('scan-target-os: %d operating system(s) examined, %d checks / sistem operasi diperiksa: %d'

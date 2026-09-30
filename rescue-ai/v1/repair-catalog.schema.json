@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rescue-ai:v1:repair-catalog",
+  "title": "rescue-ai-repair-catalog",
+  "description": "Typed, reviewed catalog of repair actions for one domain. The AI may only propose action_id values from these files; it never produces commands. Every command is a fixed argv array whose placeholders are whole elements bound to typed, validated parameters. Cross-field invariants (risk vs. rollback/backup, placeholder declarations, unique IDs across files) are enforced by scripts/lib/repair_catalog.py.",
+  "type": "object",
+  "required": ["catalog_version", "domain", "actions"],
+  "additionalProperties": false,
+  "properties": {
+    "catalog_version": {"type": "string", "const": "1"},
+    "domain": {"type": "string", "enum": ["hardware", "os-linux", "os-windows", "os-macos", "software"]},
+    "actions": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/action"}
+    }
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 3, "maxLength": 120, "pattern": "^[^\\u0000-\\u001f`$]+$"},
+    "doc_ref": {"type": "string", "maxLength": 120, "pattern": "^docs/[a-z0-9-]+\\.md(#[a-z0-9-]+)?$"},
+    "exit_codes": {
+      "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0, "maximum": 255}
+    },
+    "argv": {
+      "type": "array", "minItems": 1, "maxItems": 24,
+      "prefixItems": [{"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"}],
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f]+$"}
+    },
+    "step": {
+      "type": "object",
+      "required": ["argv"],
+      "additionalProperties": false,
+      "properties": {
+        "argv": {"$ref": "#/$defs/argv"},
+        "expect_exit": {"$ref": "#/$defs/exit_codes"},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 7200}
+      }
+    },
+    "param": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+        "type": {
+          "type": "string",
+          "enum": ["enum", "integer", "block_device", "target_root", "package_name", "service_name"],
+          "description": "enum: one of values. integer: minimum..maximum. block_device: an internal disk or partition chosen by the operator and re-checked by the engine (never the rescue USB). target_root: mount point of the target_ref OS, provided by scripts/lib/target_mount.py. package_name / service_name: strict patterns, never starting with '-'."
+        },
+        "values": {
+          "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$"}
+        },
+        "minimum": {"type": "integer"},
+        "maximum": {"type": "integer"},
+        "default": {"type": ["string", "integer"]}
+      }
+    },
+    "trigger": {
+      "type": "object",
+      "required": ["check_id", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "check_id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+        "status": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "enum": ["pass", "fail", "warn", "not_applicable", "unknown"]}
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": ["action_id", "title", "title_id", "scope", "platforms", "risk", "triggers", "execute", "verify", "rollback", "backup", "doc"],
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {"type": "string", "maxLength": 64, "pattern": "^(hw|os-linux|os-windows|os-macos|sw)\\.[a-z0-9]+(-[a-z0-9]+)*$"},
+        "title": {"$ref": "#/$defs/text"},
+        "title_id": {"$ref": "#/$defs/text"},
+        "scope": {
+          "type": "string",
+          "enum": ["hardware.cpu", "hardware.memory", "hardware.disk", "hardware.gpu", "hardware.display", "hardware.network", "hardware.battery", "hardware.usb", "os", "software"]
+        },
+        "platforms": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "enum": ["live-linux", "linux-host", "windows-host", "macos-host"]}
+        },
+        "target_families": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "description": "OS families this action applies to (checked against target_systems[].family of target_ref). Omit for actions about the machine itself (hardware).",
+          "items": {"type": "string", "enum": ["linuxmint", "linux-other", "windows", "macos"]}
+        },
+        "risk": {
+          "type": "string",
+          "enum": ["safe", "reversible", "destructive"],
+          "description": "safe: no persistent change or a harmless one (self-test, service restart, module reload); the only class auto-safe may run without a prompt. reversible: persistent change with an automatic rollback step. destructive: may lose data; needs a backup reference, a typed approval, and a manual or restore-backup rollback."
+        },
+        "requires_root": {"type": "boolean", "default": false},
+        "requires_target_rw": {
+          "type": "boolean", "default": false,
+          "description": "Live mode only: the target OS must be remounted read-write (explicit approval, never auto-safe)."
+        },
+        "triggers": {
+          "type": "array", "maxItems": 8,
+          "description": "Evidence checks that make the engine propose this action (origin catalog-trigger). Empty: only an AI proposal or the operator can select it.",
+          "items": {"$ref": "#/$defs/trigger"}
+        },
+        "params": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/param"}},
+        "preconditions": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/step"}},
+        "execute": {"$ref": "#/$defs/step"},
+        "verify": {"$ref": "#/$defs/step"},
+        "rollback": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"type": "string", "enum": ["none", "step", "restore-backup", "manual"]},
+            "step": {"$ref": "#/$defs/step"},
+            "doc": {"$ref": "#/$defs/doc_ref"}
+          }
+        },
+        "backup": {
+          "type": "object",
+          "required": ["required"],
+          "additionalProperties": false,
+          "properties": {
+            "required": {"type": "boolean"},
+            "what": {"type": "string", "enum": ["disk-image", "partition-image", "file-copy", "registry-export", "package-state", "system-restore-point"]}
+          }
+        },
+        "doc": {"$ref": "#/$defs/doc_ref"}
+      }
+    }
+  }
+}
