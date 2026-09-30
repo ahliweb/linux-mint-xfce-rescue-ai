@@ -207,6 +207,21 @@ flowchart LR
     H --> R[Rescue report]
 ```
 
+## Scoped detection and repair
+
+Detection is scoped (`--scope`) and read-only: domain modules (hardware, OS, software) plug into the live scanner and the host launchers. A repair is only ever a typed catalog action executed by `scripts/rescue-repair.py` under the operator's policy (`detect-only`, `approve-each` default, `auto-safe` opt-in), with backup reference, verify, rollback, and a hash-chained journal on the USB. The AI can propose catalog `action_id`s but never commands. The full contract is in [repair-framework.md](repair-framework.md).
+
+```mermaid
+flowchart LR
+    D[Scoped read-only detection] --> E[Evidence 1.2]
+    E --> A[AI: action IDs only]
+    E --> R[rescue-repair.py]
+    A --> R
+    R --> P{Policy + approval}
+    P --> V[execute, verify, rollback]
+    V --> J[(Journal on USB)]
+```
+
 ## Implementation stages
 
 | Stage | Deliverable | Status |

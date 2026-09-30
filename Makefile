@@ -7,7 +7,8 @@ check: syntax lint validate test diff-check
 
 syntax:
 	bash -n scripts/*.sh scripts/lib/*.sh host/rescue-linux.sh
-	$(PYTHON) -m py_compile scripts/*.py
+	$(PYTHON) -m py_compile scripts/*.py scripts/lib/*.py scripts/rescue_modules/*.py
+	$(PYTHON) scripts/lib/repair_catalog.py
 	@if command -v zsh >/dev/null 2>&1; then zsh -n host/RESCUE-MACOS.command && echo 'zsh -n host/RESCUE-MACOS.command: ok'; else echo 'zsh not installed: macOS launcher syntax check skipped'; fi
 	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -Command '$$e=$$null; [void][System.Management.Automation.Language.Parser]::ParseFile("host/rescue-windows.ps1",[ref]$$null,[ref]$$e); if ($$e -and $$e.Count) { $$e | ForEach-Object Message; exit 1 } else { "pwsh parse host/rescue-windows.ps1: ok" }'; else echo 'pwsh not installed: Windows launcher parse check skipped'; fi
 
@@ -18,6 +19,7 @@ validate:
 	$(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-*.json
 	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-raw-ai-fields.json >/dev/null 2>&1
 	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-text-value-1.1.json >/dev/null 2>&1
+	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-1.2-fields-in-1.1.json >/dev/null 2>&1
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v

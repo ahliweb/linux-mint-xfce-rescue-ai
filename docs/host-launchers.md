@@ -92,6 +92,9 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `-DryRun` | `--dry-run` | `--dry-run` | Seperti evidence-only, plus tampilkan apa yang akan dikirim (endpoint, model, ukuran, apakah kunci ada; nilai kunci tidak pernah ditampilkan). Tidak ada yang dikirim |
 | `-BundleDir DIR` | `--bundle DIR` | `--bundle DIR` | Tentukan folder `rescue-omes` secara eksplisit |
 | | `--no-pause` | `--pause` | Perilaku menunggu tombol di akhir |
+| `-Scope LIST` | `--scope LIST` | `--scope LIST` | Cakupan deteksi: `all` (default), `hardware`, `hardware.cpu`, ..., `os`, `software`, `software.selected` |
+| `-Packages LIST` | `--packages LIST` | `--packages LIST` | Paket untuk `software.selected` |
+| `-RepairPolicy P` | `--repair-policy P` | `--repair-policy P` | `detect-only`, `approve-each` (default), `auto-safe`. Linux menjalankan `scripts/rescue-repair.py` (journal di `reports/repairs/`); Windows dan macOS saat ini hanya mencatat kebijakan dan melakukan deteksi |
 
 ### Kode keluar
 
@@ -103,7 +106,7 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak |
 | `5` | Bundle tidak ditemukan atau `reports/` di USB tidak bisa ditulis (USB write-protect?) |
 | `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle; evidence tetap tersimpan |
-| `64` | Argumen salah, atau launcher macOS dijalankan bukan di macOS |
+| `64` | Argumen salah (termasuk `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
 
 ## Output (semuanya di USB)
 
@@ -127,6 +130,8 @@ Setiap evidence berisi satu `target_systems[]` (`os-0`, `detection: host-native`
 | Windows | `os-detection`, `encryption-status` (`Get-BitLockerVolume`, cadangan `manage-bde -status` hanya menandai Protection On/Off, hanya admin), `disk-free-space`, `windows-fast-startup` (HiberbootEnabled=1: `warn`), `windows-pending-updates` (RebootPending/RebootRequired: `warn`), `windows-crash-dumps` (jumlah `Minidump\*.dmp`), `windows-event-log-errors` (log System level 1/2, 7 hari; lebih dari 0 `warn`, 50 atau lebih `fail`), `windows-defender-status`, `windows-update-service` (wuauserv Disabled: `warn`), `smart-health` (`Get-PhysicalDisk`), `network-connectivity` (TCP 443 ke `opencode.ai`) |
 | macOS | `os-detection`, `macos-apfs-container`, `macos-filevault`, `macos-sip-status`, `macos-crash-reports` (jumlah saja, 7 hari; 3 atau lebih kernel panic: `fail`), `macos-startup-disk`, `disk-free-space`, `network-connectivity`. `macos-software-update` tidak dijalankan (lambat dan butuh jaringan) |
 | Linux | `os-detection` (`linuxmint` atau `linux-other`), `disk-free-space`, `linux-failed-units`, `linux-journal-errors` (`unknown` tanpa izin membaca jurnal; 50 atau lebih `fail`), `linux-kernel-initrd`, `linux-package-state` (`dpkg --audit`), `encryption-status` (`lsblk`), `smart-health` (`unknown` tanpa root), `network-connectivity` |
+
+Modul deteksi opsional (schema 1.2) ada di `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh`, dan `scripts/rescue_modules/` (Linux). Keluarannya divalidasi sebagai data; modul yang gagal dilewati. Lihat [repair-framework.md](repair-framework.md).
 
 ## Kunci API dan USB yang membawa kredensial
 

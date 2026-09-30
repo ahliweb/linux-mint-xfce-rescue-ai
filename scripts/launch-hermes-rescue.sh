@@ -13,6 +13,9 @@ min_cpu=${RESCUE_MIN_CPU:-2}
 min_ram_gib=${RESCUE_MIN_RAM_GIB:-4}
 min_usb_gib=${RESCUE_MIN_USB_GIB:-8}
 scan_targets=1
+scope=${RESCUE_SCOPE:-all}
+packages=${RESCUE_PACKAGES:-}
+repair_policy=${RESCUE_REPAIR_POLICY:-approve-each}
 while (($#)); do
   case "$1" in
     --state-dir) state_dir=${2:?missing state directory}; state_dir_set=1; shift 2 ;;
@@ -21,9 +24,15 @@ while (($#)); do
     --min-ram-gib) min_ram_gib=${2:?missing RAM threshold}; shift 2 ;;
     --min-usb-gib) min_usb_gib=${2:?missing USB threshold}; shift 2 ;;
     --no-target-scan) scan_targets=0; shift ;;
-    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan]\n' "$0" >&2; exit 2 ;;
+    --scope) scope=${2:?missing scope list}; shift 2 ;;
+    --packages) packages=${2:?missing package list}; shift 2 ;;
+    --repair-policy) repair_policy=${2:?missing repair policy}; shift 2 ;;
+    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe]\n' "$0" >&2; exit 2 ;;
   esac
 done
+case $repair_policy in detect-only | approve-each | auto-safe) ;; *) printf 'Invalid --repair-policy: %s\n' "$repair_policy" >&2; exit 2 ;; esac
+[[ $scope =~ ^[a-z.,]+$ ]] || { printf 'Invalid --scope: %s\n' "$scope" >&2; exit 2; }
+[[ -z $packages || $packages =~ ^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$ ]] || { printf 'Invalid --packages: %s\n' "$packages" >&2; exit 2; }
 [[ "$hardware_mode" == auto || "$hardware_mode" == wizard ]] || { printf 'Invalid hardware mode: %s\n' "$hardware_mode" >&2; exit 2; }
 [[ $min_cpu =~ ^[1-9][0-9]*$ ]] || { printf 'Invalid --min-cpu (positive integer required): %s\n' "$min_cpu" >&2; exit 2; }
 for pair in "min-ram-gib:$min_ram_gib" "min-usb-gib:$min_usb_gib"; do
@@ -70,7 +79,9 @@ if ((scan_targets)); then
   analysis_file="$report_dir/analysis-$ts.md"
   printf 'Memindai sistem operasi di disk internal (read-only) ...\n'
   printf 'Scanning installed operating systems on internal disks (read-only) ...\n'
-  if timeout 900 sudo -n python3 "$root/scripts/scan-target-os.py" --output "$evidence_file" && [[ -s $evidence_file ]]; then
+  scan_args=(--output "$evidence_file" --scope "$scope" --repair-policy "$repair_policy")
+  [[ -z $packages ]] || scan_args+=(--packages "$packages")
+  if timeout 900 sudo -n python3 "$root/scripts/scan-target-os.py" "${scan_args[@]}" && [[ -s $evidence_file ]]; then
     # The scan runs as root; hand the evidence back to the desktop user (best effort: FAT/exFAT ignores it).
     [[ -O $evidence_file ]] || sudo -n chown "$(id -u):$(id -g)" -- "$evidence_file" 2>/dev/null || true
     cp -f -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
@@ -86,6 +97,15 @@ if ((scan_targets)); then
     else
       printf 'PERINGATAN: analisis OpenCode Go gagal; Hermes tetap dijalankan. Bukti: %s\n' "$evidence_file" >&2
       printf 'WARNING: OpenCode Go analysis failed; starting Hermes anyway. Evidence: %s\n' "$evidence_file" >&2
+    fi
+    # Catalog repairs under the operator's policy (default approve-each: nothing runs without
+    # approval). Catalog-trigger proposals work without the cloud analysis. Never blocks Hermes.
+    repair_args=(--evidence "$evidence_file" --policy "$repair_policy" --scope "$scope" --state-dir "$state_dir")
+    [[ ! -s $analysis_file ]] || repair_args+=(--analysis "$analysis_file")
+    [[ -z $packages ]] || repair_args+=(--packages "$packages")
+    if ! python3 "$root/scripts/rescue-repair.py" "${repair_args[@]}"; then
+      printf 'PERINGATAN: ada tindakan perbaikan yang gagal atau di-rollback; lihat %s\n' "$state_dir/repairs/journal.jsonl" >&2
+      printf 'WARNING: a repair action failed or was rolled back; see %s\n' "$state_dir/repairs/journal.jsonl" >&2
     fi
   else
     rm -f -- "$evidence_file" 2>/dev/null || true

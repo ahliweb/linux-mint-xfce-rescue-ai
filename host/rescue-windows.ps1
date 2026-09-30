@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Host launcher for a RUNNING Windows 10/11: read-only checks, schema 1.1 evidence,
+  Host launcher for a RUNNING Windows 10/11: read-only checks, schema 1.2 evidence,
   direct OpenCode Go analysis. Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 
 .DESCRIPTION
@@ -25,12 +25,27 @@
 
 .PARAMETER BundleDir
   The rescue-omes bundle folder. Default: <script folder>\rescue-omes, then <script folder>\..
+
+.PARAMETER Scope
+  Detection scope, comma separated: all (default), hardware, hardware.cpu, ..., os, software,
+  software.selected. Selects the optional detection modules in host\modules\windows\.
+
+.PARAMETER Packages
+  Comma separated package IDs for -Scope software.selected.
+
+.PARAMETER RepairPolicy
+  detect-only | approve-each (default) | auto-safe. Recorded in the evidence. This launcher
+  does not execute repairs yet (see docs/repair-framework.md).
 #>
 [CmdletBinding()]
 param(
     [switch]$EvidenceOnly,
     [switch]$DryRun,
-    [string]$BundleDir
+    [string]$BundleDir,
+    [string]$Scope = 'all',
+    [string]$Packages = '',
+    [ValidateSet('detect-only', 'approve-each', 'auto-safe')]
+    [string]$RepairPolicy = 'approve-each'
 )
 
 $script:Endpoint = 'https://opencode.ai/zen/go/v1/chat/completions'
@@ -234,7 +249,17 @@ $script:CheckIds = @(
     'windows-event-log-errors', 'windows-defender-status', 'windows-update-service',
     'linux-fstab-consistency', 'linux-kernel-initrd', 'linux-package-state', 'linux-failed-units',
     'linux-journal-errors', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status',
-    'macos-crash-reports', 'macos-software-update', 'macos-startup-disk')
+    'macos-crash-reports', 'macos-software-update', 'macos-startup-disk',
+    'linux-boot-partition-space', 'linux-grub-config', 'linux-apt-sources', 'linux-dpkg-lock',
+    'windows-boot-config', 'windows-system-files', 'windows-restore-points', 'macos-disk-verify',
+    'hw-cpu', 'hw-cpu-thermal', 'hw-memory', 'hw-memory-errors', 'hw-disk', 'hw-gpu',
+    'hw-gpu-driver', 'hw-display', 'hw-network-adapter', 'hw-wifi', 'hw-battery', 'hw-usb',
+    'sw-inventory', 'sw-package-health', 'sw-broken-dependencies', 'sw-pending-config',
+    'sw-held-packages', 'sw-package-integrity', 'sw-app-health', 'sw-startup-items')
+$script:ScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu',
+    'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected')
+$script:ModuleDomains = @('hardware', 'os', 'software')
+$script:MaxChecks = 160
 $script:Statuses = @('pass', 'fail', 'warn', 'not_applicable', 'unknown')
 $script:Platforms = @('linux-mint-xfce-live', 'systemrescue-live', 'other-live-linux', 'linux-host', 'windows-host', 'macos-host')
 $script:BootModes = @('uefi', 'legacy-bios', 'unknown')
@@ -276,11 +301,13 @@ function New-RescueEvidence {
         [string]$OpaqueSeed,
         [bool]$Authenticated = $false,
         [string]$Destination = 'unknown',
-        [DateTime]$When = [DateTime]::UtcNow
+        [DateTime]$When = [DateTime]::UtcNow,
+        [string[]]$Scope = @('all'),
+        [string]$RepairPolicy = 'approve-each'
     )
     $compact = ConvertTo-RescueJson -Value @($Checks)
     return [ordered]@{
-        schema_version           = '1.1'
+        schema_version           = '1.2'
         run_id                   = 'rescue-' + $When.ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '-wh'
         source_platform          = 'windows-host'
         boot_mode                = $BootMode
@@ -314,7 +341,82 @@ function New-RescueEvidence {
         verification             = [ordered]@{ hashes_verified = $false; read_back_verified = $false; status = 'not_applicable' }
         classification           = 'confidential'
         source_references         = @('opencode-go:provider', 'nist:sp-800-86', 'microsoft:windows-recovery')
+        scope                    = @($Scope)
+        repair_policy            = $RepairPolicy
     }
+}
+
+function ConvertTo-RescueScope {
+    # Validates a comma separated scope. Returns @{ Ok; Scope; Error } (same rules as
+    # scripts/lib/repair_catalog.py normalize_scope).
+    param([string]$Text)
+    $items = @()
+    foreach ($s in ($Text -split ',')) {
+        $s = $s.Trim()
+        if ($s -and $items -notcontains $s) { $items += $s }
+    }
+    if ($items.Count -eq 0) { $items = @('all') }
+    foreach ($s in $items) {
+        if ($script:ScopeValues -notcontains $s) { return @{ Ok = $false; Scope = @(); Error = "unknown scope item: $s" } }
+    }
+    if ($items -contains 'all' -and $items.Count -gt 1) { return @{ Ok = $false; Scope = @(); Error = 'scope all must be used alone' } }
+    foreach ($g in @('hardware', 'software')) {
+        if ($items -contains $g -and @($items | Where-Object { $_.StartsWith($g + '.') }).Count -gt 0) {
+            return @{ Ok = $false; Scope = @(); Error = "scope $g already covers its $g.* items" }
+        }
+    }
+    return @{ Ok = $true; Scope = $items; Error = '' }
+}
+
+function Test-ScopeWants {
+    param([string[]]$Scope, [string]$Domain)
+    if ($Scope -contains 'all' -or $Scope -contains $Domain) { return $true }
+    if ($Domain -eq 'hardware') { return @($Scope | Where-Object { $_.StartsWith('hardware.') }).Count -gt 0 }
+    if ($Domain -eq 'software') { return $Scope -contains 'software.selected' }
+    return $false
+}
+
+function ConvertFrom-ModuleCheck {
+    # One item emitted by a host\modules\windows\<domain>.ps1 module -> a check, or $null when it
+    # is outside the evidence contract (module output is data and is validated here).
+    param($Item, [string]$Domain)
+    if ($null -eq $Item -or -not ($Item -is [System.Collections.IDictionary])) { return $null }
+    $id = [string]$Item['check_id']
+    $status = [string]$Item['status']
+    if ($script:CheckIds -notcontains $id -or $script:Statuses -notcontains $status) { return $null }
+    $ref = 'os-0'
+    if ($Domain -eq 'hardware') { $ref = '' }
+    $kind = [string]$Item['kind']
+    if ($kind) {
+        $n = $Item['number']
+        if (@('percent', 'count', 'bytes', 'days', 'seconds') -notcontains $kind) { return $null }
+        if (-not ($n -is [int] -or $n -is [long] -or $n -is [double]) -or $n -lt 0 -or $n -gt 1e15) { return $null }
+        return New-Check -Id $id -Status $status -TargetRef $ref -Kind $kind -Number $n
+    }
+    return New-Check -Id $id -Status $status -TargetRef $ref
+}
+
+function Invoke-RescueModules {
+    # Runs the optional detection modules host\modules\windows\{hardware,os,software}.ps1 in a
+    # child scope with the call operator (no string evaluation, no dot-sourcing). A failing
+    # module is reported and skipped; it never stops the collection.
+    param([string]$Bundle, [string[]]$Scope, [string[]]$PackageList)
+    $out = @()
+    if (-not $Bundle) { return , $out }
+    foreach ($domain in $script:ModuleDomains) {
+        if (-not (Test-ScopeWants -Scope $Scope -Domain $domain)) { continue }
+        $path = Join-Path (Join-Path (Join-Path (Join-Path $Bundle 'host') 'modules') 'windows') ($domain + '.ps1')
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try {
+            foreach ($item in @(& $path -Scope $Scope -Packages $PackageList)) {
+                $c = ConvertFrom-ModuleCheck -Item $item -Domain $domain
+                if ($null -ne $c) { $out += $c } else { Write-Host "  catatan / note: module $domain emitted an invalid check (dropped)" }
+            }
+        } catch {
+            Write-Host "  catatan / note: module $domain failed and was skipped"
+        }
+    }
+    return , $out
 }
 
 function Test-RescueEvidence {
@@ -329,7 +431,7 @@ function Test-RescueEvidence {
         if (-not $Evidence.Contains($k)) { $problems.Add("missing $k") }
     }
     if ($problems.Count -gt 0) { return , $problems }
-    if (@('1.0', '1.1') -notcontains $Evidence['schema_version']) { $problems.Add('schema_version') }
+    if (@('1.0', '1.1', '1.2') -notcontains $Evidence['schema_version']) { $problems.Add('schema_version') }
     if ($Evidence['run_id'] -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$') { $problems.Add('run_id') }
     if ($script:Platforms -notcontains $Evidence['source_platform']) { $problems.Add('source_platform') }
     if ($script:BootModes -notcontains $Evidence['boot_mode']) { $problems.Add('boot_mode') }
@@ -347,7 +449,7 @@ function Test-RescueEvidence {
         if (@('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown') -notcontains $t['access']) { $problems.Add('target access') }
     }
     $checks = @($Evidence['checks'])
-    if ($checks.Count -lt 1 -or $checks.Count -gt 64) { $problems.Add('checks count') }
+    if ($checks.Count -lt 1 -or $checks.Count -gt $script:MaxChecks) { $problems.Add('checks count') }
     foreach ($c in $checks) {
         $id = [string]$c['check_id']
         if ($script:CheckIds -notcontains $id) { $problems.Add("check_id $id") }
@@ -371,7 +473,12 @@ function Test-RescueEvidence {
     if ($ai['provider_id'] -ne 'opencode-go') { $problems.Add('provider_id') }
     if (@('cloud', 'unknown') -notcontains $ai['destination_class']) { $problems.Add('destination_class') }
     if (@('not_run', 'completed', 'manual_intervention', 'blocked') -notcontains $Evidence['ai_analysis_status']) { $problems.Add('ai_analysis_status') }
-    if (@('none', 'approval_required', 'completed_verified') -notcontains $Evidence['mutation_status']) { $problems.Add('mutation_status') }
+    if (@('none', 'approval_required', 'completed_verified', 'failed', 'rolled_back') -notcontains $Evidence['mutation_status']) { $problems.Add('mutation_status') }
+    if ($Evidence.Contains('scope')) {
+        $sc = ConvertTo-RescueScope -Text (@($Evidence['scope']) -join ',')
+        if (-not $sc.Ok) { $problems.Add('scope') }
+    }
+    if ($Evidence.Contains('repair_policy') -and @('detect-only', 'approve-each', 'auto-safe') -notcontains $Evidence['repair_policy']) { $problems.Add('repair_policy') }
     return , $problems
 }
 
@@ -577,7 +684,8 @@ function Get-MachineSeed {
 }
 
 function Invoke-HostCollection {
-    param([bool]$SkipNetwork, [bool]$Authenticated, [string]$Destination)
+    param([bool]$SkipNetwork, [bool]$Authenticated, [string]$Destination, [string]$Bundle,
+        [string[]]$Scope = @('all'), [string[]]$PackageList = @(), [string]$RepairPolicy = 'approve-each')
     $os = Get-OsInfo
     $encryption = Get-EncryptionState
     $encStatus = 'pass'
@@ -597,9 +705,12 @@ function Invoke-HostCollection {
         (Get-SmartCheck),
         (Get-NetworkCheck -Skip $SkipNetwork)
     )
+    $checks += Invoke-RescueModules -Bundle $Bundle -Scope $Scope -PackageList $PackageList
+    if ($checks.Count -gt $script:MaxChecks) { $checks = $checks[0..($script:MaxChecks - 1)] }
     return New-RescueEvidence -Checks $checks -Family $os.Family -Release $os.Release `
         -Architecture $os.Architecture -Encryption $encryption -BootMode (Get-BootMode) `
-        -OpaqueSeed (Get-MachineSeed) -Authenticated $Authenticated -Destination $Destination
+        -OpaqueSeed (Get-MachineSeed) -Authenticated $Authenticated -Destination $Destination `
+        -Scope $Scope -RepairPolicy $RepairPolicy
 }
 
 # ----------------------------------------------------------------------------------------
@@ -671,9 +782,24 @@ function Write-Utf8File {
 }
 
 function Invoke-RescueMain {
-    param([bool]$EvidenceOnlyMode, [bool]$DryRunMode, [string]$Explicit, [string]$ScriptDir)
+    param([bool]$EvidenceOnlyMode, [bool]$DryRunMode, [string]$Explicit, [string]$ScriptDir,
+        [string]$ScopeText = 'all', [string]$PackagesText = '', [string]$Policy = 'approve-each')
     try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
     Write-Host 'Rescue host launcher (Windows) - read-only checks; output goes to the USB only.'
+    $scopeResult = ConvertTo-RescueScope -Text $ScopeText
+    if (-not $scopeResult.Ok) {
+        Write-Host ('ERROR: -Scope tidak valid / invalid -Scope: ' + $scopeResult.Error) -ForegroundColor Red
+        $script:ExitCode = 64
+        return
+    }
+    $packageList = @($PackagesText -split ',' | Where-Object { $_ })
+    foreach ($pkg in $packageList) {
+        if ($pkg -notmatch '^[A-Za-z0-9][A-Za-z0-9+._:@-]{0,127}$') {
+            Write-Host 'ERROR: -Packages tidak valid / invalid -Packages' -ForegroundColor Red
+            $script:ExitCode = 64
+            return
+        }
+    }
 
     $bundle = Find-RescueBundle -ScriptDir $ScriptDir -Explicit $Explicit
     if (-not $bundle) {
@@ -702,7 +828,8 @@ function Invoke-RescueMain {
     if ($haveKey -and -not $offline) { $destination = 'cloud' }
 
     Write-Host 'Menjalankan pemeriksaan read-only / running read-only checks...'
-    $evidence = Invoke-HostCollection -SkipNetwork $offline -Authenticated ($haveKey -and -not $offline) -Destination $destination
+    $evidence = Invoke-HostCollection -SkipNetwork $offline -Authenticated ($haveKey -and -not $offline) -Destination $destination `
+        -Bundle $bundle -Scope $scopeResult.Scope -PackageList $packageList -RepairPolicy $Policy
 
     $problems = Test-RescueEvidence -Evidence $evidence
     if ($problems.Count -gt 0) {
@@ -726,6 +853,9 @@ function Invoke-RescueMain {
     }
     Write-Host ''
     Write-Host "Evidence tersimpan / saved: $evidencePath"
+    if ($Policy -ne 'detect-only') {
+        Write-Host 'Catatan / note: perbaikan di Windows host belum dijalankan oleh launcher ini; hanya deteksi. / Repairs are not executed by this Windows launcher yet; detection only.'
+    }
 
     if ($EvidenceOnlyMode -and -not $DryRunMode) {
         Write-Host 'Mode -EvidenceOnly: tidak ada panggilan jaringan / no network call was made.'
@@ -776,5 +906,6 @@ function Invoke-RescueMain {
 
 if ($env:RESCUE_PS_LIBRARY_ONLY -eq '1') { return }
 
-Invoke-RescueMain -EvidenceOnlyMode ([bool]$EvidenceOnly) -DryRunMode ([bool]$DryRun) -Explicit $BundleDir -ScriptDir $PSScriptRoot
+Invoke-RescueMain -EvidenceOnlyMode ([bool]$EvidenceOnly) -DryRunMode ([bool]$DryRun) -Explicit $BundleDir -ScriptDir $PSScriptRoot `
+    -ScopeText $Scope -PackagesText $Packages -Policy $RepairPolicy
 exit $script:ExitCode

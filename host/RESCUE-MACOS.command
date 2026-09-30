@@ -2,7 +2,7 @@
 # Host launcher for a RUNNING macOS 12+ (Intel or Apple Silicon).
 # Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 #
-# Double-click this file (or: zsh RESCUE-MACOS.command). Read-only OS checks -> schema 1.1
+# Double-click this file (or: zsh RESCUE-MACOS.command). Read-only OS checks -> schema 1.2
 # evidence -> direct OpenCode Go analysis. Everything is read from and written to the rescue
 # USB (<bundle>/reports/). Nothing is installed and nothing is written to this Mac.
 # Uses only tools that ship with macOS (no Python needed).
@@ -28,6 +28,9 @@ evidence_only=0
 dry_run=0
 pause_at_end=1
 bundle=''
+scope=all
+packages=''
+repair_policy=approve-each
 tmp_files=()
 
 usage() {
@@ -36,6 +39,9 @@ usage() {
   print -r -- '  --dry-run        like --evidence-only, and show what would be sent' >&2
   print -r -- '  --bundle DIR     rescue-omes bundle folder (default: auto-detect next to this script)' >&2
   print -r -- '  --no-pause       do not wait for Return before exiting' >&2
+  print -r -- '  --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected' >&2
+  print -r -- '  --packages LIST  comma list of packages for --scope software.selected' >&2
+  print -r -- '  --repair-policy  detect-only | approve-each (default) | auto-safe' >&2
   exit 64
 }
 
@@ -45,10 +51,37 @@ while (( $# )); do
     --dry-run) dry_run=1; shift ;;
     --no-pause) pause_at_end=0; shift ;;
     --bundle) (( $# >= 2 )) || usage; bundle=$2; shift 2 ;;
+    --scope) (( $# >= 2 )) || usage; scope=$2; shift 2 ;;
+    --packages) (( $# >= 2 )) || usage; packages=$2; shift 2 ;;
+    --repair-policy) (( $# >= 2 )) || usage; repair_policy=$2; shift 2 ;;
     -h|--help) usage ;;
     *) usage ;;
   esac
 done
+
+case $repair_policy in detect-only|approve-each|auto-safe) ;; *) usage ;; esac
+[[ -z $packages || $packages =~ '^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$' ]] || usage
+# Scope: same rules as scripts/lib/repair_catalog.py normalize_scope.
+scope_items=(${(s:,:)scope})
+(( ${#scope_items} )) || scope_items=(all)
+typeset -U scope_items
+for s in $scope_items; do
+  case $s in
+    all|hardware|hardware.cpu|hardware.memory|hardware.disk|hardware.gpu|hardware.display|hardware.network|hardware.battery|hardware.usb|os|software|software.selected) ;;
+    *) usage ;;
+  esac
+done
+if (( ${scope_items[(Ie)all]} && ${#scope_items} > 1 )); then usage; fi
+if (( ${scope_items[(Ie)hardware]} )) && [[ -n ${(M)scope_items:#hardware.*} ]]; then usage; fi
+if (( ${scope_items[(Ie)software]} )) && [[ -n ${(M)scope_items:#software.*} ]]; then usage; fi
+
+scope_wants() {
+  # scope_wants DOMAIN  (hardware | os | software)
+  (( ${scope_items[(Ie)all]} || ${scope_items[(Ie)$1]} )) && return 0
+  [[ $1 == hardware && -n ${(M)scope_items:#hardware.*} ]] && return 0
+  [[ $1 == software && -n ${(M)scope_items:#software.selected} ]] && return 0
+  return 1
+}
 
 cleanup() {
   local f
@@ -367,6 +400,32 @@ else
   add_check network-connectivity fail '' '' noref
 fi
 
+# Optional detection modules host/modules/macos/{hardware,os,software}.zsh run as child
+# processes (zsh -f, never sourced). Each prints lines "CHECK_ID STATUS [KIND NUMBER]"; the
+# lines are data and are validated here; anything else is dropped.
+for domain in hardware os software; do
+  scope_wants $domain || continue
+  mod=$bundle/host/modules/macos/$domain.zsh
+  [[ -f $mod ]] || continue
+  if ! mod_out=$(RESCUE_SCOPE=${(j:,:)scope_items} RESCUE_PACKAGES=$packages zsh -f -- "$mod" 2>/dev/null); then
+    print -r -- "  catatan / note: module $domain failed and was skipped"
+    continue
+  fi
+  for line in ${(f)mod_out}; do
+    if [[ $line =~ '^([a-z0-9]+(-[a-z0-9]+)*) (pass|fail|warn|not_applicable|unknown)( (percent|count|bytes|days|seconds) ([0-9]+(\.[0-9]+)?))?$' ]] \
+        && [[ $match[1] == (hw-*|sw-*|macos-*|smart-health|nvme-health|disk-free-space|encryption-status) ]] \
+        && (( ${#check_items} < 160 )); then
+      if [[ $domain == hardware ]]; then
+        add_check $match[1] $match[3] "$match[5]" "$match[6]" noref
+      else
+        add_check $match[1] $match[3] "$match[5]" "$match[6]"
+      fi
+    else
+      print -r -- "  catatan / note: module $domain emitted an invalid check (dropped)"
+    fi
+  done
+done
+
 # ---------------------------------------------------------------------------------------
 # API key (only when it will be used)
 # ---------------------------------------------------------------------------------------
@@ -379,7 +438,7 @@ destination=unknown
 if (( have_key && ! offline )); then authenticated=true; destination=cloud; fi
 
 # ---------------------------------------------------------------------------------------
-# Evidence (schema 1.1). Strings come from closed sets or are escaped by json_str.
+# Evidence (schema 1.2). Strings come from closed sets or are escaped by json_str.
 # ---------------------------------------------------------------------------------------
 seed=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/ {print $4; exit}')
 [[ -n $seed ]] && seed="platform-uuid:$seed" || seed="fallback:$RANDOM$RANDOM$(date +%s)"
@@ -410,7 +469,7 @@ analysis_path=$reports/macos-$stamp-analysis.md
 
 if [[ -n $release ]]; then release_json=$(json_str "$release"); else release_json=null; fi
 ev=$'{\n'
-ev+='  "schema_version": "1.1",'$'\n'
+ev+='  "schema_version": "1.2",'$'\n'
 ev+='  "run_id": "rescue-'$run_ts'-mh",'$'\n'
 ev+='  "source_platform": "macos-host",'$'\n'
 ev+='  "boot_mode": "unknown",'$'\n'
@@ -426,7 +485,11 @@ ev+='  "ai_analysis_status": "not_run",'$'\n'
 ev+='  "mutation_status": "none",'$'\n'
 ev+='  "verification": {"hashes_verified":false,"read_back_verified":false,"status":"not_applicable"},'$'\n'
 ev+='  "classification": "confidential",'$'\n'
-ev+='  "source_references": ["opencode-go:provider","nist:sp-800-86","apple:macos-recovery"]'$'\n'
+scope_json=''
+for s in $scope_items; do scope_json+=${scope_json:+,}$(json_str "$s"); done
+ev+='  "source_references": ["opencode-go:provider","nist:sp-800-86","apple:macos-recovery"],'$'\n'
+ev+='  "scope": ['$scope_json'],'$'\n'
+ev+='  "repair_policy": "'$repair_policy'"'$'\n'
 ev+='}'
 
 if [[ ! $opaque =~ '^target-[A-Za-z0-9][A-Za-z0-9._-]{3,47}$' || ! $manifest =~ '^[a-f0-9]{64}$' ]]; then
@@ -460,6 +523,9 @@ for item in $check_items; do
 done
 print -r -- ''
 print -r -- "Evidence tersimpan / saved: $evidence_path"
+if [[ $repair_policy != detect-only ]]; then
+  print -r -- 'Catatan / note: perbaikan di macOS host belum dijalankan oleh launcher ini; hanya deteksi. / Repairs are not executed by this macOS launcher yet; detection only.'
+fi
 
 if (( evidence_only && ! dry_run )); then
   print -r -- 'Mode --evidence-only: tidak ada panggilan jaringan / no network call was made.'

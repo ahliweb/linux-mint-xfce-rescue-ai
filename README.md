@@ -52,6 +52,7 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - `scripts/verify-autostart.sh` — validates the XFCE autostart entry. The reboot itself is **Hardware-required**.
 - `scripts/check-hardware-readiness.py` — read-only preflight for CPU, RAM, VGA/display, internet, and USB live-media minimums; writes a `0600` JSON report and blocks Hermes when required checks fail. **Implemented**; results are only meaningful on the target PC.
 - `scripts/submit-skill.py` — after an approved, verified case, prepares a sanitized, secret-scanned candidate skill and, only after the operator confirms, files it as a `skill-candidate` issue (de-duplicated by content hash); without a token it prints a pre-filled issue link ([skill submission](docs/skill-submission.md)). **Implemented**; real GitHub calls are **Environment-blocked**.
+- Repair framework: evidence schema 1.2 with `--scope` / `--repair-policy`, a typed repair catalog (`rescue-ai/v1/catalog/`), `scripts/rescue-repair.py` (policy `detect-only` / `approve-each` default / `auto-safe` opt-in, backup reference, verify, rollback), and a hash-chained repair journal on the USB. The AI can only propose catalog action IDs ([repair framework](docs/repair-framework.md)). **Implemented** (the catalogs are still empty); real repairs are **Hardware-required**.
 - Candidate learning, feedback, and signed promotion — **Planned** ([learning loop](docs/hermes-learning-loop.md)).
 
 ## Important boot limitation
@@ -245,6 +246,7 @@ flowchart LR
     README --> TEST[docs/testing.md]
     README --> SEC[docs/security-model.md]
     README --> PERS[docs/persistence.md]
+    README --> REP[docs/repair-framework.md]
     README --> CHG[CHANGELOG.md]
     DESIGN --> SCHEMA[rescue-ai/v1 schema]
     SEC --> DESIGN
@@ -260,6 +262,7 @@ See:
 - [Testing and verification](docs/testing.md)
 - [Persistence image with Hermes pre-installed](docs/persistence.md)
 - [Candidate skill submission](docs/skill-submission.md)
+- [Repair framework (scope, catalog, policy, journal)](docs/repair-framework.md)
 - [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.1`)
 - [Hermes profile](profiles/rescue-hermes/)
 - [OpenCode Go documentation](https://opencode.ai/docs/go)
