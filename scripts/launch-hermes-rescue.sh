@@ -5,6 +5,31 @@ root=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/rescue-env.sh
 source "$root/scripts/lib/rescue-env.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/live-launcher.sh
+source "$root/scripts/lib/live-launcher.sh"
+
+# Never close silently (docs/persistence.md): the autostart terminal closes with the launcher, so any
+# non-zero exit on a terminal prints a bilingual summary and waits for Enter (EOF never hangs).
+# report_dir/log_file stay empty until the state directory is usable; emit_report is defined below.
+report_dir='' log_file='' offline=0
+on_exit() {
+  local rc=$?
+  trap - EXIT
+  if declare -F emit_report >/dev/null 2>&1; then emit_report || true; fi
+  # Leave the tee'd log behind and talk to the terminal directly.
+  exec 1>&3 2>&4 || true
+  if ((rc != 0 && rc != 130)) && [[ -t 0 ]]; then
+    sleep 0.3
+    printf '\nPeluncur berhenti dengan kode %d. Laporan dan log ada di: %s\n' "$rc" "${report_dir:-(belum tersedia)}" >&2
+    printf 'The launcher stopped with code %d. The report and log are in: %s\n' "$rc" "${report_dir:-(not available yet)}" >&2
+    [[ -z $log_file ]] || printf 'Log: %s\n' "$log_file" >&2
+    rescue_pause_for_enter
+  fi
+  return "$rc"
+}
+exec 3>&1 4>&2
+trap on_exit EXIT
 
 state_dir="$HOME/.local/share/rescue-omes"
 state_dir_set=0
@@ -60,6 +85,13 @@ report_dir="$state_dir/reports"
 report_file="$report_dir/hardware-readiness-$(date -u +%Y%m%d-%H%M%S).json"
 install -d -m 0700 -- "$report_dir"
 
+# Local launcher log: 0600, never sent anywhere, and the launcher never prints the API key. The
+# interactive repair step writes to the terminal only (it needs a tty for its approval prompts).
+log_file="$report_dir/launcher-$(date -u +%Y%m%d-%H%M%S).log"
+install -m 0600 /dev/null "$log_file"
+exec > >(tee -a -- "$log_file") 2> >(tee -a -- "$log_file" >&2)
+export PYTHONUNBUFFERED=1
+
 # Comprehensive run report (docs/run-report.md): written to the USB at EVERY exit of the run that
 # follows, including a failed preflight, no key, a network error, a failed scan, or declined repairs.
 # run_outcome tracks how far the run got; the EXIT trap emits the report once. The generator never
@@ -85,8 +117,12 @@ emit_report() {
   python3 "$root/scripts/rescue-report.py" "${rargs[@]}" ||
     printf 'PERINGATAN: laporan proses tidak dapat ditulis penuh (kode %d).\nWARNING: the run report could not be fully written (code %d).\n' "$?" "$?" >&2
 }
-trap 'emit_report' EXIT
 trap 'run_outcome=interrupted; exit 130' INT TERM HUP
+# The network is advisory: autostart runs at login, before Wi-Fi is connected. Wait briefly, then on a
+# terminal offer to connect or continue offline. Offline only skips the cloud analysis and Hermes.
+if ! rescue_wait_for_route "${RESCUE_NET_WAIT_SECONDS:-60}" && [[ -t 0 ]]; then
+  rescue_offline_prompt || true
+fi
 printf 'Running hardware readiness preflight (mode: %s) ...\n' "$hardware_mode"
 if ! python3 "$root/scripts/check-hardware-readiness.py" \
   --mode "$hardware_mode" \
@@ -101,6 +137,23 @@ if ! python3 "$root/scripts/check-hardware-readiness.py" \
 fi
 have_readiness=1
 run_outcome=completed
+# Offline = no default route, or the readiness network check did not pass (DNS/HTTPS).
+if ! rescue_default_route; then
+  offline=1
+elif [[ -s $report_file ]] && ! python3 -c '
+import json, sys
+try:
+    checks = json.load(open(sys.argv[1])).get("checks", [])
+except (OSError, ValueError, AttributeError):
+    sys.exit(0)
+sys.exit(0 if all(c.get("status") == "pass" for c in checks if c.get("check_id") == "internet-connectivity") else 1)
+' "$report_file"; then
+  offline=1
+fi
+if ((offline)); then
+  printf 'Tanpa internet: pemindaian lokal read-only tetap berjalan; analisis OpenCode Go dan Hermes dilewati.\n'
+  printf 'Offline: the local read-only scan still runs; the OpenCode Go analysis and Hermes are skipped.\n'
+fi
 
 # Automatic read-only scan of the operating systems on the internal disks, then
 # cloud analysis of the resulting evidence. Neither step may block Hermes: on any
@@ -145,20 +198,27 @@ else
     cp -f -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
     chmod 0600 -- "$report_dir/latest-evidence.json" 2>/dev/null || true
     printf 'Bukti tersimpan: %s\n' "$evidence_file"
-    printf 'Menganalisis dengan OpenCode Go (%s) ...\n' 'mimo-v2.6-flash'
-    analysis_rc=0
-    python3 "$root/scripts/opencode-go-analyze.py" \
-      --evidence "$evidence_file" \
-      --output "$analysis_file" \
-      --env-file "$root/config/rescue.env" \
-      --env-file "$state_dir/hermes/env" || analysis_rc=$?
-    if ((analysis_rc == 0)); then
-      run_analysis=$analysis_file
-      printf 'Analisis tersimpan: %s\nAnalysis saved: %s\n' "$analysis_file" "$analysis_file"
+    if ((offline)); then
+      # No network: skip the cloud analysis; the catalog-trigger proposals below still work.
+      run_outcome=network-error
+      printf 'Analisis OpenCode Go dilewati (tanpa internet). Bukti: %s\n' "$evidence_file"
+      printf 'OpenCode Go analysis skipped (offline). Evidence: %s\n' "$evidence_file"
     else
-      case $analysis_rc in 3) run_outcome=no-key ;; 4) run_outcome=network-error ;; *) run_outcome=analysis-failed ;; esac
-      printf 'PERINGATAN: analisis OpenCode Go gagal; Hermes tetap dijalankan. Bukti: %s\n' "$evidence_file" >&2
-      printf 'WARNING: OpenCode Go analysis failed; starting Hermes anyway. Evidence: %s\n' "$evidence_file" >&2
+      printf 'Menganalisis dengan OpenCode Go (%s) ...\n' 'mimo-v2.6-flash'
+      analysis_rc=0
+      python3 "$root/scripts/opencode-go-analyze.py" \
+        --evidence "$evidence_file" \
+        --output "$analysis_file" \
+        --env-file "$root/config/rescue.env" \
+        --env-file "$state_dir/hermes/env" || analysis_rc=$?
+      if ((analysis_rc == 0)); then
+        run_analysis=$analysis_file
+        printf 'Analisis tersimpan: %s\nAnalysis saved: %s\n' "$analysis_file" "$analysis_file"
+      else
+        case $analysis_rc in 3) run_outcome=no-key ;; 4) run_outcome=network-error ;; *) run_outcome=analysis-failed ;; esac
+        printf 'PERINGATAN: analisis OpenCode Go gagal; Hermes tetap dijalankan. Bukti: %s\n' "$evidence_file" >&2
+        printf 'WARNING: OpenCode Go analysis failed; starting Hermes anyway. Evidence: %s\n' "$evidence_file" >&2
+      fi
     fi
     # Catalog repairs under the operator's policy (default approve-each: nothing runs without
     # approval). Catalog-trigger proposals work without the cloud analysis. Never blocks Hermes.
@@ -166,7 +226,8 @@ else
     [[ ! -s $analysis_file ]] || repair_args+=(--analysis "$analysis_file")
     [[ -z $packages ]] || repair_args+=(--packages "$packages")
     repair_rc=0
-    python3 "$root/scripts/rescue-repair.py" "${repair_args[@]}" || repair_rc=$?
+    # Approval prompts need a tty on stdout, so this step bypasses the log tee (its journal is the record).
+    python3 "$root/scripts/rescue-repair.py" "${repair_args[@]}" 1>&3 2>&4 || repair_rc=$?
     run_journal="$state_dir/repairs/journal.jsonl"
     case $repair_rc in
       0) ;;
@@ -200,8 +261,22 @@ fi
 # Write the report now (Hermes reads the latest one first); the EXIT trap covers every other exit.
 emit_report
 
+if ((offline)); then
+  # No Hermes without the network: point at the local results and how to run again once online.
+  printf '\nMode offline selesai. Laporan: %s\nSambungkan Wi-Fi, lalu jalankan ulang "Hermes Rescue AI" dari menu aplikasi (atau launch-hermes-rescue.sh) untuk analisis dan Hermes.\n' "$report_dir"
+  printf 'Offline run finished. Report: %s\nConnect Wi-Fi, then run "Hermes Rescue AI" again from the application menu (or launch-hermes-rescue.sh) for the analysis and Hermes.\n' "$report_dir"
+  if [[ -t 0 ]]; then
+    sleep 0.3
+    exec 1>&3 2>&4
+    rescue_pause_for_enter
+  fi
+  exit 0
+fi
+
 # Hermes only needs the provider key. The GitHub Issues token stays out of its
 # environment (and every tool it spawns); scripts/submit-skill.py reads it from
 # the allowlisted config files itself.
 unset RESCUE_GITHUB_ISSUES_TOKEN
+# Hermes needs the real terminal, not the log pipes.
+exec 1>&3 2>&4
 exec hermes --tui --provider custom --model mimo-v2.6-flash

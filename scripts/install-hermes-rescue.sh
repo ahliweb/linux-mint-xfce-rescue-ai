@@ -152,28 +152,28 @@ if [[ ! -f "$root/config/rescue.env" && -w "$root/config" ]]; then
   printf 'Created %s; set OPENCODE_GO_API_KEY before starting Hermes.\n' "$root/config/rescue.env" >&2
 fi
 
-if ((autostart)); then
-  template="$root/profiles/rescue-hermes/hermes-rescue.desktop"
-  launcher_q=$(rescue_desktop_quote "$bin_dir/launch-hermes-rescue.sh") || { printf 'Unsupported launcher path for autostart.\n' >&2; exit 2; }
-  state_q=$(rescue_desktop_quote "$state_dir") || { printf 'Unsupported state directory for autostart (newline or %%).\n' >&2; exit 2; }
-  extra_args=''
+# Desktop entry: the terminal is opened explicitly (xfce4-terminal --maximize -x LAUNCHER ...) so the
+# operator always sees the launcher. The same entry goes to the application menu (re-run after connecting
+# Wi-Fi; always installed) and, unless --no-autostart, to the XFCE autostart directory.
+template="$root/profiles/rescue-hermes/hermes-rescue.desktop"
+launcher_q=$(rescue_desktop_quote "$bin_dir/launch-hermes-rescue.sh") || { printf 'Unsupported launcher path for the desktop entry.\n' >&2; exit 2; }
+state_q=$(rescue_desktop_quote "$state_dir") || { printf 'Unsupported state directory for the desktop entry (newline or %%).\n' >&2; exit 2; }
+render_desktop() { # render_desktop MODE(menu|autostart): fill the template placeholders
+  local line
   while IFS= read -r line || [[ -n $line ]]; do
-    if [[ $line == Exec=* ]]; then
-      template_exec=${line#Exec=}
-      [[ $template_exec == *' '* ]] && extra_args=${template_exec#* }
-      break
-    fi
+    if [[ $1 == menu && $line == X-GNOME-Autostart-enabled=* ]]; then continue; fi
+    line=${line//@LAUNCHER@/"$launcher_q"}
+    line=${line//@STATE_DIR@/"$state_q"}
+    printf '%s\n' "$line"
   done < "$template"
+}
+install -d -m 0755 "$HOME/.local/share/applications"
+render_desktop menu > "$HOME/.local/share/applications/hermes-rescue.desktop"
+chmod 0644 "$HOME/.local/share/applications/hermes-rescue.desktop"
+if ((autostart)); then
   install -d -m 0755 "$HOME/.config/autostart"
-  desktop_out="$HOME/.config/autostart/hermes-rescue.desktop"
-  while IFS= read -r line || [[ -n $line ]]; do
-    if [[ $line == Exec=* ]]; then
-      printf 'Exec=%s --state-dir %s%s\n' "$launcher_q" "$state_q" "${extra_args:+ $extra_args}"
-    else
-      printf '%s\n' "$line"
-    fi
-  done < "$template" > "$desktop_out"
-  chmod 0644 "$desktop_out"
+  render_desktop autostart > "$HOME/.config/autostart/hermes-rescue.desktop"
+  chmod 0644 "$HOME/.config/autostart/hermes-rescue.desktop"
 fi
 
 # Preserve an existing key when re-running the installer without a new one.

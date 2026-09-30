@@ -100,7 +100,7 @@ scripts/prepare-ventoy-usb.sh --ventoy-mount /mnt/ventoy --mint-iso /path/linuxm
   --no-provision-secrets --persistence /path/rescue-omes-casper-rw.dat
 ```
 
-3. Boot the PC from the USB. The autostart entry runs `launch-hermes-rescue.sh --hardware-mode auto`; the result is in `<state-dir>/reports/` (`run-<utc>/report.md`). Without a provisioned key, enter `OPENCODE_GO_API_KEY` in the live session; it is stored in the persistence image, so the USB is then credential-bearing.
+3. Boot the PC from the USB. The autostart entry opens `xfce4-terminal` and runs `launch-hermes-rescue.sh --hardware-mode auto`; the result is in `<state-dir>/reports/` (`run-<utc>/report.md`, plus the local launcher log `launcher-<utc>.log`, `0600`). The network is advisory: if Wi-Fi is not connected yet, the launcher waits up to about 60 s, then asks (bilingual) to connect and press Enter, or type `L` to continue offline. Offline runs the local read-only scan, the catalog repairs under your policy, and the run report, skips the OpenCode Go analysis and Hermes, and tells you where the report is; run "Hermes Rescue AI" from the application menu once online. A non-zero exit never closes the window silently (see [persistence](docs/persistence.md#autostart-offline-dan-log)). Without a provisioned key, enter `OPENCODE_GO_API_KEY` in the live session; it is stored in the persistence image, so the USB is then credential-bearing.
 
 ## Quick start: live Linux Mint XFCE session (no persistence image)
 

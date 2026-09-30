@@ -31,6 +31,11 @@ while IFS= read -r line || [[ -n $line ]]; do
 done < "$autostart"
 [[ -n $exec_line ]] || { printf 'FAIL: autostart Exec line missing\n'; exit 1; }
 
+# Terminal is opened explicitly so the operator always sees the launcher (docs/persistence.md).
+terminal_prefix='xfce4-terminal --maximize "--title=Hermes Rescue AI" -x '
+[[ $exec_line == "$terminal_prefix"* ]] || { printf 'FAIL: autostart does not open xfce4-terminal explicitly\n'; exit 1; }
+exec_line=${exec_line#"$terminal_prefix"}
+grep -qx 'Terminal=false' "$autostart" || { printf 'FAIL: autostart must use Terminal=false\n'; exit 1; }
 launcher_part=${exec_line%%" --state-dir "*}
 if [[ -n $bin_dir ]]; then
   expected_launcher=$(rescue_desktop_quote "${bin_dir%/}/launch-hermes-rescue.sh") || { printf 'FAIL: unsupported launcher path\n'; exit 1; }

@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -1380,7 +1381,8 @@ class LiveLauncherReportTests(unittest.TestCase):
         shutil.copy2(REPO / 'VERSION', c.src / 'VERSION')
         c.write_shim('hermes', "printf 'HERMES-RAN %s\\n' \"$*\"\n")
         c.write_shim('sudo', '[ "$1" = -n ] && shift\nexec "$@"\n')
-        hw = c.src / 'scripts' / 'check-hardware-readiness.py'
+        c.write_shim('ip', 'echo "default via 10.0.0.1 dev wlan0"\n')
+        hw =c.src / 'scripts' / 'check-hardware-readiness.py'
         hw.write_text('#!/usr/bin/env python3\nimport json, sys\n'
                       'out = sys.argv[sys.argv.index("--output") + 1]\n'
                       'json.dump(%r, open(out, "w"))\nsys.exit(0)\n' % dict(READINESS))
@@ -1456,6 +1458,100 @@ class LiveLauncherReportTests(unittest.TestCase):
         self.assertNotIn(DUMMY_KEY, ''.join(p.read_text(encoding='utf-8', errors='replace') for p in self.reports_dir().rglob('*')
                                             if p.is_file() and p.suffix in ('.md', '.json')))
         self.assertTrue((self.reports_dir() / 'index.md').exists())
+
+    def go_offline(self):
+        self.case.write_shim('ip', 'exit 0\n')
+
+    def tty_run(self, *, env_extra=None, timeout=60, stdin=''):
+        """Run the launcher under script(1) so stdin/stdout are a tty; stdin hits EOF immediately."""
+        c = self.case
+        launcher = c.src / 'scripts' / 'launch-hermes-rescue.sh'
+        cmd = 'exec %s --state-dir %s' % (shlex.quote(str(launcher)), shlex.quote(str(c.state)))
+        env = dict(HOME=str(c.home), PATH=f'{c.shims}:/usr/bin:/bin', LANG='C', RESCUE_NET_WAIT_SECONDS='0',
+                   RESCUE_TEST_BASE_URL=c.provider.base, RESCUE_REPAIR_TEST_PATH=str(self.fake),
+                   RESCUE_TARGET_MOUNT_FIXTURE_ROOT=str(c.tmp))
+        env.update(env_extra or {})
+        argv = ['script', '-qec', cmd, '/dev/null']
+        if os.geteuid() == 0:
+            argv = ['setpriv', f'--reuid={self.THS.UNPRIV_ID}', f'--regid={self.THS.UNPRIV_ID}', '--clear-groups'] + argv
+        proc = subprocess.run(argv, env=env, input=stdin, capture_output=True, text=True, timeout=timeout, cwd=str(c.tmp))
+        return proc.stdout + proc.stderr
+
+    def test_offline_runs_local_scan_and_report_without_analysis_or_hermes(self):
+        self.go_offline()
+        proc = self.launch('--repair-policy', 'auto-safe')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn('HERMES-RAN', proc.stdout)
+        self.assertEqual(self.case.provider.requests, [])
+        self.assertTrue(list(self.reports_dir().glob('target-evidence-*.json')))
+        self.assertFalse(list(self.reports_dir().glob('analysis-*.md')))
+        doc, _ = load_report(self.reports_dir())
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'network-error')
+        self.assertTrue(doc['detection']['available'])
+        # catalog-trigger repairs still run under the operator's policy without the analysis
+        self.assertEqual([(a['action_id'], a['final_outcome']) for a in doc['remediation']['actions']], [('hw.report-fix', 'verified')])
+        self.assertIn('Offline run finished', proc.stdout)
+        self.assertIn(str(self.reports_dir()), proc.stdout)
+
+    def test_offline_when_readiness_network_check_is_not_pass(self):
+        # a route exists but the readiness gate reports the internet check as warn (DNS/HTTPS down)
+        hw = self.case.src / 'scripts' / 'check-hardware-readiness.py'
+        doc = json.loads(json.dumps(READINESS))
+        for check in doc['checks']:
+            if check['check_id'] == 'internet-connectivity':
+                check.update(status='warn', required=False)
+        doc['summary'] = {'overall': 'ready_with_warnings'}
+        hw.write_text('#!/usr/bin/env python3\nimport json, sys\nout = sys.argv[sys.argv.index("--output") + 1]\n'
+                      'json.dump(%r, open(out, "w"))\nsys.exit(0)\n' % doc)
+        proc = self.launch()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn('HERMES-RAN', proc.stdout)
+        self.assertEqual(self.case.provider.requests, [])
+        rep, _ = load_report(self.reports_dir())
+        validate(self, rep)  # the closed schema validates a required:false warn network check
+        self.assertEqual(rep['header']['outcome'], 'network-error')
+        self.assertIn({'check_id': 'internet-connectivity', 'status': 'warn', 'required': False}, rep['readiness']['checks'])
+
+    def test_launcher_log_is_private_and_never_holds_the_key(self):
+        proc = self.launch()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        logs = sorted(self.reports_dir().glob('launcher-*.log'))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
+        text = logs[0].read_text(encoding='utf-8', errors='replace')
+        self.assertIn('Running hardware readiness preflight', text)
+        self.assertNotIn(DUMMY_KEY, text)
+
+    def test_failure_log_exists_even_when_preflight_fails(self):
+        hw = self.case.src / 'scripts' / 'check-hardware-readiness.py'
+        hw.write_text('#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n')
+        proc = self.launch()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        logs = list(self.reports_dir().glob('launcher-*.log'))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
+
+    @unittest.skipUnless(shutil.which('script'), 'util-linux script(1) needed to give the launcher a tty')
+    def test_tty_failure_prints_summary_and_does_not_hang_on_eof(self):
+        hw = self.case.src / 'scripts' / 'check-hardware-readiness.py'
+        hw.write_text('#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n')
+        out = self.tty_run(timeout=40)
+        self.assertIn('Peluncur berhenti', out)
+        self.assertIn('The launcher stopped', out)
+        self.assertIn(str(self.reports_dir()), out)
+        self.assertIn('Press Enter', out)
+
+    @unittest.skipUnless(shutil.which('script'), 'util-linux script(1) needed to give the launcher a tty')
+    def test_tty_offline_prompt_then_l_continues_offline(self):
+        self.go_offline()
+        out = self.tty_run(stdin='L\nn\n\n')  # L = continue offline, n = decline the repair, Enter = close
+        self.assertIn('Sambungkan Wi-Fi', out)
+        self.assertIn('Connect Wi-Fi', out)
+        self.assertNotIn('HERMES-RAN', out)
+        self.assertEqual(self.case.provider.requests, [])
+        doc, _ = load_report(self.reports_dir())
+        self.assertEqual(doc['header']['outcome'], 'network-error')
 
     def test_declined_repair_means_no_rescan(self):
         proc = self.launch()

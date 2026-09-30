@@ -67,13 +67,15 @@ class HermesScriptTestCase(unittest.TestCase):
             "HOME": str(self.home),
             "PATH": path if path is not None else "/usr/local/bin:/usr/bin:/bin",
             "LANG": "C",
+            "RESCUE_NET_WAIT_SECONDS": "0",  # never wait for Wi-Fi in tests
         }
         env.update(env_extra or {})
         cmd = [str(a) for a in argv]
         if os.geteuid() == 0:
             cmd = ["setpriv", f"--reuid={UNPRIV_ID}", f"--regid={UNPRIV_ID}", "--clear-groups"] + cmd
         return subprocess.run(
-            cmd, env=env, input=stdin, capture_output=True, text=True, timeout=60, cwd=str(self.tmp)
+            cmd, env=env, input=stdin, capture_output=True, text=True, timeout=60, cwd=str(self.tmp),
+            stdin=None if stdin is not None else subprocess.DEVNULL,
         )
 
     def install(self, *extra):
@@ -215,6 +217,18 @@ class TestInstalledBundle(HermesScriptTestCase):
         exec_line = next(l for l in desktop.read_text().splitlines() if l.startswith("Exec="))
         self.assertIn(f'--state-dir "{self.state}"', exec_line)
         self.assertIn("--hardware-mode auto", exec_line)
+        # The terminal is opened explicitly; the desktop entry itself is not Terminal=true.
+        self.assertEqual(
+            exec_line,
+            f'Exec=xfce4-terminal --maximize "--title=Hermes Rescue AI" -x {self.bin}/launch-hermes-rescue.sh'
+            f' --state-dir "{self.state}" --hardware-mode auto')
+        self.assertIn("Terminal=false", desktop.read_text().splitlines())
+        self.assertNotIn("@", desktop.read_text())
+        # Same entry in the application menu (re-run after connecting Wi-Fi), without the autostart flag.
+        menu = self.home / ".local" / "share" / "applications" / "hermes-rescue.desktop"
+        menu_lines = menu.read_text().splitlines()
+        self.assertEqual(next(l for l in menu_lines if l.startswith("Exec=")), exec_line)
+        self.assertFalse(any(l.startswith("X-GNOME-Autostart-enabled") for l in menu_lines))
         verify = self.run_cmd(
             [self.src / "scripts" / "verify-autostart.sh", "--state-dir", self.state]
         )
@@ -237,6 +251,8 @@ class TestInstalledBundle(HermesScriptTestCase):
              "--skip-hermes-install", "--no-autostart"], env_extra=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse((self.home / ".config" / "autostart" / "hermes-rescue.desktop").exists())
+        # --no-autostart skips only the autostart copy; the menu entry stays so the operator can re-run.
+        self.assertTrue((self.home / ".local" / "share" / "applications" / "hermes-rescue.desktop").is_file())
         lib = self.src / "scripts" / "lib" / "rescue-env.sh"
         out = self.run_cmd(["bash", "-c", f'source "{lib}"; rescue_load_env "{self.state}/hermes/env"; printf %s "$OPENCODE_GO_API_KEY"'])
         self.assertEqual(out.stdout, "dummy'quote key")
@@ -299,6 +315,45 @@ class TestInstalledBundle(HermesScriptTestCase):
         self.assertIn("hardware-readiness-", result.stderr)
         self.assertIn("GAGAL", result.stderr)
         self.assertNotIn("No such file", result.stderr)
+
+
+class TestLiveLauncherHelpers(HermesScriptTestCase):
+    def helper(self, body, stdin=None, path=None):
+        lib = self.src / "scripts" / "lib" / "live-launcher.sh"
+        return self.run_cmd(["bash", "-c", f'source "{lib}"; {body}'], stdin=stdin, path=path)
+
+    def test_pause_does_not_hang_on_eof(self):
+        result = self.helper("rescue_pause_for_enter; echo rc=$?")
+        self.assertIn("rc=0", result.stdout)
+        self.assertIn("Press Enter", result.stderr)
+        result = self.helper("rescue_pause_for_enter; echo rc=$?", stdin="\n")
+        self.assertIn("rc=0", result.stdout)
+
+    def test_route_detection_uses_ip(self):
+        self.write_shim("ip", 'echo "default via 10.0.0.1 dev wlan0"\n')
+        path = f"{self.shims}:/usr/bin:/bin"
+        self.assertIn("yes", self.helper("rescue_default_route && echo yes", path=path).stdout)
+        self.write_shim("ip", "exit 0\n")
+        self.assertNotIn("yes", self.helper("rescue_default_route && echo yes", path=path).stdout)
+        # bounded wait: no route, 1 s budget -> gives up
+        self.assertIn("gaveup", self.helper("rescue_wait_for_route 1 || echo gaveup", path=path).stdout)
+
+    def test_offline_prompt_choices(self):
+        self.write_shim("ip", "exit 0\n")
+        path = f"{self.shims}:/usr/bin:/bin"
+        result = self.helper("rescue_offline_prompt; echo rc=$?", stdin="L\n", path=path)
+        self.assertIn("rc=1", result.stdout)
+        for text in ("Wi-Fi", "Enter", "L"):
+            self.assertIn(text, result.stderr)
+        self.assertIn("Sambungkan", result.stderr)  # bilingual
+        # EOF (unattended) defaults to offline and does not loop forever
+        self.assertIn("rc=1", self.helper("rescue_offline_prompt; echo rc=$?", path=path).stdout)
+        # Enter re-checks; a route that appears after the first re-check ends the prompt with rc=0
+        counter = self.tmp / "count"
+        self.write_shim("ip", f'n=$(cat "{counter}" 2>/dev/null || echo 0); echo $((n+1)) > "{counter}"\n'
+                              '[ "$n" -ge 2 ] && echo "default via 10.0.0.1"\nexit 0\n')
+        result = self.helper("rescue_offline_prompt; echo rc=$?", stdin="\n\n\n", path=path)
+        self.assertIn("rc=0", result.stdout)
 
 
 class TestLauncherValidation(HermesScriptTestCase):

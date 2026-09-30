@@ -160,17 +160,117 @@ class HardwareReadinessTests(unittest.TestCase):
             self.assertEqual(self.hw.check_ram(4.0)["status"], "unknown")
 
     def test_usb_behaviour(self):
+        # fail only for a RESOLVED usb disk below the minimum; anything unresolved or non-USB warns
         cases = [
-            (("sata", 500.0, "/dev/sda1"), "fail"),
+            (("sata", 500.0, "/dev/sda1"), "warn"),
             (("usb", 32.0, "/dev/sdb1"), "pass"),
             (("usb", 4.0, "/dev/sdb1"), "fail"),
-            (("", None, "live-media mount was not detected"), "fail"),
-            (("", None, ""), "fail"),
-            (("usb", None, "/dev/sdb1"), "unknown"),
+            (("", None, "live-media mount was not detected"), "warn"),
+            (("", None, ""), "warn"),
+            (("unknown", None, "/dev/mapper/ventoy"), "warn"),
+            (("usb", None, "/dev/sdb1"), "warn"),
         ]
         for value, expected in cases:
             with self.subTest(value=value), mock.patch.object(self.hw, "storage_for_live_media", return_value=value):
-                self.assertEqual(self.hw.check_usb(8.0)["status"], expected)
+                check = self.hw.check_usb(8.0)
+                self.assertEqual(check["status"], expected)
+                self.assertTrue(check["required"])
+
+    def test_unresolvable_usb_keeps_observed_format_and_does_not_block(self):
+        with mock.patch.object(self.hw, "storage_for_live_media", return_value=("unknown", None, "/dev/mapper/ventoy")):
+            check = self.hw.check_usb(8.0)
+        self.assertEqual(check["observed"], "transport=unknown, source=/dev/mapper/ventoy")
+        self.assertIn("not blocking", check["note"])
+
+    # --- live-media resolution (dm / partition / loop) with mocked lsblk, findmnt and sysfs
+
+    def _mock_system(self, lsblk, findmnt=None, sysfs=None):
+        """lsblk: {device: output}; findmnt: {key: output}; sysfs: {loopN: backing_file}."""
+        calls = []
+
+        def fake(*args, timeout=8):
+            calls.append(args)
+            if args[0] == "lsblk":
+                return lsblk.get(args[-1], "")
+            if args[0] == "findmnt":
+                key = args[args.index("-T") + 1] if "-T" in args else args[-1]
+                return (findmnt or {}).get(key, "")
+            return ""
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name, backing in (sysfs or {}).items():
+            d = Path(tmp.name) / name / "loop"
+            d.mkdir(parents=True)
+            (d / "backing_file").write_text(backing + "\n")
+        return calls, mock.patch.object(self.hw, "command", fake), mock.patch.object(self.hw, "SYSFS_BLOCK", Path(tmp.name))
+
+    def test_ventoy_dm_device_resolves_to_usb_disk_not_iso_size(self):
+        gib = 1024 ** 3
+        lsblk = {"/dev/mapper/ventoy": f"ventoy dm  {int(2.8 * gib)}\nsda1 part  {30 * gib}\nsda disk usb {32 * gib}\n"}
+        calls, cmd, sysfs = self._mock_system(lsblk, findmnt={"/cdrom": "/dev/mapper/ventoy"})
+        with cmd, sysfs:
+            tran, size, source = self.hw.storage_for_live_media()
+            check = self.hw.check_usb(8.0)
+        self.assertEqual((tran, round(size)), ("usb", 32))
+        self.assertEqual(source, "/dev/mapper/ventoy -> sda")
+        self.assertEqual(check["status"], "pass")
+        self.assertIn("32.00 GiB", check["observed"])
+        # read-only, fixed argv: the device is a single trailing argument, never a shell string
+        lsblk_calls = [c for c in calls if c[0] == "lsblk"]
+        self.assertTrue(lsblk_calls)
+        self.assertTrue(all(c[:6] == ("lsblk", "-b", "-s", "-n", "-r", "-o") for c in lsblk_calls))
+
+    def test_small_resolved_usb_still_fails(self):
+        gib = 1024 ** 3
+        lsblk = {"/dev/sdb1": f"sdb1 part  {3 * gib}\nsdb disk usb {4 * gib}\n"}
+        _, cmd, sysfs = self._mock_system(lsblk, findmnt={"/cdrom": "/dev/sdb1"})
+        with cmd, sysfs:
+            self.assertEqual(self.hw.check_usb(8.0)["status"], "fail")
+
+    def test_resolved_non_usb_transport_warns(self):
+        gib = 1024 ** 3
+        lsblk = {"/dev/sda1": f"sda1 part  {100 * gib}\nsda disk sata {500 * gib}\n"}
+        _, cmd, sysfs = self._mock_system(lsblk, findmnt={"/cdrom": "/dev/sda1"})
+        with cmd, sysfs:
+            check = self.hw.check_usb(8.0)
+        self.assertEqual(check["status"], "warn")
+        self.assertEqual(check["observed"], "transport=sata, source=/dev/sda1 -> sda")
+
+    def test_loop_backing_file_is_followed_to_the_physical_disk(self):
+        gib = 1024 ** 3
+        lsblk = {"/dev/loop3": f"loop3 loop  {3 * gib}\n",
+                 "/dev/sdc2": f"sdc2 part  {60 * gib}\nsdc disk usb {64 * gib}\n"}
+        _, cmd, sysfs = self._mock_system(lsblk, findmnt={"/cdrom": "/dev/loop3", "/isos/mint.iso": "/dev/sdc2[/isos]"},
+                                          sysfs={"loop3": "/isos/mint.iso"})
+        with cmd, sysfs:
+            tran, size, _ = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size)), ("usb", 64))
+
+    def test_loop_chain_is_depth_bounded_and_unresolvable_sources_warn(self):
+        lsblk = {"/dev/loop0": "loop0 loop  1000\n", "/dev/loop1": "loop1 loop  1000\n"}
+        # loop0 -> file on loop1 -> file on loop0 -> ... must terminate
+        _, cmd, sysfs = self._mock_system(lsblk, findmnt={"/cdrom": "/dev/loop0", "/a": "/dev/loop1", "/b": "/dev/loop0"},
+                                          sysfs={"loop0": "/a", "loop1": "/b"})
+        with cmd, sysfs:
+            self.assertIsNone(self.hw.resolve_physical_disk("/dev/loop0"))
+            tran, size, source = self.hw.storage_for_live_media()
+            self.assertEqual((tran, size, source), ("unknown", None, "/dev/loop0"))
+            self.assertEqual(self.hw.check_usb(8.0)["status"], "warn")
+        # not a /dev path (for example an overlay/tmpfs name) and empty lsblk output both stay unresolved
+        with mock.patch.object(self.hw, "command", lambda *a, **k: ""):
+            self.assertIsNone(self.hw.resolve_physical_disk("overlay"))
+            self.assertIsNone(self.hw.resolve_physical_disk("/dev/nothing"))
+
+    def test_network_is_advisory_and_warns_when_offline(self):
+        with mock.patch.object(self.hw, "command", return_value=""), \
+                mock.patch.object(self.hw.socket, "getaddrinfo", side_effect=self.hw.socket.gaierror), \
+                mock.patch.object(self.hw.urllib.request, "urlopen", side_effect=OSError("down")):
+            check = self.hw.check_network("https://opencode.ai")
+        self.assertEqual((check["status"], check["required"]), ("warn", False))
+        self.assertEqual(check["observed"], "default-route=no, dns=no, https=OSError")
+        self.assertIn("OpenCode Go", check["note"])
+        self.assertIn("Hermes", check["note"])
 
     def _run_main(self, argv, statuses):
         def fake(check_id, status):
@@ -210,6 +310,12 @@ class HardwareReadinessTests(unittest.TestCase):
 
             code, _ = self._run_main(["--output", str(out)], dict(ok, ram="unknown"))
             self.assertEqual(code, 1)
+
+            # offline (network warn) and an unresolvable USB warn never block: exit 0, ready_with_warnings
+            code, _ = self._run_main(["--output", str(out)], dict(ok, net="warn", usb="warn"))
+            self.assertEqual(code, 0)
+            summary = json.loads(out.read_text())["summary"]
+            self.assertEqual((summary["overall"], summary["failures"], summary["warnings"]), ("ready_with_warnings", 0, 2))
 
             code, _ = self._run_main(["--output", str(out)], dict(ok, vga="warn"))
             self.assertEqual(code, 0)
