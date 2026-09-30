@@ -223,11 +223,6 @@ class HostRepairCase(unittest.TestCase):
     def load_python_catalog(self):
         return rc.load(self.bundle / 'rescue-ai' / 'v1' / 'catalog')
 
-    def test_fixture_catalog_is_valid_for_the_python_loader(self):
-        catalog = self.load_python_catalog()
-        self.assertIn(self.OSP + '.safe-ok', catalog.actions)
-        self.assertEqual(len(catalog.sha256), 64)
-
 
 # ----------------------------------------------------------------------------------------
 # Scenarios shared by both host engines (each runs once per platform)
@@ -249,6 +244,11 @@ class Scenarios:
         return stages(self.records(), self.p(name))
 
     # -- planning ---------------------------------------------------------------------
+    def test_fixture_catalog_is_valid_for_the_python_loader(self):
+        catalog = self.load_python_catalog()
+        self.assertIn(self.OSP + '.safe-ok', catalog.actions)
+        self.assertEqual(len(catalog.sha256), 64)
+
     def test_plan_only_modes_do_not_execute_or_journal(self):
         for flag in (self.flag('evidence_only'), self.flag('dry_run')):
             with self.subTest(flag=flag):
