@@ -589,6 +589,18 @@ class WindowsRepairTests(Scenarios, HostRepairCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout.split()
 
+    def test_child_environment_is_an_allowlist_without_the_api_key(self):
+        # /usr/bin/env stands in for a native repair tool: it prints what the child process inherited.
+        proc = self.library("$r = Invoke-RepairProcess -Exe '/usr/bin/env' -Argv @('env') -TimeoutSeconds 20; "
+                            "Write-Output ([System.Text.Encoding]::UTF8.GetString($r.Output))",
+                            OPENCODE_GO_API_KEY=HL.DUMMY_KEY, RESCUE_GITHUB_ISSUES_TOKEN='dummy-issues-token-value',
+                            LOCALAPPDATA='/tmp/fake-localappdata', UNRELATED_VARIABLE='should-not-pass')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn(HL.DUMMY_KEY, proc.stdout)
+        self.assertNotIn('dummy-issues-token-value', proc.stdout)
+        self.assertNotIn('UNRELATED_VARIABLE', proc.stdout)
+        self.assertIn('LOCALAPPDATA=/tmp/fake-localappdata', proc.stdout)
+
     def test_command_line_quoting_matches_the_msvcrt_reference_parser(self):
         cases = TRICKY + ['', 'a"', '"', '""', 'a\\"b', '\\\\"', 'x\\\\', 'end space ', ' lead', 'n\nl', '{}[]', '%PATH%', 'a&b|c']
         casefile = self.tmp / 'cases.json'

@@ -94,7 +94,7 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | | `--no-pause` | `--pause` | Perilaku menunggu tombol di akhir |
 | `-Scope LIST` | `--scope LIST` | `--scope LIST` | Cakupan deteksi: `all` (default), `hardware`, `hardware.cpu`, ..., `os`, `software`, `software.selected` |
 | `-Packages LIST` | `--packages LIST` | `--packages LIST` | Paket untuk `software.selected` |
-| `-RepairPolicy P` | `--repair-policy P` | `--repair-policy P` | `detect-only`, `approve-each` (default), `auto-safe`. Linux menjalankan `scripts/rescue-repair.py` (journal di `reports/repairs/`); Windows dan macOS saat ini hanya mencatat kebijakan dan melakukan deteksi |
+| `-RepairPolicy P` | `--repair-policy P` | `--repair-policy P` | `detect-only`, `approve-each` (default), `auto-safe`. Linux menjalankan `scripts/rescue-repair.py`; Windows dan macOS menjalankan engine native ([host-repair.md](host-repair.md)). Journal ada di `reports/repairs/` |
 
 ### Kode keluar
 

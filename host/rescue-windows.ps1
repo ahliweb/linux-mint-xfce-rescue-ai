@@ -284,6 +284,11 @@ $script:ScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'h
     'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected')
 $script:ModuleDomains = @('hardware', 'os', 'software')
 $script:MaxChecks = 160
+# Environment variables a repair child process may inherit (system/profile locations only).
+$script:ChildEnvAllowlist = @('SystemDrive', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+    'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'ALLUSERSPROFILE', 'PUBLIC',
+    'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP',
+    'OS', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'PATHEXT', 'ComSpec')
 $script:Statuses = @('pass', 'fail', 'warn', 'not_applicable', 'unknown')
 $script:Platforms = @('linux-mint-xfce-live', 'systemrescue-live', 'other-live-linux', 'linux-host', 'windows-host', 'macos-host')
 $script:BootModes = @('uefi', 'legacy-bios', 'unknown')
@@ -1287,6 +1292,12 @@ function Invoke-RepairProcess {
         $psi.EnvironmentVariables['PATH'] = (Join-Path $env:SystemRoot 'System32') + ';' + $env:SystemRoot
     } elseif ($env:PATH) {
         $psi.EnvironmentVariables['PATH'] = $env:PATH
+    }
+    # Standard system/profile locations that native tools (winget, DISM, sfc) need to start.
+    # Allowlisted by name: nothing else from this process (never OPENCODE_GO_API_KEY) is passed on.
+    foreach ($name in $script:ChildEnvAllowlist) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($value) { $psi.EnvironmentVariables[$name] = $value }
     }
     $psi.EnvironmentVariables['LANG'] = 'C.UTF-8'
     $started = [DateTime]::UtcNow
