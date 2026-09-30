@@ -10,6 +10,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Evidence schema 1.1 (backward compatible with 1.0): `target_systems` for the operating systems examined (Linux Mint, other Linux, Windows, macOS), per-check `target_ref` and bounded numeric `value`, host platforms `linux-host`/`windows-host`/`macos-host`, OS-specific check IDs, and storage class `usb-rescue-state`. `validate-evidence.py` also rejects dangling or duplicate target references, 1.1 fields in 1.0 evidence, and a mismatched `entry_count`. ahliweb/linux-mint-xfce-rescue-ai#7
 - `profiles/rescue-hermes/analysis-prompt.md`: one system prompt shared by every direct OpenCode Go client. ahliweb/linux-mint-xfce-rescue-ai#7
+- `scripts/build-persistence.sh`: builds a Ventoy `casper-rw` persistence image (ext4) from the verified Mint 22.3 ISO with Hermes, both rescue skills, the full rescue bundle, XFCE autostart, and `dislocker`/`libfsapfs-utils`/`smartmontools`/`nvme-cli` pre-installed, so all Hermes state lives on the USB. It runs in docker without touching a block device, converts layer whiteouts to overlayfs form (`scripts/lib/overlay_whiteouts.py`), and places the API key only in a network-less helper container and only when provisioning is requested. See `docs/persistence.md`. ahliweb/linux-mint-xfce-rescue-ai#10
+- `prepare-ventoy-usb.sh --persistence FILE.dat [--replace-persistence]`: validates the image (ext, label `casper-rw`), copies it with sha256 read-back, and merges a `persistence` entry into `/ventoy/ventoy.json`. It refuses to overwrite an existing image on the USB. ahliweb/linux-mint-xfce-rescue-ai#10
+- `prepare-ventoy-usb.sh` includes `host/` in the bundle allowlist and copies the host launchers to the USB root. ahliweb/linux-mint-xfce-rescue-ai#10
 
 ## [0.2.1] - 2026-09-30
 

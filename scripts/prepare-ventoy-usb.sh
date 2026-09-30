@@ -14,8 +14,11 @@ env_file_explicit=0
 signer_fpr=''
 gpg_homedir=''
 bundle_only=''
+persistence=''
+replace_persistence=0
+persistence_rel=persistence/rescue-omes-casper-rw.dat
 usage() {
-  printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets] [--signer-fingerprint FPR] [--gpg-homedir DIR]\n' "$0" >&2
+  printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets] [--signer-fingerprint FPR] [--gpg-homedir DIR] [--persistence FILE.dat [--replace-persistence]]\n' "$0" >&2
   printf '       %s --bundle-only DEST   (testing/inspection: copy only the allowlisted rescue bundle into new/empty DEST and exit)\n' "$0" >&2
 }
 
@@ -32,7 +35,7 @@ root, dest = sys.argv[1:]
 ALLOW = [
     "AGENTS.md", "LICENSE", "Makefile", "README.md", "CHANGELOG.md", "VERSION",
     "config/hermes-rescue.config.yaml", "config/rescue.env.example",
-    "docs", "profiles", "rescue-ai", "scripts", "tests",
+    "docs", "host", "profiles", "rescue-ai", "scripts", "tests",
 ]
 SKIP_DIRS = {"__pycache__", ".git"}
 SKIP_SUFFIXES = (".pyc", ".iso", ".img", ".tar.gz")
@@ -102,6 +105,8 @@ while (($#)); do
     --signer-fingerprint) signer_fpr=${2:?missing fingerprint}; shift 2 ;;
     --gpg-homedir) gpg_homedir=${2:?missing GPG homedir}; shift 2 ;;
     --bundle-only) bundle_only=${2:?missing destination}; shift 2 ;;
+    --persistence) persistence=${2:?missing persistence image}; shift 2 ;;
+    --replace-persistence) replace_persistence=1; shift ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -121,6 +126,22 @@ fi
 }
 [[ -d "$mountpoint" ]] || { printf 'Not a directory: %s\n' "$mountpoint" >&2; exit 1; }
 [[ -f "$iso" ]] || { printf 'ISO not found: %s\n' "$iso" >&2; exit 1; }
+if [[ -n "$persistence" ]]; then
+  [[ -f "$persistence" ]] || { printf 'Persistence image not found: %s\n' "$persistence" >&2; exit 1; }
+  # Ventoy/casper only use an ext filesystem labelled casper-rw.
+  python3 - "$persistence" <<'PY' || exit 1
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as fh:
+    head = fh.read(2048)
+if len(head) < 2048 or struct.unpack_from("<H", head, 1024 + 56)[0] != 0xEF53:
+    raise SystemExit("Refusing: persistence image is not an ext2/3/4 filesystem (build it with scripts/build-persistence.sh).")
+label = head[1024 + 120:1024 + 136].split(b"\0", 1)[0]
+if label != b"casper-rw":
+    raise SystemExit(f"Refusing: persistence image label is {label!r}, casper needs 'casper-rw'.")
+PY
+fi
 mountpoint -q "$mountpoint" || { printf 'Refusing: mount path is not a mounted filesystem: %s\n' "$mountpoint" >&2; exit 1; }
 # A freshly installed Ventoy data partition is empty (EFI lives on the separate
 # VTOYEFI partition), so also accept a partition labelled "Ventoy" whose disk
@@ -136,6 +157,11 @@ is_ventoy_layout() {
 [[ -d "$mountpoint/ventoy" || -d "$mountpoint/EFI" ]] || is_ventoy_layout || {
   printf 'Refusing: mount does not look like a Ventoy data partition.\n' >&2; exit 1;
 }
+
+if [[ -n "$persistence" && -e "$mountpoint/$persistence_rel" ]] && ((!replace_persistence)); then
+  printf 'Refusing: %s already exists on the USB and may hold Hermes memory/sessions. Use --replace-persistence to overwrite it (this DESTROYS that state).\n' "$mountpoint/$persistence_rel" >&2
+  exit 1
+fi
 
 verify_args=(--iso "$iso" --sha256sums "$sums" --signature "$sig")
 [[ -z "$signer_fpr" ]] || verify_args+=(--signer-fingerprint "$signer_fpr")
@@ -246,6 +272,59 @@ PY
   printf 'Ventoy auto-boot configured: %s (timeout %ss)\n' "$iso_name" "$menu_timeout"
 else
   printf 'Ventoy auto-boot not changed; existing menu configuration is preserved.\n'
+fi
+if [[ -n "$persistence" ]]; then
+  # Persistence image: Hermes memory, sessions and reports live on the USB.
+  # The backend must be on the Ventoy data partition; copy, then read back.
+  mkdir -p -- "$mountpoint/persistence"
+  cp --sparse=never -- "$persistence" "$mountpoint/$persistence_rel"
+  sync
+  src_sum=$(sha256sum -- "$persistence"); src_sum=${src_sum%% *}
+  dst_sum=$(sha256sum -- "$mountpoint/$persistence_rel"); dst_sum=${dst_sum%% *}
+  [[ "$src_sum" == "$dst_sum" ]] || {
+    printf 'Copied persistence image checksum mismatch: source=%s copy=%s\n' "$src_sum" "$dst_sum" >&2
+    exit 1
+  }
+  printf 'Copied persistence image read-back: PASS (%s)\n' "$dst_sum"
+  # Merge (not replace) a persistence entry; other keys and entries survive.
+  # autosel 1 + timeout 0 select the image without any prompt.
+  mkdir -p -- "$mountpoint/ventoy"
+  python3 - "$mountpoint/ventoy/ventoy.json" "/ISO/LinuxMintXFCE/$iso_name" "/$persistence_rel" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+image, backend = sys.argv[2], sys.argv[3]
+config = {}
+if path.exists():
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Refusing to overwrite invalid Ventoy config: {exc}")
+if not isinstance(config, dict):
+    raise SystemExit("Refusing to overwrite non-object Ventoy config")
+entries = config.get("persistence", [])
+if not isinstance(entries, list):
+    raise SystemExit("Refusing to overwrite invalid Ventoy persistence array")
+kept = [e for e in entries if not (isinstance(e, dict) and e.get("image") == image)]
+kept.append({"image": image, "backend": backend, "autosel": 1, "timeout": 0})
+config["persistence"] = kept
+path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+PY
+  printf 'Ventoy persistence configured: %s -> %s (autosel 1, timeout 0)\n' "$iso_name" "/$persistence_rel"
+fi
+
+# Host launchers for Windows/macOS/Linux operators live at the USB root; they
+# locate the bundle at <usb root>/rescue-omes. Only these known files are copied.
+if [[ -d "$root/host" ]]; then
+  for launcher in RESCUE-WINDOWS.cmd RESCUE-MACOS.command rescue-linux.sh; do
+    if [[ -f "$root/host/$launcher" && ! -L "$root/host/$launcher" ]]; then
+      cp -- "$root/host/$launcher" "$mountpoint/$launcher"
+      cmp -s -- "$root/host/$launcher" "$mountpoint/$launcher" || { printf 'Host launcher read-back mismatch: %s\n' "$launcher" >&2; exit 1; }
+      printf 'Copied host launcher to USB root: %s\n' "$launcher"
+    fi
+  done
 fi
 assert_bundle_clean "$bundle"
 sync

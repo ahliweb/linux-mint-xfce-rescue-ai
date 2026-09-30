@@ -46,7 +46,8 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - `scripts/verify-mint-iso.sh` — GPG signature (pinned Linux Mint signer fingerprint) plus direct SHA-256 comparison. **Implemented**
 - `scripts/download-ventoy.sh` — downloads the official Ventoy Linux release; the release digest is required. **Implemented**
 - `scripts/install-ventoy-usb.sh` — installs Ventoy only to an explicitly confirmed, unmounted, non-root removable USB disk. **Implemented**; the actual write is **Hardware-required**.
-- `scripts/prepare-ventoy-usb.sh` — verifies the ISO, copies it and an allowlisted rescue bundle to Ventoy, configures auto-selection in `/ventoy/ventoy.json` (the only location Ventoy reads). **Implemented**; a physical boot is **Hardware-required**.
+- `scripts/prepare-ventoy-usb.sh` — verifies the ISO, copies it and an allowlisted rescue bundle to Ventoy, configures auto-selection in `/ventoy/ventoy.json` (the only location Ventoy reads). With `--persistence FILE.dat` it also copies a persistence image (sha256 read-back) and merges a `persistence` entry; an existing image on the USB is only replaced with `--replace-persistence`. **Implemented**; a physical boot is **Hardware-required**.
+- `scripts/build-persistence.sh` — builds a Ventoy `casper-rw` persistence image with Hermes and the rescue toolkit pre-installed, so all Hermes state lives on the USB; uses docker, never a block device ([persistence](docs/persistence.md)). **Implemented** (needs docker and network); boot with persistence is **Hardware-required**.
 - `scripts/test-hermes-conversation.sh` — dry-run by default; `--live` performs one bounded cloud smoke test. **Environment-blocked** (`--live`).
 - `scripts/verify-autostart.sh` — validates the XFCE autostart entry. The reboot itself is **Hardware-required**.
 - `scripts/check-hardware-readiness.py` — read-only preflight for CPU, RAM, VGA/display, internet, and USB live-media minimums; writes a `0600` JSON report and blocks Hermes when required checks fail. **Implemented**; results are only meaningful on the target PC.
@@ -242,6 +243,7 @@ flowchart LR
     README --> AGENTS[AGENTS.md]
     README --> TEST[docs/testing.md]
     README --> SEC[docs/security-model.md]
+    README --> PERS[docs/persistence.md]
     README --> CHG[CHANGELOG.md]
     DESIGN --> SCHEMA[rescue-ai/v1 schema]
     SEC --> DESIGN
@@ -255,6 +257,7 @@ See:
 - [Rescue design](docs/design.md)
 - [Security model](docs/security-model.md)
 - [Testing and verification](docs/testing.md)
+- [Persistence image with Hermes pre-installed](docs/persistence.md)
 - [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.1`)
 - [Hermes profile](profiles/rescue-hermes/)
 - [OpenCode Go documentation](https://opencode.ai/docs/go)
