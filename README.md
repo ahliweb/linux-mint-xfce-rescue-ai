@@ -75,7 +75,7 @@ flowchart LR
     Firmware -- disk selected --> Host[Existing OS]
 ```
 
-Plugging in a USB flash drive does not force a PC to boot from it. The PC firmware must support USB boot and the operator must select the USB from the boot menu or change the boot order. Secure Boot may require an approved configuration. This repository does not silently erase disks, install Ventoy, or manufacture an ISO; those actions are explicit and operator-confirmed.
+Plugging in a USB flash drive does not force a PC to boot from it. The PC firmware must support USB boot and the operator must select the USB from the boot menu or change the boot order. Secure Boot may require a one-time key enrollment on each new machine; see [Secure Boot first boot](docs/secure-boot.md). This repository does not silently erase disks, install Ventoy, or manufacture an ISO; those actions are explicit and operator-confirmed.
 
 ## Quick start: boot from the USB (with the persistence image)
 
