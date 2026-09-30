@@ -14,8 +14,8 @@ Label status: **Implemented** (tingkat source, `make check`), **Hardware-require
 | Modul host Windows `host/modules/windows/software.ps1` (registry Uninstall, Run, winget) | Implemented (diuji lewat fixture di pwsh); Windows nyata Hardware-required |
 | Modul host macOS `host/modules/macos/software.zsh` | Implemented (diuji lewat shim); macOS nyata Hardware-required |
 | Aksi perbaikan Linux host (`sw.dpkg-configure-pending`, `sw.apt-fix-broken`, `sw.apt-reinstall-package`) | Implemented (engine, fake program); eksekusi pada sistem nyata Hardware-required |
-| Aksi perbaikan OS target dari live USB (`sw.dpkg-configure-target`) | Planned: butuh `scripts/lib/target_mount.py` (#16); sampai ada, dijurnal `target-rw unavailable` |
-| Aksi winget (`sw.winget-repair-package`, `sw.winget-upgrade-package`) | Implemented di katalog dan dapat direncanakan (`--list`); eksekusi di Windows: Planned (launcher Windows hanya mendeteksi) |
+| Aksi perbaikan OS target dari live USB (`sw.dpkg-configure-target`) | Implemented di katalog dan engine, memakai penyedia mount target `scripts/lib/target_mount.py` ([os-repair.md](os-repair.md)); mount read-write nyata Hardware-required |
+| Aksi winget (`sw.winget-repair-package`, `sw.winget-upgrade-package`) | Implemented di katalog; dieksekusi oleh engine native `host/rescue-windows.ps1` ([host-repair.md](host-repair.md)); eksekusi di Windows nyata Hardware-required |
 | Perbaikan macOS | Tidak ada aksi katalog; hanya langkah manual (lihat bawah) |
 
 ```mermaid
@@ -101,7 +101,7 @@ Precondition simulasi `apt-get -s install --reinstall PAKET`, lalu `apt-get inst
 <a id="sw-dpkg-configure-target"></a>
 ### sw.dpkg-configure-target
 
-Live USB: `dpkg --root=<target_root> --configure -a` pada OS terpasang yang di-mount read-write (persetujuan eksplisit untuk read-write). Skrip maintainer berjalan chroot di target, sehingga `/proc`, `/dev`, dan `/sys` target harus tersedia dari mount provider. **Hardware-required** dan **Planned** sampai `scripts/lib/target_mount.py` ada; sebelumnya engine menjurnal `target-rw unavailable provider-unavailable` dan tidak menjalankan apa pun.
+Live USB: `dpkg --root=<target_root> --configure -a` pada OS terpasang yang di-mount read-write (persetujuan eksplisit untuk read-write). Skrip maintainer berjalan chroot di target, sehingga `/proc`, `/dev`, dan `/sys` target disediakan oleh penyedia mount `scripts/lib/target_mount.py`, yang menolak mount bila syaratnya tidak terpenuhi (dicatat `target-rw fail` di journal dan aksi tidak dijalankan; lihat [os-repair.md](os-repair.md)). **Implemented**; eksekusi pada disk nyata **Hardware-required**.
 
 <a id="sw-winget-repair-package"></a>
 ### sw.winget-repair-package

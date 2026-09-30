@@ -17,12 +17,12 @@ flowchart LR
 
 | Level | Meaning | Examples | Where it runs |
 |---|---|---|---|
-| Implemented / source-level | Deterministic, no real USB, no cloud | Syntax, `shellcheck -x`, schema fixtures, unit tests | `make check`, CI |
-| Hardware-required | Needs a physical PC and USB | Ventoy write, firmware boot menu, live XFCE session, reboot autostart | Lab |
-| Environment-blocked | Needs network, a real key, or provider spend | `test-hermes-conversation.sh --live`, `check-hermes-rescue.sh` provider probe | Operator-approved run |
+| Implemented / source-level | Deterministic, no real USB, no real disk, no cloud; fake programs, fixtures, and loopback servers | Syntax, `shellcheck -x`, schema fixtures, catalog invariants, docs check, unit tests | `make check`, CI |
+| Hardware-required | Needs a physical PC, disk, USB, or a real Windows or macOS | Ventoy write, firmware boot menu, live XFCE session, persistence boot, reboot autostart, real mounts and repairs, Windows 10/11 and macOS launcher runs | Lab |
+| Environment-blocked | Needs network, a real key, or provider spend | `test-hermes-conversation.sh --live`, `check-hermes-rescue.sh` provider probe, `freshclam` downloads, real GitHub issue creation, the docker persistence build | Operator-approved run |
 | Planned | Design only | Learning promotion pipeline | Not testable yet |
 
-A passing source-level run must never be reported as a USB boot, reboot, or cloud success.
+A passing source-level run must never be reported as a USB boot, reboot, real repair, or cloud success.
 
 ## Running the source-level gate
 
@@ -30,34 +30,78 @@ A passing source-level run must never be reported as a USB boot, reboot, or clou
 make check
 ```
 
-`make check` runs, in order: `syntax` (`bash -n scripts/*.sh scripts/lib/*.sh` and `python3 -m py_compile scripts/*.py`), `lint` (`shellcheck -x scripts/*.sh scripts/lib/*.sh`), `validate` (the valid fixture must pass and `invalid-raw-ai-fields.json` must be rejected), `test` (`python3 -m unittest discover -s tests -v`), and `diff-check` (`git diff --check`). Individual targets can be run alone, for example `make test`. Other targets: `make collect`, `make hardware-check`, `make version`.
+`make check` runs, in order:
 
-Prerequisites: `bash`, `shellcheck`, `gnupg` (the ISO tests create a throwaway GPG key), `python3` with `jsonschema` (`sudo apt install shellcheck gnupg python3-jsonschema`). CI (`.github/workflows/ci.yml`, ubuntu-24.04, Python 3.12) installs the same tools, runs `make check PYTHON=python`, then a collector smoke test and an informational hardware-readiness report (its gate result does not fail CI).
+| Target | What it does |
+|---|---|
+| `syntax` | `bash -n` on `scripts/*.sh`, `scripts/lib/*.sh`, and `host/rescue-linux.sh`; `py_compile` on `scripts/*.py`, `scripts/lib/*.py`, and `scripts/rescue_modules/*.py`; `python3 scripts/lib/repair_catalog.py` (catalog schema and invariants); `zsh -n host/RESCUE-MACOS.command` and a PowerShell parse of `host/rescue-windows.ps1` (each is skipped with a message when `zsh` or `pwsh` is missing) |
+| `lint` | `shellcheck -x` on the same shell scripts |
+| `validate` | The valid evidence fixtures must pass and the three invalid ones (raw AI fields, text value in 1.1, 1.2 fields in 1.1) must be rejected; `scripts/rescue-report.py --validate` accepts `run-report-valid-*.json` and rejects `run-report-invalid-*.json` |
+| `docs` | `python3 scripts/check-docs.py`: relative links and `#anchors`, Mermaid block types and bracket/quote balance, the attribution line on README, CHANGELOG, and every `docs/*.md`, secret patterns in fenced blocks, and references to docs files and anchors (also the `doc` fields of the repair catalogs) |
+| `test` | `python3 -m unittest discover -s tests -v` |
+| `diff-check` | `git diff --check` |
+
+Individual targets can be run alone, for example `make test` or `make docs`. Other targets: `make collect`, `make hardware-check`, `make version`. `make check` takes several minutes because the launcher and engine tests run real shells, `pwsh`, `zsh`, and `node`.
 
 ```mermaid
 flowchart LR
-    C[make check] --> A[syntax]
+    C[make check] --> A[syntax + catalog]
     A --> B[lint: shellcheck -x]
     B --> V[validate fixtures]
-    V --> T[unit tests]
+    V --> DC[docs: check-docs.py]
+    DC --> T[unit tests]
     T --> D[git diff --check]
 ```
 
-## What the tests cover
+### Requirements
 
-The tests in `tests/` are all standard-library `unittest` (run `make test` for the current count).
+| Tool | Needed for | If missing |
+|---|---|---|
+| `bash`, `python3` (3.12 in CI), `git` | Everything | Cannot run |
+| `shellcheck` | `make lint` | Lint fails |
+| `gnupg` | The ISO tests create a throwaway GPG key | Those tests are skipped |
+| `python3-jsonschema` | Schema validation (`validate-evidence.py`, report and catalog checks) | Tests are skipped or validators exit `2` |
+| `pwsh` (optional) | The PowerShell parse check and the Windows launcher, module, engine, and report tests | Skipped with a message |
+| `zsh` (optional) | `zsh -n` and the macOS launcher and module tests | Skipped |
+| `node` (optional) | The JXA planner and report generator tests (a shim runs the same JavaScript that `osascript -l JavaScript` runs on macOS) | Skipped |
 
-| File | Covers |
-|---|---|
-| `tests/test_ventoy_iso.py` | `verify-mint-iso.sh` (signer fingerprint pinning, normalization, tampered ISO or sums, missing/duplicate entries), `install-ventoy-usb.sh` refusals (no `--yes`, non-block device), `prepare-ventoy-usb.sh --bundle-only` allowlist and clean-bundle check, `download-ventoy.sh` version validation and single API call |
-| `tests/test_hermes_scripts.py` | `rescue-env.sh` parser (quotes, `printf %q` output, no code execution, environment precedence, world-writable refusal, Desktop Entry quoting), installer bundle, symlinks, autostart and `hermes/env` round trip, bad state-dir refusal, key never on `curl` argv, dry-run smoke test, launcher threshold validation, `analyze-opencode-go.sh` refusing invalid evidence |
-| `tests/test_repair_contract.py` | Schema 1.2 rules and fixtures, every catalog invariant, trigger matching, AI proposal parsing, parameter validation and rendering, the engine under each policy (fake programs through `RESCUE_REPAIR_TEST_PATH`, interactive approval on a pseudo-terminal), backup fingerprint, rollback, `sudo -n`, journal chain and tamper detection, module sanitizing, scanner scope/proposals |
-| `tests/test_malware.py` | Schema 1.2 malware IDs and scope, `mw` catalog invariants and the `detection_ref`/`state_dir` parameter types, the ClamAV module (fake `clamscan`, EICAR built at runtime, stale/absent signatures, limits, symlinks), the scanner's local detection list (no path in evidence or the analyzer request), `rescue-malware-quarantine` (round trip, TOCTOU, symlinks, no overwrite), the engine (quarantine always asks, delete destructive, rollback restore), and the pwsh/zsh module and engine tests |
-| `tests/test_host_launchers.py` (module hook classes) | The Linux, PowerShell, and zsh launchers run their detection modules, drop invalid output, survive failing modules, and record `scope`/`repair_policy`; invalid flags exit `64` |
-| `tests/test_run_report.py` | The run report ([run report](run-report.md)): model and Markdown renderer from fixtures (sections, redaction, outcomes, before/after, open items, honesty), a tampered journal chain shown as INVALID, the privacy self-check per rule and for the key value, the schema and fixtures, the CLI (`0600`, atomic, exit codes, a journal from the real engine), PowerShell (`pwsh`) and JXA (`node` shim) generators equal to the Python one (JSON, Markdown, index), and the launcher exit paths including the post-repair re-scan on the live USB, Linux, Windows, and macOS |
-| `tests/test_evidence_readiness.py` | `validate-evidence.py` exit codes `0`/`1`/`2`, collector output (honest verification fields, `0600`), hardware-readiness thresholds, aggregation, wizard minimums and EOF handling |
+Install the required tools with `sudo apt install shellcheck gnupg python3-jsonschema`. Install `pwsh`, `zsh`, and `node` as well so the launcher tests run instead of skip; a skip is not a pass, and a run without them says nothing about the Windows and macOS launchers. CI (`.github/workflows/ci.yml`, ubuntu-24.04, Python 3.12) installs `shellcheck`, `gnupg`, `zsh`, and `jsonschema` and uses the `pwsh` and `node` that the runner image ships, so those tests run there; it runs `make check PYTHON=python`, then a collector smoke test and an informational hardware-readiness report (its gate result does not fail CI).
 
-Hermes script tests run as an unprivileged user: when the suite is executed as root it re-runs the scripts as uid `65534` through `setpriv`, because the installer refuses root. Tests use dummy keys only and never touch a real block device or the network.
+## Test inventory
+
+The tests in `tests/` are standard-library `unittest`. `tests/host_osascript_shim.js` is a helper for the macOS JXA tests, not a test. Do not rely on a total quoted in prose; get the current numbers by running the suite. The last lines of
+
+```bash
+python3 -m unittest discover -s tests -v 2>&1 | tail -4
+```
+
+are `Ran N tests` and `OK` (with `skipped=K` when tools are missing), and the per-file counts come from
+
+```bash
+python3 -m unittest discover -s tests -v 2>&1 | grep -oE '\(test_[a-z_0-9]+\.' | sort | uniq -c
+```
+
+The counts below come from that command (skipped tests are counted too) with `pwsh`, `zsh`, and `node` available; regenerate them when tests are added.
+
+| File | Tests | Covers |
+|---|---|---|
+| `tests/test_check_docs.py` | 29 | `scripts/check-docs.py`: slug rules, links, anchors, Mermaid, attribution, secret patterns, doc references, catalog `doc` fields, CLI exit codes, and that this repository passes |
+| `tests/test_ventoy_iso.py` | 25 | `verify-mint-iso.sh` (signer fingerprint pinning, normalization, tampered ISO or sums, missing/duplicate entries), `install-ventoy-usb.sh` refusals (no `--yes`, non-block device), `prepare-ventoy-usb.sh --bundle-only` allowlist and clean-bundle check, `download-ventoy.sh` version validation and single API call |
+| `tests/test_hermes_scripts.py` | 18 | `rescue-env.sh` parser (quotes, `printf %q` output, no code execution, environment precedence, world-writable refusal, Desktop Entry quoting), installer bundle, symlinks, autostart and `hermes/env` round trip, bad state-dir refusal, key never on `curl` argv, dry-run smoke test, launcher threshold validation, `analyze-opencode-go.sh` refusing invalid evidence |
+| `tests/test_evidence_readiness.py` | 20 | `validate-evidence.py` exit codes `0`/`1`/`2`, collector output (honest verification fields, `0600`), hardware-readiness thresholds, aggregation, wizard minimums and EOF handling |
+| `tests/test_target_scan.py` | 37 | `scan-target-os.py` on fixture roots (Windows, Linux Mint, macOS, encrypted, unmountable, limits, symlinks), `opencode-go-analyze.py` against a loopback fake provider (validation, exit codes `2`/`3`/`4`, dry run, restricted evidence, key never printed), and the launcher wiring |
+| `tests/test_repair_contract.py` | 54 | Schema 1.2 rules and fixtures, every catalog invariant, trigger matching, AI proposal parsing, parameter validation and rendering, the engine under each policy (fake programs through `RESCUE_REPAIR_TEST_PATH`, interactive approval on a pseudo-terminal), backup fingerprint, rollback, `sudo -n`, journal chain and tamper detection, module sanitizing, scanner scope and proposals, and the 0.3.0 alignment (classification, provider fields, `celsius`) |
+| `tests/test_hardware.py` | 45 | The hardware module on fixture trees (weak battery, hot CPU, EDAC errors, failing SMART, worn NVMe, GPU without a driver), scope selection, and the `hardware.ps1` (`pwsh`) and `hardware.zsh` (`zsh`) modules |
+| `tests/test_os_repair.py` | 60 | The OS checks for Linux, Windows, and macOS fixtures, the OS catalogs, the target mount provider (fixture mode, refusals, real path with a fake privileged mount, signals, live-session guard), the engine with the provider, and the `os.ps1`/`os.zsh` modules |
+| `tests/test_software.py` | 48 | The `sw-*` checks (dpkg fixtures, selected packages, honest `unknown` for Windows targets), the software catalog, the engine, and the `software.ps1`/`software.zsh` modules |
+| `tests/test_malware.py` | 88 | Schema 1.2 malware IDs and scope, `mw` catalog invariants and the `detection_ref`/`state_dir` parameter types, the ClamAV module (fake `clamscan`, EICAR built at runtime, stale/absent signatures, limits, symlinks), the scanner's local detection list (no path in evidence or the analyzer request), `rescue-malware-quarantine` (round trip, TOCTOU, symlinks, no overwrite), the engine (quarantine always asks, delete destructive, rollback restore), and the pwsh/zsh module and engine tests |
+| `tests/test_host_launchers.py` | 36 | The Linux launcher end to end (evidence, real analyzer `--dry-run`, fake loopback server, exit codes `1`/`3`/`4`/`5`/`6`/`64`), the PowerShell launcher (`pwsh`: parse, env-file parser parity, evidence), the macOS launcher (`zsh -n`, shimmed macOS commands, key only on `curl` stdin), static rules (no `eval`, `source`, `sudo`, `Invoke-Expression`, elevation, host temp files), and the module hook classes |
+| `tests/test_host_repair.py` | 72 | The native Windows and macOS repair engines against the Python one: plan versus `repair_catalog.triggered`, AI parsing versus `parse_ai_proposals`, catalog hash and backup fingerprint, journals accepted by `rescue-repair.py --verify-journal`, policy, parameters, timeouts, rollback, Windows argument quoting, interactive approval on a pseudo-terminal, and the JXA planner via the `node` shim |
+| `tests/test_run_report.py` | 79 | The run report ([run report](run-report.md)): model and Markdown renderer from fixtures (sections, redaction, outcomes, before/after, open items, honesty), a tampered journal chain shown as INVALID, the privacy self-check per rule and for the key value, the schema and fixtures, the CLI (`0600`, atomic, exit codes, a journal from the real engine), PowerShell (`pwsh`) and JXA (`node` shim) generators equal to the Python one (JSON, Markdown, index), and the launcher exit paths including the post-repair re-scan on the live USB, Linux, Windows, and macOS |
+| `tests/test_persistence.py` | 32 | `build-persistence.sh` argument validation and secret handling (no docker needed), `overlay_whiteouts.py` (layer conversion, `debugfs` scripts, a real ext4 image), and `prepare-ventoy-usb.sh --persistence` (`ventoy.json` merge, refusal to overwrite, invalid images, host launchers copied to the USB root) |
+| `tests/test_skill_submission.py` | 47 | `skill_sanitize.py` (placeholders, secret scan, hash), `submit-skill.py` dry run, refusals, fallback URL or file, submit and de-duplication against a fake GitHub on `127.0.0.1`, exit codes, token never on argv or in output, and the `RESCUE_GITHUB_ISSUES_TOKEN` allowlist entry |
+
+Hermes script tests run as an unprivileged user: when the suite is executed as root it re-runs the scripts as uid `65534` through `setpriv`, because the installer refuses root. Tests use dummy keys only and never touch a real block device or the network (loopback fake servers only).
 
 ## Manual and lab checks
 
@@ -67,6 +111,8 @@ Hermes script tests run as an unprivileged user: when the suite is executed as r
 ./scripts/collect-evidence.sh --output /tmp/rescue-evidence.json
 python3 scripts/validate-evidence.py /tmp/rescue-evidence.json
 python3 scripts/check-hardware-readiness.py --mode auto --output /tmp/rescue-hardware-readiness.json
+python3 scripts/lib/repair_catalog.py
+python3 scripts/rescue-report.py --validate rescue-ai/v1/fixtures/run-report-valid-full.json
 ```
 
 `validate-evidence.py` accepts several files and exits `0` (all valid), `1` (at least one invalid), or `2` (usage error, unreadable file, JSON parse error, or `jsonschema` missing). The collector reports `verification.hashes_verified: false` and `status: not_applicable` on purpose; do not treat that as a failure.
@@ -93,18 +139,27 @@ Record physical evidence (photo, log, or lab sheet) for each item; without it, r
 3. Boot the PC from the USB via the firmware menu (UEFI and Legacy where applicable) and confirm Ventoy auto-selects Linux Mint XFCE.
 4. In the live session run `./scripts/install-hermes-rescue.sh --state-dir ...` as the desktop user, then `./scripts/check-hermes-rescue.sh --state-dir ...`.
 5. `./scripts/verify-autostart.sh --state-dir ...`, reboot, log in, and check `pgrep -af "hermes.*mimo-v2.6-flash"`.
+6. Persistence image: boot with the `persistence` entry, confirm `/cow` is the `casper-rw` overlay, install or change something, reboot, and confirm Hermes state and reports survived ([persistence](persistence.md)).
+7. Live scan on a PC with real Windows, Linux Mint, and macOS disks: mounts stay read-only, encrypted volumes stay closed, the reports appear under `<state-dir>/reports/` ([target OS scan](target-os-scan.md)).
+8. Repairs on a sacrificial disk only: a read-write remount with a backup reference, one action per class (safe, reversible, destructive), the journal verified with `rescue-repair.py --verify-journal`, and the run report read ([repair framework](repair-framework.md), [OS repair](os-repair.md)).
+9. Windows 10/11 and macOS 12+ (Intel and Apple Silicon): double-click the launchers, including SmartScreen and Gatekeeper behavior, Windows PowerShell 5.1, `osascript` JXA, Defender, `fdesetup`, `csrutil`, `diskutil`, and the native repair engines ([host launchers](host-launchers.md), [host repair](host-repair.md)).
+10. Malware: real ClamAV and Defender on real files, quarantine and restore on a read-write target ([malware](malware.md)).
 
 ### Environment-blocked checks
 
 - `./scripts/test-hermes-conversation.sh --state-dir PATH` is a no-cost dry run.
 - `./scripts/test-hermes-conversation.sh --state-dir PATH --live` sends one bounded request to OpenCode Go and incurs provider usage. It needs an operator-provided `OPENCODE_GO_API_KEY`. Never fabricate a successful response and never print the key.
 - The provider probe inside `check-hermes-rescue.sh` needs network and a key; without them it prints `Provider network check skipped` and, if the key is unset, reports `NOT READY`.
+- `scripts/build-persistence.sh` needs docker and network (apt archive and the Hermes installer).
+- `mw.clamav-update-signatures` (`freshclam`) and `apt-get`-based repairs need network.
+- `scripts/submit-skill.py` against `api.github.com` needs network and a real fine-grained token; the automated tests use a fake GitHub on `127.0.0.1`.
 
 ## Secret and diff hygiene before committing
 
 ```bash
+python3 scripts/check-docs.py
 git diff --check
 git status --short   # no .env, config/rescue.env, ISOs, Ventoy archives, generated evidence, or Hermes state
 ```
 
-Use dummy keys in any provisioning test.
+Use dummy keys in any provisioning test. The docs checker scans fenced blocks for secret-shaped strings; do not paste real keys or tokens into documents.

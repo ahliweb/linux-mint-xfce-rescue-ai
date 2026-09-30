@@ -34,12 +34,13 @@ flowchart TD
 
 Read these files before changing behavior:
 
-1. `README.md` — operator-facing scope and execution flow.
-2. `docs/design.md` — rescue architecture and safety boundary.
-3. `docs/hermes-learning-loop.md` — Hermes memory, skills, feedback, and promotion model.
-4. `profiles/rescue-hermes/` — the Hermes runtime policy and rescue skill.
-5. `rescue-ai/v1/rescue-evidence.schema.json` — evidence contract.
+1. `README.md` — operator-facing scope, status table, and quick starts.
+2. `docs/design.md` — rescue architecture, flows, and the data-versus-commands boundary.
+3. `docs/hermes-learning-loop.md` — Hermes memory, skills, feedback, and promotion model (what is implemented and what is planned).
+4. `profiles/rescue-hermes/` — the Hermes runtime policy and rescue skills.
+5. `rescue-ai/v1/` — evidence, repair catalog, journal, and run report schemas, fixtures, and `catalog/*.json`.
 6. `docs/security-model.md` and `docs/testing.md` — threat/control table and verification levels.
+7. `docs/repair-framework.md` and the feature docs it links (hardware, OS, software, malware, host launchers, host repair, run report, persistence, skill submission).
 
 ## Safety invariants
 
@@ -60,6 +61,12 @@ flowchart LR
 - Require backup/image reference, approval, rollback plan, and read-back verification for mutations.
 - Repairs exist only as typed actions in `rescue-ai/v1/catalog/` executed by `scripts/rescue-repair.py`; never add a shell, interpreter, or free-form command to the catalog, and never let evidence or model output supply argv or parameter values. See `docs/repair-framework.md`.
 - Detection modules (`scripts/rescue_modules/`, `host/modules/`) are read-only and one workstream owns each domain file.
+- Repair engine policy: `approve-each` is the default; `auto-safe` is opt-in and runs only `safe` catalog-trigger actions; `destructive` actions need `--backup-ref` and the typed `action_id`; every executed action is verified and journaled. The journal is append-only and hash-chained and never stores raw output, paths, names, or credentials. Changing the engine means changing the Python engine and both native host engines (`host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`) together; the tests cross-check them.
+- Target mounts: targets are mounted read-only (`ro,noexec,nosuid,nodev`, no journal replay) and read-write only through `scripts/lib/target_mount.py` after operator approval and only inside the rescue live session; never unlock BitLocker, LUKS, or FileVault; never follow symlinks out of the target root.
+- Malware: quarantine is reversible and always asks (even under `auto-safe`); delete is `destructive`. File names, paths, and signature names live only in the local `0600` detection list and are referenced as `d-N` (`detection_ref`); they never enter evidence, the journal, the analyzer request, the report, an issue, or a skill. A clean scan is never proof of absence.
+- Run report privacy: `report.md` and `report.json` carry no identifiers, paths, package or signature names, or raw output; the Python, PowerShell, and JXA generators must stay equal, and the privacy self-check must keep refusing a leaking report.
+- Tokens: `RESCUE_GITHUB_ISSUES_TOKEN` is read only through the allowlisted config parsers, sent only in an in-process `Authorization` header to `api.github.com`, and removed from the Hermes environment; skill submission needs the operator's explicit confirmation and refuses on any secret finding.
+- Host launchers never elevate, never write to the host disk, never run without the operator's click (no AutoRun), and keep the key off every command line.
 - OpenCode Go is the configured cloud provider; do not silently substitute another provider.
 - Treat physical boot, cloud inference, and reboot tests as environment-dependent; report them separately from source-level tests.
 
@@ -76,17 +83,19 @@ flowchart LR
 Preferred single gate (the same one CI runs in `.github/workflows/ci.yml`):
 
 ```bash
-make check   # syntax, lint (shellcheck -x), validate fixtures, unit tests, git diff --check
+make check   # syntax + catalog, lint (shellcheck -x), validate fixtures, docs check, unit tests, diff check
 ```
 
-Requires `shellcheck`, `gnupg`, and `python3-jsonschema` (see [docs/testing.md](docs/testing.md)). The individual steps and extra manual checks:
+Requires `shellcheck`, `gnupg`, and `python3-jsonschema`; also install `pwsh`, `zsh`, and `node` so the Windows and macOS launcher tests run instead of skip (CI has them; a skip is not a pass). See [docs/testing.md](docs/testing.md). The individual steps and extra manual checks:
 
 ```bash
-bash -n scripts/*.sh scripts/lib/*.sh
-python3 -m py_compile scripts/*.py
-shellcheck -x scripts/*.sh scripts/lib/*.sh
+bash -n scripts/*.sh scripts/lib/*.sh host/rescue-linux.sh
+python3 -m py_compile scripts/*.py scripts/lib/*.py scripts/rescue_modules/*.py
+shellcheck -x scripts/*.sh scripts/lib/*.sh host/rescue-linux.sh
 python3 scripts/validate-evidence.py rescue-ai/v1/fixtures/valid-sanitized-opencode-go.json
 python3 scripts/lib/repair_catalog.py          # repair catalog schema + invariants
+python3 scripts/rescue-report.py --validate rescue-ai/v1/fixtures/run-report-valid-full.json   # run report schema
+python3 scripts/check-docs.py                  # links, anchors, Mermaid, attribution, secrets, doc references (make docs)
 python3 -m unittest discover -s tests -v
 ./scripts/collect-evidence.sh --output /tmp/rescue-evidence.json
 python3 scripts/validate-evidence.py /tmp/rescue-evidence.json
@@ -124,10 +133,12 @@ flowchart TD
 - Update Mermaid diagrams when architecture or flow changes.
 - Mark implemented, planned, hardware-required, and environment-blocked work distinctly.
 - Use Bahasa Indonesia for operator explanations when appropriate; preserve commands, identifiers, model IDs, and URLs exactly.
-- Include the management attribution in new operator-facing documents.
+- Include the management attribution in new operator-facing documents: every `docs/*.md` (and the README and CHANGELOG) carries the line `> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.`; `scripts/check-docs.py` enforces it.
+- Keep links, `#anchors`, and backticked docs references valid, start every Mermaid block with a known diagram type, and never put secret-shaped strings in fenced blocks; `make docs` (part of `make check`) checks all of it. The `doc` field of every catalog action must point at an existing heading or `<a id>` anchor.
+- When tests are added or removed, update the inventory table in `docs/testing.md` (counts come from running the suite, not from memory).
 - Docs must describe the actual script behavior; when a script changes, update README, `docs/`, and `CHANGELOG.md` in the same change.
 - Operator install commands run as the desktop user: `scripts/install-hermes-rescue.sh` refuses root and calls `sudo` itself. Never document `sudo ./scripts/install-hermes-rescue.sh`.
-- Run link, syntax, secret, and diff checks before committing.
+- Run `make docs` (link, anchor, Mermaid, attribution, and secret checks), the syntax checks, and the diff check before committing.
 
 ## Git workflow
 

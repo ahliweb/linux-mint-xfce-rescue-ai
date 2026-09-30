@@ -7,19 +7,23 @@ Bootable USB rescue toolkit with a dedicated **Hermes Rescue profile** and cloud
 - OpenCode model ID: `opencode-go/mimo-v2.6-flash`
 - Hermes route: `custom` + `https://opencode.ai/zen/go/v1`
 
-The system runs read-only diagnostics locally, sanitizes evidence, and asks Hermes/OpenCode Go for bounded hypotheses and next checks. It never performs destructive repair without operator approval.
+The toolkit runs read-only diagnostics (hardware, operating systems, installed software, malware), sanitizes the results into numbers-only evidence, and asks OpenCode Go for bounded hypotheses. A repair is only ever a typed catalog action that the operator approves; the AI can at most name an `action_id`. Everything it produces is written to the USB, and every run ends with a report.
 
 > Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 
 ```mermaid
 flowchart LR
-    USB[Linux Mint XFCE USB] --> H[Hermes Rescue Profile]
-    H --> E[Read-only evidence]
-    E --> G[OpenCode Go / MiMo-V2.6-Flash]
-    G --> O[Operator approval]
-    O --> V[Verification and report]
+    USB[Rescue USB] --> P[Preflight]
+    P --> S[Read-only scan]
+    S --> E[Evidence 1.2]
+    E --> G[OpenCode Go analysis]
+    G --> R[Catalog repairs with approval]
+    E --> R
+    R --> J[(Journal on the USB)]
+    J --> RP[Run report]
+    RP --> H[Hermes]
     M[ahliweb.com] --> K[ahlikoding.com + satpamsiber.com]
-    K --> H
+    K --> USB
 ```
 
 ## Ways to use the USB
@@ -28,56 +32,39 @@ flowchart LR
 flowchart LR
     U[Rescue USB] --> L[Boot the PC from the USB]
     U --> H[Plug into a running Windows / macOS / Linux]
-    L --> S[Read-only scan of installed OSes, hardware, software]
+    L --> S[Read-only scan of installed OSes, hardware, software, malware]
     H --> C[Read-only host checks]
     S --> A[OpenCode Go analysis]
     C --> A
     A --> R[Catalog repairs with your approval]
-    R --> J[(Evidence, analysis, journal on the USB)]
+    R --> J[(Evidence, analysis, journal, run report on the USB)]
 ```
 
 | Mode | What happens | Guide |
 |---|---|---|
-| Boot from the USB (Linux Mint 22.3 XFCE live) | Hardware preflight, read-only scan of the operating systems on the internal disks, OpenCode Go analysis, catalog repairs under `--repair-policy` (default `approve-each`), then Hermes. With the persistence image, Hermes and all its state live on the USB | [target OS scan](docs/target-os-scan.md), [persistence](docs/persistence.md) |
-| Running Windows 10/11, macOS 12+, or Linux | Double-click `RESCUE-WINDOWS.cmd` / `RESCUE-MACOS.command`, or run `rescue-omes/host/rescue-linux.sh`. Nothing is installed on the host; evidence, analysis, and the repair journal are written to the USB | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
-| Scope and repair policy (all modes) | `--scope all` or selected areas (`hardware.disk`, `os`, `malware`, `software.selected --packages ...`); repairs are typed catalog actions only | [repair framework](docs/repair-framework.md) |
+| Boot from the USB (Linux Mint 22.3 XFCE live) | Hardware preflight, read-only scan of the operating systems on the internal disks, OpenCode Go analysis, catalog repairs under `--repair-policy` (default `approve-each`), run report, then Hermes. With the persistence image, Hermes and all its state live on the USB | [target OS scan](docs/target-os-scan.md), [persistence](docs/persistence.md) |
+| Running Windows 10/11, macOS 12+, or Linux | Double-click `RESCUE-WINDOWS.cmd` / `RESCUE-MACOS.command`, or run `rescue-omes/host/rescue-linux.sh`. Nothing is installed on the host; evidence, analysis, repair journal, and report are written to the USB | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
 
-## What is implemented
+## Status
 
-```mermaid
-flowchart TD
-    P[Hermes profile] --> B[Bootstrap]
-    B --> V[Ventoy workflow]
-    V --> C[Collector + validator]
-    C --> T[Health and smoke tests]
-```
+Legend: **Implemented** (source level, covered by `make check`), **Hardware-required** (needs a real PC or USB), **Environment-blocked** (needs network, an API key, or provider spend), **Planned** (design only). See [testing](docs/testing.md).
 
-Status legend used in the docs: **Implemented** (source-level, covered by `make check`), **Hardware-required** (needs a real PC/USB), **Environment-blocked** (needs network, an API key, or provider spend), **Planned** (design only). See [testing](docs/testing.md) for what each level means.
-
-- Hermes profile files: `profiles/rescue-hermes/`, and a Hermes configuration template with OpenCode Go / `mimo-v2.6-flash` as the default model. **Implemented**
-- `scripts/install-hermes-rescue.sh` — run as the desktop user (it refuses root and calls `sudo` only where needed). Installs Hermes through the official installer (optionally pinned with `--installer-sha256` / `HERMES_INSTALLER_SHA256`), creates an isolated `HERMES_HOME`, installs the profile, installs a runtime bundle to `/usr/local/lib/rescue-omes` (`--prefix`), symlinks `launch-hermes-rescue.sh` and `check-hermes-rescue.sh` into `/usr/local/bin` (`--bin-dir`), and creates the XFCE autostart entry (skip with `--no-autostart`; skip the Hermes download with `--skip-hermes-install`). **Implemented**
-- `scripts/launch-hermes-rescue.sh` — hardware preflight, then Hermes with the isolated profile. **Implemented**
-- `scripts/check-hermes-rescue.sh` — validates Hermes, configuration, provider endpoint, and model; the API key is passed to `curl` through a stdin config, never on the command line. **Implemented**; the endpoint probe is **Environment-blocked** without network and key.
-- `scripts/lib/rescue-env.sh` — allowlisted config parser shared by the scripts (see [configuration file format](#configuration-file-format)). **Implemented**
-- `scripts/collect-evidence.sh` and `scripts/validate-evidence.py` — read-only collector that reports verification honestly (`hashes_verified: false`, `status: not_applicable`) and a schema validator (exit `0` valid, `1` invalid, `2` usage/parse error). **Implemented**
-- `scripts/analyze-opencode-go.sh` — validates evidence, then pipes it to the operator-configured `OPENCODE_ADAPTER_COMMAND`. **Implemented**; the adapter itself is operator-supplied.
-- `scripts/verify-mint-iso.sh` — GPG signature (pinned Linux Mint signer fingerprint) plus direct SHA-256 comparison. **Implemented**
-- `scripts/download-ventoy.sh` — downloads the official Ventoy Linux release; the release digest is required. **Implemented**
-- `scripts/install-ventoy-usb.sh` — installs Ventoy only to an explicitly confirmed, unmounted, non-root removable USB disk. **Implemented**; the actual write is **Hardware-required**.
-- `scripts/prepare-ventoy-usb.sh` — verifies the ISO, copies it and an allowlisted rescue bundle to Ventoy, configures auto-selection in `/ventoy/ventoy.json` (the only location Ventoy reads). With `--persistence FILE.dat` it also copies a persistence image (sha256 read-back) and merges a `persistence` entry; an existing image on the USB is only replaced with `--replace-persistence`. **Implemented**; a physical boot is **Hardware-required**.
-- `scripts/build-persistence.sh` — builds a Ventoy `casper-rw` persistence image with Hermes and the rescue toolkit pre-installed, so all Hermes state lives on the USB; uses docker, never a block device ([persistence](docs/persistence.md)). **Implemented** (needs docker and network); boot with persistence is **Hardware-required**.
-- `scripts/test-hermes-conversation.sh` — dry-run by default; `--live` performs one bounded cloud smoke test. **Environment-blocked** (`--live`).
-- `scripts/verify-autostart.sh` — validates the XFCE autostart entry. The reboot itself is **Hardware-required**.
-- `scripts/check-hardware-readiness.py` — read-only preflight for CPU, RAM, VGA/display, internet, and USB live-media minimums; writes a `0600` JSON report and blocks Hermes when required checks fail. **Implemented**; results are only meaningful on the target PC.
-- `scripts/submit-skill.py` — after an approved, verified case, prepares a sanitized, secret-scanned candidate skill and, only after the operator confirms, files it as a `skill-candidate` issue (de-duplicated by content hash); without a token it prints a pre-filled issue link ([skill submission](docs/skill-submission.md)). **Implemented**; real GitHub calls are **Environment-blocked**.
-- Repair framework: evidence schema 1.2 with `--scope` / `--repair-policy`, a typed repair catalog (`rescue-ai/v1/catalog/`), `scripts/rescue-repair.py` (policy `detect-only` / `approve-each` default / `auto-safe` opt-in, backup reference, verify, rollback), and a hash-chained repair journal on the USB. The AI can only propose catalog action IDs ([repair framework](docs/repair-framework.md)). **Implemented** (the catalogs are still empty); real repairs are **Hardware-required**.
-- Hardware detection and repair ([hardware](docs/hardware.md)): read-only `hw-*` checks per `--scope hardware.*`. Repairs are only safe or reversible catalog actions (SMART/NVMe self-test, network service restart, Wi-Fi unblock). **Implemented**; behavior on physical hardware is **Hardware-required**.
-- Installed software inventory, health, and repair ([software](docs/software.md)): numbers-only `sw-*` checks for all packages or `--scope software.selected --packages firefox,vlc`. Repairs are destructive catalog actions (dpkg/apt, winget) that need a backup reference and a typed approval. **Implemented**; real package managers are **Hardware-required**.
-- OS detection and repair for Linux Mint, Windows, and macOS ([OS repair](docs/os-repair.md)): scoped checks, per-action approval, and offline Linux repairs through an operator-approved read-write remount (`scripts/lib/target_mount.py`). **Implemented**; real mounts, chroot, and Windows execution are **Hardware-required**.
-- Repairs from the Windows and macOS host launchers ([host repair](docs/host-repair.md)): the same catalog, policy, approval, and journal as on Linux, run natively without a shell and without elevation. **Implemented** at source level; real Windows 10/11 and macOS execution is **Hardware-required**.
-- Comprehensive run report ([run report](docs/run-report.md)): at the end of every run, including failed or partial ones, the launchers write `reports/run-<utc>/report.md` (Bahasa Indonesia) and a schema-validated `report.json` plus `reports/index.md` to the USB: readiness, every check by domain, the AI analysis (marked, never executed), each repair action from the hash-chained journal, a before/after re-scan, open items, and what was not verified. No identifiers, paths, package or signature names; a privacy self-check refuses to write a full report that contains any. **Implemented** (Python, PowerShell, and JXA generators are cross-checked); real Windows/macOS runs are **Hardware-required**.
-- Malware detection and quarantine ([malware](docs/malware.md)): `--scope malware`, detection only or detection plus repair. ClamAV on the read-only mounted OS (live USB) and on Linux hosts, Microsoft Defender status on Windows, XProtect age on macOS; evidence carries counts only and the paths stay in a local `0600` list. Quarantine is reversible and always asks; deletion is destructive; a clean result is not proof of absence. **Implemented**; ClamAV/Defender on real machines are **Hardware-required**, signature downloads are **Environment-blocked**.
-- Candidate learning, feedback, and signed promotion — **Planned** ([learning loop](docs/hermes-learning-loop.md)).
+| Area | Status | Details |
+|---|---|---|
+| Hermes profile, installer, launcher, health check, XFCE autostart | Implemented; the reboot itself is Hardware-required; the provider probe is Environment-blocked | this file, [design](docs/design.md) |
+| Evidence collector and validator, schema 1.2, config parser | Implemented | [design](docs/design.md), [security model](docs/security-model.md) |
+| Ventoy download, install, preparation, signer-pinned ISO check | Implemented; the USB write and the physical boot are Hardware-required | [below](#prepare-an-existing-ventoy-usb) |
+| Persistence image with Hermes pre-installed | Implemented (needs docker and network); boot with persistence is Hardware-required | [persistence](docs/persistence.md) |
+| Hardware readiness preflight | Implemented; meaningful only on the target PC | [design](docs/design.md#hardware-readiness-gate) |
+| Live USB scan of the internal disks and cloud analysis | Implemented; real disks are Hardware-required, the cloud call is Environment-blocked | [target OS scan](docs/target-os-scan.md) |
+| Detection: hardware, OS, software, malware | Implemented; real machines are Hardware-required | [hardware](docs/hardware.md), [OS](docs/os-repair.md), [software](docs/software.md), [malware](docs/malware.md) |
+| Repair catalog, policy engine, hash-chained journal | Implemented; real repairs are Hardware-required | [repair framework](docs/repair-framework.md) |
+| Windows, macOS, and Linux host launchers with native repairs | Implemented; real Windows 10/11 and macOS runs are Hardware-required | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
+| Run report on the USB | Implemented | [run report](docs/run-report.md) |
+| Candidate skill submission to GitHub Issues | Implemented; real GitHub calls are Environment-blocked | [skill submission](docs/skill-submission.md) |
+| Live cloud smoke test (`test-hermes-conversation.sh --live`) | Environment-blocked | [testing](docs/testing.md) |
+| Candidate memory, operator feedback labels, regression evaluation, signed promotion | Planned | [learning loop](docs/hermes-learning-loop.md) |
+| Hardware boot matrix (Pi 5, x86, UEFI/BIOS) | Hardware-required | [testing](docs/testing.md) |
 
 ## Important boot limitation
 
@@ -88,24 +75,34 @@ flowchart LR
     Firmware -- disk selected --> Host[Existing OS]
 ```
 
-Plugging in a USB flash drive does not force a PC to boot from it. The PC firmware must support USB boot and the operator must select the USB from the boot menu or change the boot order. Secure Boot may require an approved configuration.
+Plugging in a USB flash drive does not force a PC to boot from it. The PC firmware must support USB boot and the operator must select the USB from the boot menu or change the boot order. Secure Boot may require an approved configuration. This repository does not silently erase disks, install Ventoy, or manufacture an ISO; those actions are explicit and operator-confirmed.
 
-This repository does not silently erase disks, install Ventoy, or manufacture an ISO. Those actions are deliberately explicit and operator-confirmed.
-
-## Quick start on a live Linux Mint XFCE session
+## Quick start: boot from the USB (with the persistence image)
 
 ```mermaid
-sequenceDiagram
-    participant U as Operator
-    participant X as XFCE live session
-    participant H as Hermes bootstrap
-    participant G as OpenCode Go
-    U->>X: Open terminal
-    X->>H: Install isolated profile
-    U->>H: Set API key
-    H->>G: Health check
-    G-->>H: Provider response
+flowchart LR
+    ISO[Verified Mint ISO] --> B[build-persistence.sh]
+    B --> DAT[casper-rw .dat image]
+    DAT --> P[prepare-ventoy-usb.sh --persistence]
+    P --> BOOT[Boot from the USB]
+    BOOT --> AUTO[XFCE autostart: launcher]
+    AUTO --> HR[Preflight, scan, analysis, repairs, report, Hermes]
 ```
+
+1. Install Ventoy on the USB and verify the ISO (see [Prepare an existing Ventoy USB](#prepare-an-existing-ventoy-usb)).
+2. Build the image and copy everything to the USB (needs `docker`; details and credential risks in [persistence](docs/persistence.md)):
+
+```bash
+scripts/build-persistence.sh --iso /path/linuxmint-22.3-xfce-64bit.iso \
+  --output /path/rescue-omes-casper-rw.dat --no-provision-secrets --installer-sha256 HEX
+scripts/prepare-ventoy-usb.sh --ventoy-mount /mnt/ventoy --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
+  --sha256sums sha256sum.txt --signature sha256sum.txt.gpg \
+  --no-provision-secrets --persistence /path/rescue-omes-casper-rw.dat
+```
+
+3. Boot the PC from the USB. The autostart entry runs `launch-hermes-rescue.sh --hardware-mode auto`; the result is in `<state-dir>/reports/` (`run-<utc>/report.md`). Without a provisioned key, enter `OPENCODE_GO_API_KEY` in the live session; it is stored in the persistence image, so the USB is then credential-bearing.
+
+## Quick start: live Linux Mint XFCE session (no persistence image)
 
 ```bash
 cp config/rescue.env.example config/rescue.env
@@ -123,25 +120,25 @@ $EDITOR config/rescue.env   # set OPENCODE_GO_API_KEY; never commit it
   --state-dir /media/$USER/RESCUE-STATE/hermes-state
 ```
 
-After installation, `launch-hermes-rescue.sh` and `check-hermes-rescue.sh` are also on `PATH` (`/usr/local/bin`), and the runtime bundle lives in `/usr/local/lib/rescue-omes`. The installer writes `<state-dir>/hermes/env` as `KEY='value'` lines with mode `0600`; an existing key is preserved when the installer is re-run without a new one. For an unpinned Hermes download the installer prints a warning; pass `--installer-sha256 HEX` (or set `HERMES_INSTALLER_SHA256`) to verify it before execution.
+The installer creates an isolated `HERMES_HOME`, installs the profile and every skill, installs a runtime bundle (`scripts`, `rescue-ai`, `profiles`, `docs`, config templates) to `/usr/local/lib/rescue-omes` (`--prefix`), symlinks `launch-hermes-rescue.sh`, `check-hermes-rescue.sh`, and `rescue-malware-quarantine` into `/usr/local/bin` (`--bin-dir`), and creates the XFCE autostart entry (`--no-autostart` skips it, `--skip-hermes-install` skips the Hermes download). For an unpinned Hermes download it prints a warning; pass `--installer-sha256 HEX` (or set `HERMES_INSTALLER_SHA256`) to verify it before execution. It writes `<state-dir>/hermes/env` as `KEY='value'` lines with mode `0600` and preserves an existing key on re-runs. The state directory must be on a writable persistent partition if memory and sessions should survive reboot; use a separate encrypted writable storage device.
 
-The state directory must be on a writable persistent partition if memory and sessions should survive reboot. For a normal live session, use a separate encrypted writable storage device.
+The launcher runs the hardware preflight (2 logical CPUs, 4 GiB RAM, a display adapter, an IP route plus DNS/HTTPS, an 8 GiB USB live medium; change with `--min-cpu`, `--min-ram-gib`, `--min-usb-gib`; `--hardware-mode wizard` asks at every step), scans the internal disks, analyzes, offers repairs, writes the run report, and then starts Hermes. `fail` or `unknown` on a required preflight check stops it. The report is `<state-dir>/reports/hardware-readiness-YYYYMMDD-HHMMSS.json`; a physically unverified firmware boot is only a warning because software cannot prove which medium the firmware booted.
 
-The launcher performs the hardware preflight after verifying the Hermes installation and before starting Hermes. The default is fully automatic through all checks:
+## Quick start: Windows, macOS, and Linux host
 
-```bash
-./scripts/launch-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state
-```
+Plug the USB into the running computer. Nothing is installed on the host and there is no AutoRun: one double-click by the operator is the approval point.
 
-It checks the minimum of 2 logical CPUs, 4 GiB RAM, a VGA/3D/display adapter, an IP route plus DNS/HTTPS access, and an 8 GiB USB live medium. Thresholds can be changed explicitly with `--min-cpu`, `--min-ram-gib`, and `--min-usb-gib`. Use the per-step wizard when an operator must confirm every check:
+| OS | Run | Notes |
+|---|---|---|
+| Windows 10/11 | Double-click `RESCUE-WINDOWS.cmd` on the USB | No admin rights requested; SmartScreen guidance in [host launchers](docs/host-launchers.md) |
+| macOS 12+ (Intel and Apple Silicon) | Double-click `RESCUE-MACOS.command` | Built-in tools only; Gatekeeper guidance in [host launchers](docs/host-launchers.md) |
+| Linux / Linux Mint (running system) | `/media/$USER/<USB>/rescue-omes/host/rescue-linux.sh` | Needs `python3` and `python3-jsonschema` |
 
-```bash
-./scripts/launch-hermes-rescue.sh \
-  --state-dir /media/$USER/RESCUE-STATE/hermes-state \
-  --hardware-mode wizard
-```
+Useful flags on all three: `--evidence-only` / `--dry-run` (no cloud call), `--scope`, `--packages`, `--repair-policy` (Windows uses `-EvidenceOnly`, `-DryRun`, `-Scope`, `-Packages`, `-RepairPolicy`). Output is in `rescue-omes/reports/`. Repair flags for Windows and macOS are in [host repair](docs/host-repair.md).
 
-The report is saved under `<state-dir>/reports/hardware-readiness-YYYYMMDD-HHMMSS.json`. `fail` and `unknown` on required checks prevent Hermes from starting and show the unmet minimum; a physically unverified firmware boot is reported as a warning because software cannot prove that a particular PC firmware booted from USB. The check is read-only and does not format, partition, or write to any disk.
+## Scope and repair policy
+
+`--scope` selects what is examined: `all` (default), `hardware` or `hardware.cpu|memory|disk|gpu|display|network|battery|usb`, `os`, `software`, `software.selected` (with `--packages a,b`), and `malware`. Areas outside the scope are never reported as healthy. `--repair-policy` is `detect-only`, `approve-each` (default: every action needs your approval, destructive actions need a `--backup-ref` and the typed `action_id`), or `auto-safe` (opt-in; only `safe` catalog-trigger actions). Repairs are typed catalog actions in `rescue-ai/v1/catalog/` executed by `scripts/rescue-repair.py` (live USB and Linux host) or natively by the Windows and macOS launchers, and recorded in a hash-chained journal on the USB. Full contract: [repair framework](docs/repair-framework.md).
 
 ## Prepare an existing Ventoy USB
 
@@ -158,9 +155,7 @@ flowchart LR
     N --> A
 ```
 
-Install Ventoy to the confirmed USB first (`scripts/download-ventoy.sh` then `scripts/install-ventoy-usb.sh`, see the checklist below). Then mount its data partition (label `Ventoy`). A freshly installed data partition is empty; the helper recognizes it by the `Ventoy` label plus a sibling `VTOYEFI` partition on the same disk, or by an existing `ventoy/` or `EFI/` directory.
-
-`verify-mint-iso.sh` requires the signature on `sha256sum.txt` to come from the Linux Mint signing key `27DEB15644C6B3CF3BD7D291300F846BA25BAE09` (override only with `--signer-fingerprint` after out-of-band verification; use `--gpg-homedir DIR` for an isolated keyring). The operator must import that key first, following the [Linux Mint verification guide](https://linuxmint.com/verify.php):
+Install Ventoy to the confirmed USB first (`scripts/download-ventoy.sh`, then `scripts/install-ventoy-usb.sh`; see the checklist below). Then mount its data partition (label `Ventoy`). `verify-mint-iso.sh` requires the signature on `sha256sum.txt` to come from the Linux Mint signing key `27DEB15644C6B3CF3BD7D291300F846BA25BAE09` (override only with `--signer-fingerprint` after out-of-band verification; `--gpg-homedir DIR` for an isolated keyring). Import that key first, following the [Linux Mint verification guide](https://linuxmint.com/verify.php):
 
 ```bash
 gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-key "27DE B156 44C6 B3CF 3BD7  D291 300F 846B A25B AE09"
@@ -176,39 +171,23 @@ Then run:
   --signature /path/to/sha256sum.txt.gpg
 ```
 
-Before preparation, the operator must create a local ignored `.env` beside the repository:
+Before preparation, the operator creates a local ignored `.env` beside the repository:
 
 ```dotenv
 OPENCODE_GO_API_KEY='operator-provided-secret'
 ```
 
-The rescue bundle is copied from an allowlist (`AGENTS.md`, `LICENSE`, `Makefile`, `README.md`, `CHANGELOG.md`, `VERSION`, the two `config/` templates, `docs`, `profiles`, `rescue-ai`, `scripts`, `tests`), so `.env`, `config/rescue.env`, `.git`, ISOs, images, and archives are never written to the USB. Secret provisioning is a separate, explicit step: by default the helper reads `.env` without executing it and writes only the allowlisted `OPENCODE_GO_API_KEY` to the USB's `config/rescue.env` (mode `0600` requested; FAT/exFAT may not enforce it). Use `--env-file FILE` for another dotenv source. The USB is then a credential-bearing device. If the key must not be stored on the USB, pass `--no-provision-secrets`. The helper also read-back verifies the copied ISO hash, and `--bundle-only DEST` copies just the bundle into a new or empty directory for inspection without touching any USB.
+The rescue bundle is copied from an allowlist (`AGENTS.md`, `LICENSE`, `Makefile`, `README.md`, `CHANGELOG.md`, `VERSION`, the two `config/` templates, `docs`, `host`, `profiles`, `rescue-ai`, `scripts`, `tests`), so `.env`, `config/rescue.env`, `.git`, ISOs, images, and archives are never written to the USB. The host launchers are also copied to the USB root. Secret provisioning is a separate, explicit step: by default the helper reads `.env` without executing it and writes only `OPENCODE_GO_API_KEY` to the USB's `config/rescue.env` (mode `0600` requested; FAT/exFAT may not enforce it), which makes the USB credential-bearing. Pass `--no-provision-secrets` to keep the key off the USB, `--env-file FILE` for another dotenv source, `--bundle-only DEST` to copy just the bundle into a new or empty directory for inspection, `--menu-timeout 0` for immediate Ventoy selection, and `--no-auto-boot`/`--manual-menu` to keep a manual Ventoy menu. The helper never installs Ventoy and never writes a raw disk. `--persistence FILE.dat` adds a persistence image ([persistence](docs/persistence.md)).
 
-Use `--menu-timeout 0` for immediate Ventoy selection, or `--no-auto-boot`/`--manual-menu` to preserve a manual Ventoy menu. The helper never installs Ventoy and never writes a raw disk. On boot, firmware must still be instructed to boot from the USB; no file can force a PC firmware boot order.
+### End-to-end checklist
 
-## End-to-end execution checklist
-
-```mermaid
-flowchart LR
-    V[Ventoy] --> I[Verified ISO]
-    I --> B[Boot menu]
-    B --> X[XFCE]
-    X --> H[Hermes bootstrap]
-    H --> T[Cloud smoke test]
-    T --> A[Autostart after reboot]
-```
-
-1. Identify the removable USB with `lsblk -o NAME,PATH,RM,SIZE,MODEL,TRAN,MOUNTPOINTS`. Do not use `/dev/sda` or any disk with mounted children. Run `./scripts/download-ventoy.sh [--version X.Y.Z]` (single release API call; refuses to continue without a SHA-256 digest), extract the archive, then run `./scripts/install-ventoy-usb.sh --device /dev/sdX --ventoy-dir ./ventoy-X.Y.Z --yes` only after reviewing the displayed model and size. The script refuses a mounted disk, a non-whole-disk target, and the disk backing `/`, and calls `sudo` itself for `Ventoy2Disk.sh`. **Hardware-required.**
-2. Download Linux Mint XFCE plus `sha256sum.txt` and `sha256sum.txt.gpg` from the same official mirror, import the Linux Mint key (see above), and verify with `scripts/verify-mint-iso.sh --iso ... --sha256sums ... --signature ...`.
-3. Mount the first Ventoy partition and run `scripts/prepare-ventoy-usb.sh` with the ISO, checksum file, and signature file. This copies the ISO and rescue source bundle.
-4. On the target PC, select the USB in the UEFI/BIOS boot menu. Ventoy then auto-selects the configured Linux Mint XFCE ISO; the firmware selection itself cannot be automated by the USB contents.
-5. In the Linux Mint XFCE desktop, connect the network and open a terminal in the copied `rescue-omes` directory. The provisioned `config/rescue.env` supplies the API key to the bootstrap; the first live boot still requires the bootstrap unless an approved persistent Hermes state has already been prepared.
-6. Run `./scripts/install-hermes-rescue.sh --state-dir /media/$USER/RESCUE-STATE/hermes-state` as the desktop user (not with `sudo`; the installer refuses root). The installer creates the XFCE autostart entry with automatic hardware preflight as the default.
-7. Verify that `OPENCODE_GO_API_KEY` is present in the provisioned `config/rescue.env`, then run `./scripts/check-hermes-rescue.sh --state-dir ...`.
-8. Start the launcher. It runs the automatic hardware-readiness gate by default and writes a report; use `--hardware-mode wizard` for per-step confirmation. Hermes starts only when required CPU, RAM, display, internet, and USB checks pass.
-9. Run `./scripts/test-hermes-conversation.sh --state-dir ... --live` only after approving a real cloud request. Without `--live`, it is a no-cost dry run.
-10. Run `./scripts/verify-autostart.sh --state-dir ...`, reboot from the live environment, log in to XFCE, and verify the launcher with `pgrep -af hermes`. A physical reboot is required; it is not simulated by the source repository.
-
+1. Identify the removable USB with `lsblk -o NAME,PATH,RM,SIZE,MODEL,TRAN,MOUNTPOINTS`. Do not use `/dev/sda` or any disk with mounted children. Run `./scripts/download-ventoy.sh [--version X.Y.Z]` (one release API call; refuses to continue without a SHA-256 digest), extract the archive, then `./scripts/install-ventoy-usb.sh --device /dev/sdX --ventoy-dir ./ventoy-X.Y.Z --yes` only after reviewing the displayed model and size. It refuses a mounted disk, a non-whole-disk target, and the disk backing `/`, and calls `sudo` itself. **Hardware-required.**
+2. Download Linux Mint XFCE plus `sha256sum.txt` and `sha256sum.txt.gpg` from the same official mirror, import the Linux Mint key, and verify with `scripts/verify-mint-iso.sh --iso ... --sha256sums ... --signature ...`.
+3. Mount the first Ventoy partition and run `scripts/prepare-ventoy-usb.sh` (optionally with `--persistence`).
+4. On the target PC, select the USB in the UEFI/BIOS boot menu. Ventoy then auto-selects the Linux Mint XFCE ISO; the firmware selection itself cannot be automated.
+5. In the live desktop, open a terminal in the copied `rescue-omes` directory and follow the live-session quick start (skip it with the persistence image: Hermes is already installed).
+6. Run `./scripts/test-hermes-conversation.sh --state-dir ... --live` only after approving a real cloud request; without `--live` it is a no-cost dry run. **Environment-blocked.**
+7. Run `./scripts/verify-autostart.sh --state-dir ...`, reboot from the live environment, log in to XFCE, and verify the launcher with `pgrep -af hermes`. A physical reboot is required. **Hardware-required.**
 
 ## Configuration file format
 
@@ -220,80 +199,63 @@ flowchart LR
 | `RESCUE_STATE_DIR` | Default state directory when `--state-dir` is not given |
 | `HERMES_HOME` | Isolated Hermes home (written by the installer) |
 | `OPENCODE_ADAPTER_COMMAND` | Operator-chosen adapter run by `analyze-opencode-go.sh` |
-| `OPENCODE_TIMEOUT_SECONDS` | Adapter timeout, positive integer (default `120`) |
+| `OPENCODE_TIMEOUT_SECONDS` | Adapter and analyzer timeout, positive integer (default `120`) |
+| `RESCUE_GITHUB_ISSUES_TOKEN` | Fine-grained token (Issues read/write on this repository only) for `submit-skill.py` (secret); never given to Hermes |
 
-Unquoted or double-quoted `$` and backticks make a line invalid: it is skipped with a warning and nothing is expanded. Variables already set in the environment are not overridden. A missing file is fine; a world-writable file is refused. `config/rescue.env` is optional for `analyze-opencode-go.sh`. Details: [security model](docs/security-model.md).
-
-OpenCode Go credentials are secrets. They are not stored in this repository or in evidence. Set `OPENCODE_GO_API_KEY` in the local `config/rescue.env`, or place it in the isolated Hermes secret environment at setup time.
-
-OpenCode Go currently documents the model as `MiMo-V2.6-Flash` with model ID `mimo-v2.6-flash`. Model availability and plan limits can change, so `check-hermes-rescue.sh` verifies the configured ID and endpoint but does not invent a fallback provider.
-
-## Development checks
-
-Run `make check` (syntax, `shellcheck -x`, fixture validation, `python3 -m unittest discover -s tests`, `git diff --check`). CI runs the same gate. Physical boot, Ventoy write, reboot autostart, and live cloud calls are outside it; see [testing](docs/testing.md).
+Unquoted or double-quoted `$` and backticks make a line invalid: it is skipped with a warning and nothing is expanded. Variables already set in the environment are not overridden. A missing file is fine; a world-writable file is refused. Credentials are not stored in this repository or in evidence. OpenCode Go documents the model as `MiMo-V2.6-Flash` with model ID `mimo-v2.6-flash`; availability and plan limits can change, so `check-hermes-rescue.sh` verifies the configured ID and endpoint but never invents a fallback provider.
 
 ## Security boundary
 
 ```mermaid
 flowchart TD
-    L[Untrusted logs] --> S[Sanitizer]
-    S --> E[Bounded evidence]
-    E --> H[Hermes read-only tools]
-    H --> A[Operator approval]
-    A --> W[Verified mutation, if any]
+    L[Untrusted logs, filenames, web, model output] --> S[Sanitizer and schema]
+    S --> E[Bounded numbers-only evidence]
+    E --> H[Hermes and the analyzer: text only]
+    H --> C[action_id from the typed catalog]
+    C --> A[Operator approval, backup, rollback]
+    A --> V[Verified mutation and journal]
 ```
 
-Threats and controls are tabulated in the [security model](docs/security-model.md). Hermes has a separate rescue profile and must not reuse the operator's personal `~/.hermes` directory. Default actions are read-only. Logs are untrusted data and cannot issue commands. Skills are versioned and candidate learning is not promoted without verification and approval.
+Threats and controls are tabulated in the [security model](docs/security-model.md). Hermes has a separate rescue profile and must not reuse the operator's personal `~/.hermes` directory. Default actions are read-only. Logs are untrusted data and cannot issue commands. Model output is only displayed and saved. Skills are versioned and candidate learning is not promoted without verification and approval.
+
+## Development checks
+
+Run `make check`: syntax (`bash -n`, `py_compile`, the repair catalog validator, and the launcher parse checks), `shellcheck -x`, fixture validation (evidence and run report), the documentation check (`make docs`), `python3 -m unittest discover -s tests`, and `git diff --check`. CI runs the same gate. Physical boot, Ventoy write, reboot autostart, and live cloud calls are outside it; see [testing](docs/testing.md).
 
 ## Governance and licensing
 
-This project is managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**. See [ownership and governance](docs/ownership-and-governance.md), [agent instructions](AGENTS.md), and [MIT License](LICENSE).
-
-```mermaid
-flowchart TD
-    D[Documentation and source] --> A[ahlikoding.com]
-    D --> S[satpamsiber.com]
-    A --> R[Technical release gate]
-    S --> R
-    R --> W[ahliweb.com authorization]
-    W --> L[USB release]
-```
+This project is managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**. See [ownership and governance](docs/ownership-and-governance.md), [agent instructions](AGENTS.md), and the [MIT License](LICENSE). The current version is in `VERSION` (`0.3.0`); changes are in the [changelog](CHANGELOG.md).
 
 ## Documentation map
 
 ```mermaid
 flowchart LR
-    README[README.md] --> DESIGN[docs/design.md]
-    README --> LOOP[docs/hermes-learning-loop.md]
-    README --> GOV[docs/ownership-and-governance.md]
-    README --> AGENTS[AGENTS.md]
-    README --> TEST[docs/testing.md]
-    README --> SEC[docs/security-model.md]
-    README --> PERS[docs/persistence.md]
-    README --> REP[docs/repair-framework.md]
-    README --> CHG[CHANGELOG.md]
-    DESIGN --> SCHEMA[rescue-ai/v1 schema]
-    SEC --> DESIGN
+    README[README.md] --> DESIGN[design]
+    README --> SEC[security-model]
+    README --> TEST[testing]
+    README --> GOV[ownership-and-governance]
+    DESIGN --> REP[repair-framework]
+    REP --> HW[hardware]
+    REP --> OS[os-repair]
+    REP --> SW[software]
+    REP --> MW[malware]
+    REP --> HR[host-repair]
+    DESIGN --> TS[target-os-scan]
+    DESIGN --> HL[host-launchers]
+    DESIGN --> PER[persistence]
+    DESIGN --> RR[run-report]
+    DESIGN --> LOOP[hermes-learning-loop]
+    LOOP --> SS[skill-submission]
+    LOOP --> PROF[profiles/rescue-hermes]
+    DESIGN --> SCHEMA[rescue-ai/v1]
     TEST --> CI[.github/workflows/ci.yml]
-    LOOP --> PROFILE[profiles/rescue-hermes]
 ```
 
-See:
-
-- [Hermes learning loop](docs/hermes-learning-loop.md)
-- [Rescue design](docs/design.md)
-- [Security model](docs/security-model.md)
-- [Testing and verification](docs/testing.md)
-- [Persistence image with Hermes pre-installed](docs/persistence.md)
-- [Candidate skill submission](docs/skill-submission.md)
+- [Rescue design](docs/design.md), [security model](docs/security-model.md), [testing and verification](docs/testing.md)
+- [Persistence image with Hermes pre-installed](docs/persistence.md), [target OS scan](docs/target-os-scan.md)
 - [Repair framework (scope, catalog, policy, journal)](docs/repair-framework.md)
-- [Hardware detection and repair](docs/hardware.md)
-- [Installed software: inventory, health, repair](docs/software.md)
-- [OS detection and repair](docs/os-repair.md)
-- [Run report (detection through remediation, on the USB)](docs/run-report.md)
-- [Malware detection and quarantine](docs/malware.md)
-- [Repairs from the Windows and macOS launchers](docs/host-repair.md)
-- [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.3.0`)
-- [Hermes profile](profiles/rescue-hermes/)
-- [OpenCode Go documentation](https://opencode.ai/docs/go)
-- [Hermes provider documentation](https://hermes-agent.nousresearch.com/docs/integrations/providers)
+- [Hardware](docs/hardware.md), [OS repair](docs/os-repair.md), [installed software](docs/software.md), [malware](docs/malware.md)
+- [Host launchers](docs/host-launchers.md), [repairs from the Windows and macOS launchers](docs/host-repair.md)
+- [Run report](docs/run-report.md), [candidate skill submission](docs/skill-submission.md), [Hermes learning loop](docs/hermes-learning-loop.md)
+- [Hermes profile](profiles/rescue-hermes/), [changelog](CHANGELOG.md), [agent instructions](AGENTS.md)
+- [OpenCode Go documentation](https://opencode.ai/docs/go), [Hermes provider documentation](https://hermes-agent.nousresearch.com/docs/integrations/providers)

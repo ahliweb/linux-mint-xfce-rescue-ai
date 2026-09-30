@@ -1,5 +1,7 @@
 # Ownership and Governance
 
+> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
+
 ```mermaid
 flowchart TD
     A[ahliweb.com] --> K[ahlikoding.com]
@@ -43,7 +45,7 @@ flowchart TD
 
 ## Change control
 
-Changes that affect boot media, credentials, evidence transmission, Hermes tools, provider routing, or mutation policy require technical review and security review before release. Documentation-only changes still require link, syntax, and secret checks.
+Changes that affect boot media, credentials, evidence transmission, Hermes tools, provider routing, or mutation policy require technical review and security review before release. Documentation-only changes still require the link, anchor, Mermaid, attribution, and secret checks (`make docs`, part of `make check`) and `git diff --check`.
 
 ```mermaid
 sequenceDiagram
@@ -71,6 +73,8 @@ flowchart LR
 
 Use the following attribution in repository-facing and operator-facing materials:
 
-> Managed by ahlikoding.com and satpamsiber.com from ahliweb.com.
+> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
+
+`scripts/check-docs.py` (part of `make check`) verifies that every `docs/*.md` document and the README carry exactly this line.
 
 The attribution does not imply that Linux Mint, Ventoy, Hermes Agent, or OpenCode Go are owned by ahliweb.com. Their respective trademarks, licenses, and provider terms remain authoritative.

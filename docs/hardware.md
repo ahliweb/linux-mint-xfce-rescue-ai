@@ -14,7 +14,7 @@ Sebagian besar kerusakan hardware **tidak dapat diperbaiki lewat perangkat lunak
 | Katalog `hw.*` (4 tindakan) | Implemented |
 | Pembacaan SMART/NVMe pada disk fisik, sensor suhu, baterai, rfkill, EDAC nyata | Hardware-required |
 | Eksekusi tindakan pada disk/NIC nyata | Hardware-required |
-| Perbaikan dari host Windows dan macOS | Planned (peluncur hanya mendeteksi) |
+| Tindakan `hw.*` di host Windows dan macOS | Tidak ada, sengaja: peluncur Windows dan macOS mendeteksi hardware saja. Mesin perbaikan native mereka ([host-repair.md](host-repair.md)) menjalankan katalog yang sama, tetapi `hardware.json` hanya berisi tindakan Linux |
 | Analisis AI atas evidence | Environment-blocked (perlu `OPENCODE_GO_API_KEY` dan jaringan) |
 
 ```mermaid
@@ -78,7 +78,7 @@ Evidence hanya berisi angka (`percent`, `count`, `bytes`) dan status. Tidak ada 
 
 ## Katalog tindakan
 
-Semua tindakan berlaku untuk `live-linux` dan `linux-host`, butuh root (mesin menambahkan `sudo -n --` sendiri), dan tidak butuh backup karena tidak menulis ke disk. Parameter `device` bertipe `block_device`: dipilih operator lewat `--param ACTION_ID.device=/dev/...` dan diperiksa ulang mesin (bukan USB rescue, bukan media removable). Tindakan Windows dan macOS sengaja tidak ada: perbaikan di kedua platform itu Planned, dan reset adapter membutuhkan cmdlet atau dua langkah yang tidak dapat dinyatakan sebagai argv tunggal.
+Semua tindakan berlaku untuk `live-linux` dan `linux-host`, butuh root (mesin menambahkan `sudo -n --` sendiri), dan tidak butuh backup karena tidak menulis ke disk. Parameter `device` bertipe `block_device`: dipilih operator lewat `--param ACTION_ID.device=/dev/...` dan diperiksa ulang mesin (bukan USB rescue, bukan media removable). Tindakan Windows dan macOS sengaja tidak ada di katalog hardware: reset adapter membutuhkan cmdlet atau dua langkah yang tidak dapat dinyatakan sebagai argv tunggal, dan katalog tidak boleh memanggil shell atau interpreter.
 
 | action_id | Risiko | Pemicu | Argv |
 |---|---|---|---|

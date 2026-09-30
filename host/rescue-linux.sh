@@ -10,8 +10,10 @@
 # Every exit after the reports folder is known also writes the comprehensive run report
 # (reports/run-<utc>/report.md + report.json, reports/index.md; docs/run-report.md) to the USB.
 #
-# Exit codes: 0 ok | 2 invalid evidence | 3 no API key | 4 network/HTTP error
-#             5 bundle/reports dir unusable | 6 analyzer script missing | 64 usage
+# Exit codes: 0 ok | 1 a repair action failed or was rolled back | 2 invalid evidence, catalog or
+#             selection | 3 no API key | 4 network/HTTP error | 5 bundle/reports dir or repair journal
+#             unusable | 6 analyzer script missing | 64 usage   (3 and 4 take precedence over 1 and 2,
+#             as in the Windows and macOS launchers)
 set -Eeuo pipefail
 umask 077
 
@@ -514,6 +516,8 @@ run_repair() {
   fi
 }
 
+repair_rc=0
+
 if ((evidence_only && !dry_run)); then
   printf 'Mode --evidence-only: tidak ada panggilan jaringan / no network call was made.\n'
   run_outcome='evidence-only'
@@ -550,7 +554,8 @@ case $rc in
     else
       printf '\nAnalisis tersimpan / analysis saved: %s\n' "$analysis"
     fi
-    finish 0
+    # Same repair exit codes as the Windows and macOS launchers.
+    case $repair_rc in 0) finish 0 ;; 1) finish 1 ;; 3) finish 5 ;; *) finish 2 ;; esac
     ;;
   3)
     printf '\nID: OPENCODE_GO_API_KEY tidak ditemukan di rescue-omes/config/rescue.env. Evidence tetap tersimpan di:\n    %s\n    Isi kunci pada file itu (satu baris KEY=..., jangan dibagikan) lalu jalankan ulang, atau kirim evidence dari PC lain.\n' "$evidence" >&2

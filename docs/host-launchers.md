@@ -2,7 +2,7 @@
 
 > Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 
-Dokumen ini menjelaskan cara memakai USB rescue pada komputer yang **sistem operasinya sedang hidup** (Windows 10/11, macOS 12+ Intel atau Apple Silicon, Linux termasuk Linux Mint), tanpa boot dari USB. Operator menancapkan USB, klik dua kali satu launcher, dan sisanya otomatis: pemeriksaan read-only khusus OS, evidence schema 1.1, panggilan langsung ke OpenCode Go (`mimo-v2.6-flash`) dengan system prompt bersama, lalu hasil analisis tampil di layar dan tersimpan di USB. Untuk boot dari USB dan memindai OS yang terpasang di disk internal, lihat [target-os-scan.md](target-os-scan.md).
+Dokumen ini menjelaskan cara memakai USB rescue pada komputer yang **sistem operasinya sedang hidup** (Windows 10/11, macOS 12+ Intel atau Apple Silicon, Linux termasuk Linux Mint), tanpa boot dari USB. Operator menancapkan USB, klik dua kali satu launcher, dan sisanya otomatis: pemeriksaan read-only khusus OS (dan modul hardware, software, malware sesuai `--scope`), evidence schema 1.2, panggilan langsung ke OpenCode Go (`mimo-v2.6-flash`) dengan system prompt bersama, hasil analisis tampil di layar dan tersimpan di USB, lalu perbaikan katalog hanya dengan persetujuan ([host-repair.md](host-repair.md)) dan laporan proses ([run-report.md](run-report.md)). Untuk boot dari USB dan memindai OS yang terpasang di disk internal, lihat [target-os-scan.md](target-os-scan.md).
 
 Label status: **Implemented** (level source, dicakup `make check`), **Hardware-required** (butuh Windows/macOS nyata), **Environment-blocked** (butuh jaringan, API key, atau biaya provider). Lihat [testing](testing.md).
 
@@ -14,6 +14,7 @@ Label status: **Implemented** (level source, dicakup `make check`), **Hardware-r
 | Menjalankan launcher di **Windows 10/11 sungguhan** (CIM, BitLocker, Event Log, Defender, `powershell.exe` 5.1, SmartScreen) | **Hardware-required**, **tidak dijalankan** di lingkungan pengembangan |
 | Menjalankan launcher di **macOS sungguhan** (`fdesetup`, `csrutil`, `diskutil`, `plutil`, `osascript`, Gatekeeper) | **Hardware-required**, **tidak dijalankan** di lingkungan pengembangan |
 | Panggilan cloud sungguhan ke OpenCode Go | **Environment-blocked** (butuh API key dan jaringan; uji otomatis memakai server loopback palsu) |
+| Perbaikan katalog, journal, dan laporan proses dari launcher | **Implemented** di level source; lihat [host-repair.md](host-repair.md) dan [run-report.md](run-report.md) |
 | Menyalin launcher ke root USB | ditangani oleh `prepare-ventoy-usb.sh` (di luar dokumen ini) |
 
 ```mermaid
@@ -25,9 +26,10 @@ flowchart TD
     W --> C[Pemeriksaan read-only, tanpa admin]
     M --> C
     L --> C
-    C --> E["Evidence schema 1.1 -> rescue-omes/reports/*-evidence.json"]
+    C --> E["Evidence schema 1.2 -> rescue-omes/reports/*-evidence.json"]
     E --> A["OpenCode Go (mimo-v2.6-flash) + analysis-prompt.md"]
     A --> R["Layar + rescue-omes/reports/*-analysis.md"]
+    R --> X["Perbaikan katalog dengan persetujuan + laporan run-UTC/report.md"]
     A -. tanpa kunci / jaringan gagal .-> G[Panduan dwibahasa, evidence tetap tersimpan, exit tidak nol]
 ```
 
@@ -93,20 +95,24 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `-BundleDir DIR` | `--bundle DIR` | `--bundle DIR` | Tentukan folder `rescue-omes` secara eksplisit |
 | | `--no-pause` | `--pause` | Perilaku menunggu tombol di akhir |
 | `-Scope LIST` | `--scope LIST` | `--scope LIST` | Cakupan deteksi: `all` (default), `hardware`, `hardware.cpu`, ..., `os`, `software`, `software.selected`, `malware` |
+| | | `--malware-full-disk` | Hanya Linux: pindai seluruh sistem (lambat) dengan ClamAV; Windows dan macOS memakai mesin bawaan OS ([malware.md](malware.md)) |
 | `-Packages LIST` | `--packages LIST` | `--packages LIST` | Paket untuk `software.selected` |
-| `-RepairPolicy P` | `--repair-policy P` | `--repair-policy P` | `detect-only`, `approve-each` (default), `auto-safe`. Linux menjalankan `scripts/rescue-repair.py`; Windows dan macOS menjalankan engine native ([host-repair.md](host-repair.md)). Journal ada di `reports/repairs/` |
+| `-RepairPolicy P` | `--repair-policy P` | `--repair-policy P` | `detect-only`, `approve-each` (default), `auto-safe`. Linux menjalankan `scripts/rescue-repair.py` (persetujuan interaktif; launcher Linux tidak punya `--approve`, jalankan `rescue-repair.py` langsung bila perlu `--approve`, `--param`, atau `--backup-ref`); Windows dan macOS menjalankan engine native ([host-repair.md](host-repair.md)). Journal ada di `reports/repairs/` |
 
 ### Kode keluar
 
 | Kode | Arti |
 |---|---|
 | `0` | Berhasil (atau evidence-only / dry-run) |
-| `2` | Evidence tidak valid; tidak ada yang dikirim |
+| `1` | Sebuah aksi perbaikan gagal atau di-rollback, di ketiga launcher ([host-repair.md](host-repair.md), [repair-framework.md](repair-framework.md)) |
+| `2` | Evidence tidak valid (tidak ada yang dikirim), atau katalog perbaikan / pilihan aksi tidak valid |
 | `3` | `OPENCODE_GO_API_KEY` tidak ditemukan; evidence tetap tersimpan, panduan dwibahasa dicetak |
 | `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak |
-| `5` | Bundle tidak ditemukan atau `reports/` di USB tidak bisa ditulis (USB write-protect?) |
+| `5` | Bundle tidak ditemukan, `reports/` di USB tidak bisa ditulis (USB write-protect?), atau journal perbaikan tidak bisa ditulis |
 | `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle; evidence tetap tersimpan |
 | `64` | Argumen salah (termasuk `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
+
+Kode `3` dan `4` didahulukan atas `1` dan `2`: bila analisis gagal, kode analisis yang dilaporkan, dan hasil perbaikan tetap ada di journal dan laporan proses.
 
 ## Output (semuanya di USB)
 
@@ -114,7 +120,8 @@ Semua output ada di `rescue-omes/reports/`; stempel waktu adalah UTC `YYYYMMDDTH
 
 | File | Isi |
 |---|---|
-| `windows-<utc>-evidence.json`, `macos-<utc>-evidence.json`, `linux-<utc>-evidence.json` | Evidence schema 1.1 (`source_platform` `windows-host` / `macos-host` / `linux-host`) |
+| `windows-<utc>-evidence.json`, `macos-<utc>-evidence.json`, `linux-<utc>-evidence.json` | Evidence schema 1.2 (`source_platform` `windows-host` / `macos-host` / `linux-host`) |
+| `reports/repairs/journal.jsonl`, `reports/malware-detections-<run>.json` | Journal perbaikan berantai hash; daftar deteksi malware LOKAL (`0600`, berisi path; jangan dibagikan) |
 | `windows-<utc>-analysis.md`, `macos-<utc>-analysis.md`, `linux-<utc>-analysis.md` | Analisis model (Bahasa Indonesia) dengan catatan bahwa isinya hanya untuk dibaca |
 | `*-evidence-after.json` | Evidence pemindaian ulang setelah minimal satu aksi perbaikan dieksekusi (untuk perbandingan sebelum/sesudah) |
 | `run-<utc>/report.md`, `run-<utc>/report.json`, `index.md` | Laporan proses lengkap dan indeks semua run, ditulis di setiap akhir run termasuk yang gagal ([run-report.md](run-report.md)) |

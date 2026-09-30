@@ -113,10 +113,11 @@ Casper me-mount filesystem berlabel `casper-rw` di `/cow` dan menyusun overlay `
 |---|---|
 | `HERMES_HOME` (memory, sessions, skills, config) | `/home/mint/.local/share/rescue-omes/hermes` |
 | Env Hermes (`KEY='value'`, `0600`) | `/home/mint/.local/share/rescue-omes/hermes/env` |
-| Reports hardware/evidence dan analisis (`hardware-readiness-*.json`, `target-evidence-*.json`, `latest-evidence.json`, `analysis-*.md`), cases, learning | `/home/mint/.local/share/rescue-omes/{reports,cases,learning}` |
+| Reports hardware/evidence dan analisis (`hardware-readiness-*.json`, `target-evidence-*.json`, `latest-evidence.json`, `analysis-*.md`), laporan proses (`run-<utc>/report.md`, `report.json`, `index.md`), daftar deteksi malware lokal (`malware-detections-*.json`, berisi path), cases, learning | `/home/mint/.local/share/rescue-omes/{reports,cases,learning}` |
+| Journal perbaikan berantai hash, karantina malware, database tanda tangan ClamAV | `/home/mint/.local/share/rescue-omes/{repairs/journal.jsonl,quarantine,clamav}` |
 | Kode Hermes + Python terkelola | `.../hermes/hermes-agent`, `/home/mint/.local/share/uv` |
 
-Konsekuensi: kalau `.dat` hilang, rusak, atau di-replace, state Hermes ikut hilang. Cadangkan `.dat` (saat live session tidak berjalan) sebelum `--replace-persistence`. Data kasus milik target yang dirawat tidak boleh disalin ke media lain tanpa persetujuan.
+Konsekuensi: kalau `.dat` hilang, rusak, atau di-replace, state Hermes ikut hilang. Cadangkan `.dat` (saat live session tidak berjalan) sebelum `--replace-persistence`. Data kasus milik target yang dirawat tidak boleh disalin ke media lain tanpa persetujuan: laporan, journal, daftar deteksi, dan karantina menggambarkan mesin pelanggan, sehingga file `.dat` yang berisi run nyata harus diperlakukan sebagai data rahasia.
 
 ## Risiko kredensial
 
