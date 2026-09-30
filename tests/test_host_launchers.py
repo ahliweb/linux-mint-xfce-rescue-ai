@@ -143,7 +143,11 @@ class LinuxLauncherTests(unittest.TestCase):
         proc = self.run_launcher('--evidence-only')
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         evidence = one(self.reports('linux-*-evidence.json'), self)
-        self.assertEqual(sorted(p.name for p in (self.bundle / 'reports').iterdir()), [evidence.name])
+        # the evidence plus the run report (reports/run-<utc>/ and index.md, docs/run-report.md): all on the USB, nothing else
+        names = sorted(p.name for p in (self.bundle / 'reports').iterdir())
+        self.assertEqual([n for n in names if n != 'index.md' and not n.startswith('run-')], [evidence.name])
+        self.assertEqual(len([n for n in names if n.startswith('run-')]), 1, names)
+        self.assertIn('index.md', names)
         self.assertEqual(bundle_files(self.bundle), before)
         validate_evidence(self, evidence)
         text = evidence.read_text(encoding='utf-8')
@@ -434,10 +438,12 @@ class PowerShellLauncherTests(unittest.TestCase):
         proc = self.pwsh('-File', str(script), '-EvidenceOnly')  # layout: <bundle>/host/ -> ../
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         reports = sorted((bundle / 'reports').iterdir())
-        self.assertEqual([p.name for p in reports if p.name.startswith('windows-')],
-                         [p.name for p in reports])
+        # evidence + the run report (run-<utc>/ and index.md, docs/run-report.md); nothing else on the USB
+        self.assertEqual([p.name for p in reports if not p.name.startswith('run-') and p.name != 'index.md'],
+                         [p.name for p in reports if p.name.startswith('windows-')])
         evidence = one(bundle.joinpath('reports').glob('windows-*-evidence.json'), self)
-        self.assertEqual(len(reports), 1, [p.name for p in reports])
+        self.assertEqual(len([p for p in reports if p.name.startswith('run-')]), 1, [p.name for p in reports])
+        self.assertEqual(len(reports), 3, [p.name for p in reports])
         validate_evidence(self, evidence)
         text = evidence.read_text(encoding='utf-8')
         assert_no_identity(self, text, self.tmp)

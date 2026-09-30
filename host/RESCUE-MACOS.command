@@ -13,6 +13,10 @@
 # Repairs: typed catalog actions only (rescue-ai/v1/catalog), run under --repair-policy and
 # journaled to <bundle>/reports/repairs/journal.jsonl (docs/host-repair.md). Never elevates.
 #
+# Every exit after the reports folder is known also writes the comprehensive run report
+# (reports/run-<utc>/report.md + report.json, reports/index.md; docs/run-report.md) to the USB,
+# generated with the JavaScript engine built into macOS (osascript -l JavaScript; no Python).
+#
 # Exit codes: 0 ok | 1 a repair action failed or was rolled back | 2 invalid evidence, catalog or
 #             --select | 3 no API key | 4 network/HTTP error | 5 bundle/reports/journal unusable
 #             64 usage
@@ -42,6 +46,13 @@ select_items=()
 param_items=()
 backup_ref=''
 list_repairs=0
+rr_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+rr_run_id=rescue-$(date -u +%Y%m%d-%H%M%S)-mac
+rr_outcome=scan-failed
+rr_ready=0
+rr_done=0
+rr_evidence='' rr_after='' rr_analysis='' rr_key=''
+have_key=0
 
 usage() {
   print -r -- 'usage: RESCUE-MACOS.command [--evidence-only] [--dry-run] [--bundle DIR] [--no-pause]' >&2
@@ -118,13 +129,15 @@ scope_wants() {
 
 cleanup() {
   local f
+  (( $+functions[emit_report] )) && emit_report
   for f in $tmp_files; do rm -f -- "$f" 2>/dev/null; done
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM HUP
+trap 'rr_outcome=interrupted; exit 130' INT TERM HUP
 
 finish() {
   local rc=$1
+  (( $+functions[emit_report] )) && emit_report
   if (( pause_at_end )) && [[ -t 0 ]]; then
     print -rn -- $'\nTekan Return untuk menutup / Press Return to close... '
     read -r _ignored
@@ -163,6 +176,7 @@ if ! ( : > "$probe" ) 2>/dev/null; then
   finish 5
 fi
 rm -f -- "$probe"
+rr_ready=1
 export TMPDIR=$reports   # any tool that wants a temp file uses the USB, not this Mac
 
 # ---------------------------------------------------------------------------------------
@@ -324,6 +338,8 @@ typeset -a prop_id prop_origin prop_target plan_errors catalog_files package_lis
 catalog_sha=''
 select_error=''
 ai_rejected=0
+ai_accepted=0
+plan_ran=0
 repair_rc=0
 journal=''
 journal_ok=1
@@ -386,6 +402,7 @@ parse_plan() {
       ERR) plan_errors+=("${f[2]}") ;;
       SELERR) select_error=${f[2]} ;;
       REJ) ai_rejected=${f[2]} ;;
+      ACC) ai_accepted=${f[2]} ;;
       PROP) prop_id+=("${f[2]}"); prop_origin+=("${f[3]}"); prop_target+=("${f[4]}") ;;
       ACT)
         A_risk[${f[2]}]=${f[3]}; A_scope[${f[2]}]=${f[4]}; A_root[${f[2]}]=${f[5]}; A_trw[${f[2]}]=${f[6]}
@@ -858,6 +875,7 @@ run_repairs() {
   fi
   plan=$(run_planner plan "$analysis_file") || { print -r -- 'ERROR: perencana katalog gagal / catalog planner failed; nothing was run.' >&2; repair_rc=2; return 0; }
   parse_plan "$plan"
+  plan_ran=1
   if (( ${#plan_errors} )); then
     for out_line in $plan_errors; do print -r -- "catalog INVALID: $out_line" >&2; done
     print -r -- 'ERROR: katalog perbaikan tidak valid; tidak ada yang dijalankan / repair catalog invalid; nothing was run.' >&2
@@ -1061,6 +1079,7 @@ if (problems.length > 0) {
   });
   // AI proposals: the LAST rescue-proposals block, untrusted data
   var rejected = 0;
+  var aiAccepted = 0;
   var aiFile = envv('RESCUE_ANALYSIS_FILE');
   if (aiFile) {
     var text = readText(aiFile) || '';
@@ -1100,6 +1119,7 @@ if (problems.length > 0) {
           var key = aid + '|' + (ref === null ? '' : ref);
           if (!applicable(a, ref, fams) || seenAi[key]) { rejected++; return; }
           seenAi[key] = true;
+          aiAccepted++;
           addProp(aid, 'ai-proposal', ref);
         });
         if (items.length > 16) { rejected += items.length - 16; }
@@ -1123,6 +1143,7 @@ if (problems.length > 0) {
   });
   if (selectError) { out.push('SELERR\t' + clean(selectError)); }
   out.push('REJ\t' + rejected);
+  out.push('ACC\t' + aiAccepted);
   var emitted = {};
   props.forEach(function (p) {
     out.push('PROP\t' + p.id + '\t' + p.origin + '\t' + (p.ref === null ? '-' : p.ref));
@@ -1178,6 +1199,779 @@ if (doc !== null && typeof doc === 'object' && doc.list_version === '1' && doc.r
 out;
 JXA_DETECTION_END
 
+# Run report generator (docs/run-report.md): pure JavaScript (osascript -l JavaScript), no Python.
+# It only READS the evidence, analysis, journal and catalog summary passed through RESCUE_RR_* and
+# prints report.json, report.md, or index.md; this shell writes the files. Emulated by node in the tests.
+read -r -d '' JXA_REPORT <<'JXA_REPORT_END'
+ObjC.import('Foundation');
+function envv(n) {
+  var v = $.NSProcessInfo.processInfo.environment.objectForKey(n);
+  return v === null || v === undefined ? '' : String(ObjC.unwrap(v));
+}
+function readText(p) {
+  if (!p) { return null; }
+  var t = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(p, $.NSUTF8StringEncoding, $()));
+  return t === undefined || t === null ? null : String(t);
+}
+function has(o, k) { return o !== null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k); }
+function isPlain(o) { return o !== null && typeof o === 'object' && !Array.isArray(o); }
+function isInt(v) { return typeof v === 'number' && isFinite(v) && Math.floor(v) === v; }
+function isNum(v) { return typeof v === 'number' && isFinite(v); }
+function isStr(v, re) { return typeof v === 'string' && re.test(v); }
+function inList(v, list) { return typeof v === 'string' && list.indexOf(v) >= 0; }
+function parseJson(t) { try { return JSON.parse(t); } catch (e) { return undefined; } }
+
+// ---- SHA-256 over UTF-8 bytes (no external tools) ----------------------------------------
+var K256 = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+function utf8Bytes(s) {
+  var b = unescape(encodeURIComponent(s)), out = [], i;
+  for (i = 0; i < b.length; i++) { out.push(b.charCodeAt(i)); }
+  return out;
+}
+function sha256(bytes) {
+  var h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  var len = bytes.length, msg = bytes.slice(0), i, j;
+  msg.push(0x80);
+  while (msg.length % 64 !== 56) { msg.push(0); }
+  var hi = Math.floor(len / 0x20000000), lo = (len << 3) >>> 0;
+  msg.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255, (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+  var rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (i = 0; i < msg.length; i += 64) {
+    var w = [];
+    for (j = 0; j < 16; j++) { w[j] = ((msg[i + 4 * j] << 24) | (msg[i + 4 * j + 1] << 16) | (msg[i + 4 * j + 2] << 8) | msg[i + 4 * j + 3]) | 0; }
+    for (j = 16; j < 64; j++) {
+      var s0 = rotr(w[j - 15], 7) ^ rotr(w[j - 15], 18) ^ (w[j - 15] >>> 3);
+      var s1 = rotr(w[j - 2], 17) ^ rotr(w[j - 2], 19) ^ (w[j - 2] >>> 10);
+      w[j] = (w[j - 16] + s0 + w[j - 7] + s1) | 0;
+    }
+    var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (j = 0; j < 64; j++) {
+      var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25), ch = (e & f) ^ (~e & g);
+      var t1 = (hh + S1 + ch + K256[j] + w[j]) | 0;
+      var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22), mj = (a & b) ^ (a & c) ^ (b & c);
+      var t2 = (S0 + mj) | 0;
+      hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
+    h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + hh) | 0;
+  }
+  return h.map(function (x) { return ('00000000' + (x >>> 0).toString(16)).slice(-8); }).join('');
+}
+
+// ---- constants (same values as scripts/lib/run_report.py) ---------------------------------
+var STATUSES = ['pass', 'fail', 'warn', 'not_applicable', 'unknown'];
+var DOMAINS = ['hardware', 'os', 'software', 'malware', 'environment'];
+var UNITS = { percent: '%', count: '', bytes: ' B', days: ' hari', seconds: ' s', celsius: ' C' };
+var READINESS_IDS = ['cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media'];
+var ENV_CHECKS = ['network-connectivity', 'iso-integrity', 'block-device-discovery', 'filesystem-discovery', 'lvm-or-raid-discovery', 'firmware-boot-entry', 'kernel-log', 'system-journal'];
+var HARDWARE_HEALTH = ['smart-health', 'nvme-health', 'hw-memory-errors', 'hw-disk'];
+var SCOPE_VALUES = ['all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware'];
+var POLICIES = ['detect-only', 'approve-each', 'auto-safe'];
+var ORIGINS = ['catalog-trigger', 'ai-proposal', 'operator'];
+var RISKS = ['safe', 'reversible', 'destructive'];
+var STAGES = ['proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback'];
+var RECORD_OUTCOMES = ['ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable'];
+var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable'];
+var TARGET_ENUMS = {
+  family: ['linuxmint', 'linux-other', 'windows', 'macos', 'unknown'], architecture: ['x86_64', 'arm64', 'unknown'],
+  detection: ['live-offline', 'host-native'], encryption: ['none', 'bitlocker', 'filevault', 'luks', 'unknown'],
+  access: ['read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown']
+};
+var FINALS = ['verified', 'rolled-back', 'failed', 'skipped', 'declined', 'proposed'];
+var MAX_ANALYSIS = 32768;
+var CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g;
+var RUN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$/;
+var ACTION_RE = /^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*$/;
+var DOC_RE = /^docs\/[A-Za-z0-9._\/-]+(#[A-Za-z0-9._-]+)?$/;
+var ZERO = '0000000000000000000000000000000000000000000000000000000000000000';
+// Existence of a match is what matters, so boundaries use a leading group instead of look-behind
+// (JavaScriptCore on macOS 12 and 13.0-13.2 has no look-behind).
+var PRIVACY_RULES = [
+  ['unix-home-path', /\/home\/[^\/\s]+/],
+  ['macos-user-path', /\/Users\/[^\/\s]+/],
+  ['windows-user-path', /[A-Za-z]:\\Users\\/i],
+  ['mac-address', /(^|[^0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])/],
+  ['ipv4-address', /(^|[^\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])/],
+  ['ipv6-address', /(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])/]
+];
+
+// Identifier-shaped substrings inside the model text are redacted (same patterns and order as scripts/lib/run_report.py).
+// The configured key value is redacted by this shell before the analysis reaches the generator (RESCUE_RR_KEY_REDACTIONS).
+var REDACTIONS = [
+  [/[A-Za-z]:\\Users\\[^\\\s,;)\]"'<>]+(?:\\[^\\\s,;)\]"'<>]+)*/gi, false, '<path>'],
+  [/\/home\/[^\/\s,;)\]"'<>]+(?:\/[^\/\s,;)\]"'<>]+)*/g, false, '<path>'],
+  [/\/Users\/[^\/\s,;)\]"'<>]+(?:\/[^\/\s,;)\]"'<>]+)*/g, false, '<path>'],
+  [/(^|[^0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])/g, true, '<mac>'],
+  [/(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])/g, true, '<ip>'],
+  [/(^|[^\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])/g, true, '<ip>']
+];
+function redactText(t) {
+  var count = 0;
+  REDACTIONS.forEach(function (r) {
+    t = t.replace(r[0], function (m, p1) { count++; return (r[1] ? p1 : '') + r[2]; });
+  });
+  return [t, count];
+}
+function cleanText(t) { return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(CONTROL, ''); }
+function domainOf(id) {
+  if (id.indexOf('hw-') === 0 || id === 'smart-health' || id === 'nvme-health') { return 'hardware'; }
+  if (id.indexOf('sw-') === 0) { return 'software'; }
+  if (id.indexOf('malware-') === 0) { return 'malware'; }
+  if (ENV_CHECKS.indexOf(id) >= 0) { return 'environment'; }
+  return 'os';
+}
+function fmtNum(v) { return Math.floor(v) === v ? String(v) : String(parseFloat(v.toFixed(3))); }
+
+// ---- input sanity ------------------------------------------------------------------------
+function saneEvidence(doc) {
+  if (!isPlain(doc) || !isStr(doc.run_id, RUN_RE)) { return false; }
+  var checks = doc.checks, i, k;
+  if (!Array.isArray(checks) || checks.length > 160) { return false; }
+  for (i = 0; i < checks.length; i++) {
+    var c = checks[i];
+    if (!isPlain(c) || !isStr(c.check_id, /^[a-z0-9]+(-[a-z0-9]+)*$/) || c.check_id.length > 64) { return false; }
+    if (!inList(c.status, STATUSES)) { return false; }
+    if (has(c, 'target_ref') && !isStr(c.target_ref, /^os-[0-7]$/)) { return false; }
+    if (has(c, 'value')) {
+      var v = c.value;
+      if (!isPlain(v) || typeof v.kind !== 'string' || !has(UNITS, v.kind) || !isNum(v.number) || v.number < 0 || v.number > 1e15) { return false; }
+    }
+  }
+  if (has(doc, 'scope')) {
+    if (!Array.isArray(doc.scope) || doc.scope.length < 1 || doc.scope.length > 14) { return false; }
+    for (i = 0; i < doc.scope.length; i++) { if (!inList(doc.scope[i], SCOPE_VALUES)) { return false; } }
+  }
+  if (has(doc, 'repair_policy') && !inList(doc.repair_policy, POLICIES)) { return false; }
+  if (has(doc, 'target_systems')) {
+    if (!Array.isArray(doc.target_systems) || doc.target_systems.length > 8) { return false; }
+    for (i = 0; i < doc.target_systems.length; i++) {
+      var t = doc.target_systems[i];
+      if (!isPlain(t) || !isStr(t.ref, /^os-[0-7]$/)) { return false; }
+      for (k in TARGET_ENUMS) { if (has(t, k) && !inList(t[k], TARGET_ENUMS[k])) { return false; } }
+    }
+  }
+  if (has(doc, 'ai_provider') && (!isPlain(doc.ai_provider) || !isStr(doc.ai_provider.model_id, /^[A-Za-z0-9][A-Za-z0-9._:\/-]{1,127}$/))) { return false; }
+  return true;
+}
+function recordOk(r) {
+  if (!isStr(r.action_id, ACTION_RE) || r.action_id.length > 64) { return false; }
+  if (!inList(r.origin, ORIGINS) || !inList(r.risk, RISKS) || !inList(r.policy, POLICIES)) { return false; }
+  if (!inList(r.stage, STAGES) || !inList(r.outcome, RECORD_OUTCOMES)) { return false; }
+  if (has(r, 'reason') && !inList(r.reason, REASONS)) { return false; }
+  if (has(r, 'target_ref') && !isStr(r.target_ref, /^os-[0-7]$/)) { return false; }
+  if (has(r, 'backup') && r.backup !== null) {
+    var b = r.backup;
+    if (!isPlain(b) || !isInt(b.size_bytes) || b.size_bytes < 1 || !isStr(b.fingerprint_sha256, /^[a-f0-9]{64}$/)) { return false; }
+  }
+  return true;
+}
+
+// ---- journal -----------------------------------------------------------------------------
+function chainProblems(lines) {
+  var problems = [], prev = ZERO, expected = 1, n, rec;
+  for (n = 1; n <= lines.length; n++) {
+    var line = lines[n - 1];
+    rec = parseJson(line);
+    if (rec === undefined) { problems.push('record ' + n + ': not JSON'); prev = sha256(utf8Bytes(line)); expected++; continue; }
+    if (!isPlain(rec)) { problems.push('record ' + n + ': not an object'); prev = sha256(utf8Bytes(line)); expected++; continue; }
+    if (rec.seq !== expected) { problems.push('record ' + n + ': seq'); }
+    if (rec.prev_sha256 !== prev) { problems.push('record ' + n + ': prev_sha256'); }
+    prev = sha256(utf8Bytes(line));
+    expected = (isInt(rec.seq) ? rec.seq : expected) + 1;
+  }
+  return problems;
+}
+function redactParam(aid, name, value, info) {
+  if (isInt(value)) { return value; }
+  var kind = has(info, aid) && has(info[aid].params, name) ? info[aid].params[name] : null;
+  var text = String(value);
+  if (kind === 'enum' && /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/.test(text)) { return text; }
+  if (kind === 'integer' && /^[0-9]{1,15}$/.test(text)) { return parseInt(text, 10); }
+  if (kind === 'detection_ref' && /^d-[0-9]{1,4}$/.test(text)) { return '<detection ' + text + '>'; }
+  if (kind === 'package_name') { return '<package>'; }
+  if (kind === 'service_name') { return '<service>'; }
+  if (kind === 'block_device') { return '<device>'; }
+  return '<value>';
+}
+function approvalDecision(rec) {
+  if (rec === null) { return ['not-reached', null]; }
+  var o = rec.outcome, r = has(rec, 'reason') ? rec.reason : null;
+  if (o === 'ok') { return [r === 'auto-safe' ? 'auto-safe' : (r === 'cli-approved' ? 'cli' : 'operator-interactive'), r]; }
+  if (o === 'declined') { return [r === 'not-interactive' ? 'not-interactive' : 'declined', r]; }
+  if (r === 'policy-detect-only') { return ['policy-detect-only', r]; }
+  return ['skipped', r];
+}
+function lastOf(by, stage) { return has(by, stage) ? by[stage][by[stage].length - 1] : null; }
+function finalOutcome(by) {
+  var rb = lastOf(by, 'rollback');
+  if (rb) { return rb.outcome === 'ok' ? 'rolled-back' : 'failed'; }
+  var ex = lastOf(by, 'execute');
+  if (ex) {
+    if (ex.outcome === 'unavailable') { return 'skipped'; }
+    var vf = lastOf(by, 'verify');
+    return ex.outcome === 'ok' && vf && vf.outcome === 'ok' ? 'verified' : 'failed';
+  }
+  var i;
+  if (has(by, 'precondition')) { for (i = 0; i < by.precondition.length; i++) { if (by.precondition[i].outcome !== 'ok') { return 'skipped'; } } }
+  var rw = lastOf(by, 'target-rw');
+  if (rw && rw.outcome === 'fail') { return 'failed'; }
+  if (rw && rw.outcome !== 'ok') { return 'skipped'; }
+  var bk = lastOf(by, 'backup');
+  if (bk && bk.outcome !== 'ok') { return 'skipped'; }
+  var ap = lastOf(by, 'approval');
+  if (ap) {
+    if (ap.outcome === 'declined') { return 'declined'; }
+    if (ap.outcome === 'skipped') { return ap.reason === 'policy-detect-only' ? 'proposed' : 'skipped'; }
+  }
+  return 'skipped';
+}
+function buildActions(records, runId, info) {
+  var groups = [];
+  records.forEach(function (r) {
+    if (r.run_id !== runId || !recordOk(r)) { return; }
+    if (r.stage === 'proposed' || groups.length === 0) { groups.push([]); }
+    groups[groups.length - 1].push(r);
+  });
+  var actions = [];
+  groups.forEach(function (group) {
+    var first = group[0], by = {};
+    group.forEach(function (r) { if (!has(by, r.stage)) { by[r.stage] = []; } by[r.stage].push(r); });
+    var dec = approvalDecision(lastOf(by, 'approval'));
+    var item = { action_id: first.action_id, origin: first.origin, risk: first.risk };
+    if (first.target_ref) { item.target_ref = first.target_ref; }
+    item.policy = first.policy;
+    var params = {};
+    (by.approval || []).forEach(function (rec) {
+      if (rec.outcome === 'ok' && isPlain(rec.params)) {
+        Object.keys(rec.params).slice(0, 4).forEach(function (name) { params[name] = redactParam(item.action_id, name, rec.params[name], info); });
+      }
+    });
+    item.params = params;
+    item.approval = { decision: dec[0] };
+    if (dec[1]) { item.approval.reason = dec[1]; }
+    var bkRec = lastOf(by, 'backup');
+    var bk = bkRec && has(bkRec, 'backup') ? bkRec.backup : null;
+    item.backup = isPlain(bk) && isInt(bk.size_bytes) ? { size_bytes: bk.size_bytes, fingerprint: bk.fingerprint_sha256.slice(0, 12) } : null;
+    var stages = [];
+    group.forEach(function (r) {
+      if (r.stage === 'proposed' || r.stage === 'approval') { return; }
+      var e = { stage: r.stage, outcome: r.outcome };
+      if (r.reason) { e.reason = r.reason; }
+      if (isInt(r.exit_code)) { e.exit_code = r.exit_code; }
+      if (isNum(r.duration_seconds)) { e.duration_seconds = r.duration_seconds; }
+      stages.push(e);
+    });
+    item.stages = stages;
+    item.final_outcome = finalOutcome(by);
+    var manual = stages.some(function (s) { return s.stage === 'rollback' && s.reason === 'manual-rollback-required'; });
+    var doc = manual && has(info, item.action_id) ? info[item.action_id].doc : null;
+    item.manual_rollback_required = manual;
+    item.manual_rollback_doc = typeof doc === 'string' && DOC_RE.test(doc) ? doc : null;
+    actions.push(item);
+  });
+  return actions.slice(0, 500);
+}
+
+// ---- sections ----------------------------------------------------------------------------
+function buildDetection(ev) {
+  var domains = {}, totals = {};
+  DOMAINS.forEach(function (d) { domains[d] = []; });
+  STATUSES.forEach(function (s) { totals[s] = 0; });
+  if (ev === null) { return { available: false, totals: totals, targets: [], domains: domains }; }
+  (ev.checks || []).forEach(function (c) {
+    var item = { check_id: c.check_id, status: c.status };
+    if (c.target_ref) { item.target_ref = c.target_ref; }
+    if (isPlain(c.value)) { item.value = { kind: c.value.kind, number: c.value.number }; }
+    domains[domainOf(item.check_id)].push(item);
+    totals[item.status] += 1;
+  });
+  var targets = [];
+  (ev.target_systems || []).forEach(function (t) {
+    var o = {};
+    ['ref', 'family', 'architecture', 'detection', 'encryption', 'access'].forEach(function (k) { if (has(t, k)) { o[k] = t[k]; } });
+    targets.push(o);
+  });
+  return { available: true, totals: totals, targets: targets, domains: domains };
+}
+function checkKey(c) { return c.check_id + '|' + (c.target_ref || ''); }
+function buildComparison(ev, after, actions) {
+  var executed = actions.filter(function (a) { return a.stages.some(function (s) { return s.stage === 'execute'; }); }).length;
+  if (after === null) {
+    return { performed: false, reason: executed === 0 ? 'no-action-executed' : 'rescan-missing', compared: 0, unchanged: 0, only_before: 0, only_after: 0, changed: [] };
+  }
+  var before = {}, later = {}, bo = [], changed = [], unchanged = 0, onlyBefore = 0, onlyAfter = 0;
+  ((ev && ev.checks) || []).forEach(function (c) { var k = checkKey(c); if (!has(before, k)) { bo.push(k); } before[k] = c; });
+  (after.checks || []).forEach(function (c) { later[checkKey(c)] = c; });
+  bo.forEach(function (k) {
+    if (!has(later, k)) { onlyBefore++; return; }
+    var o = before[k], n = later[k];
+    if (n.status === o.status) { unchanged++; return; }
+    var item = { check_id: o.check_id };
+    if (o.target_ref) { item.target_ref = o.target_ref; }
+    item.before = o.status;
+    item.after = n.status;
+    changed.push(item);
+  });
+  Object.keys(later).forEach(function (k) { if (!has(before, k)) { onlyAfter++; } });
+  return { performed: true, reason: executed ? 'executed' : 'rescan-without-action', compared: changed.length + unchanged, unchanged: unchanged,
+    only_before: onlyBefore, only_after: onlyAfter, changed: changed };
+}
+function buildReadiness(rd) {
+  if (!isPlain(rd)) { return { performed: false, gate: 'not_applicable', overall: null, checks: [] }; }
+  var checks = [];
+  (Array.isArray(rd.checks) ? rd.checks : []).forEach(function (c) {
+    if (isPlain(c) && inList(c.check_id, READINESS_IDS) && inList(c.status, ['pass', 'fail', 'warn', 'unknown'])) {
+      checks.push({ check_id: c.check_id, status: c.status, required: !!c.required });
+    }
+  });
+  var overall = isPlain(rd.summary) ? rd.summary.overall : null;
+  if (!inList(overall, ['ready', 'ready_with_warnings', 'not_ready'])) {
+    overall = checks.some(function (c) { return c.status === 'fail' && c.required; }) ? 'not_ready' : 'ready';
+  }
+  return { performed: true, gate: overall === 'not_ready' ? 'failed' : 'passed', overall: overall, checks: checks };
+}
+function buildOpenItems(det, actions, cmp, chain) {
+  var items = [];
+  actions.forEach(function (a) {
+    var kind = { failed: 'action-failed', 'rolled-back': 'action-rolled-back', declined: 'action-declined', skipped: 'action-skipped', proposed: 'action-not-run' }[a.final_outcome];
+    var e;
+    if (kind) { e = { kind: kind, ref: a.action_id }; if (a.target_ref) { e.target_ref = a.target_ref; } items.push(e); }
+    if (a.manual_rollback_required) {
+      e = { kind: 'manual-rollback', ref: a.action_id };
+      if (a.target_ref) { e.target_ref = a.target_ref; }
+      if (a.manual_rollback_doc) { e.doc = a.manual_rollback_doc; }
+      items.push(e);
+    }
+  });
+  if (chain === 'INVALID') { items.push({ kind: 'journal-invalid' }); }
+  if (det.targets.some(function (t) {
+    return t.access === 'not-mounted-encrypted' || (['bitlocker', 'filevault', 'luks'].indexOf(t.encryption) >= 0 && ['read-only-mounted', 'host-running'].indexOf(t.access) < 0);
+  })) { items.push({ kind: 'escalate-encrypted-disk' }); }
+  if (det.domains.hardware.some(function (c) { return c.status === 'fail' || (c.status === 'warn' && HARDWARE_HEALTH.indexOf(c.check_id) >= 0); })) { items.push({ kind: 'escalate-hardware-fault' }); }
+  if (det.domains.malware.some(function (c) { return c.check_id === 'malware-signatures' && (c.status === 'warn' || c.status === 'fail'); })) { items.push({ kind: 'stale-signatures' }); }
+  if (det.domains.malware.some(function (c) { return c.check_id === 'malware-scan' && (c.status === 'warn' || c.status === 'fail'); })) { items.push({ kind: 'review-malware-detections' }); }
+  if (det.totals.unknown > 0) { items.push({ kind: 'unknown-checks' }); }
+  cmp.changed.forEach(function (ch) {
+    if (ch.after === 'fail' && ch.before !== 'fail') {
+      var e = { kind: 'regression-after-repair', ref: ch.check_id };
+      if (ch.target_ref) { e.target_ref = ch.target_ref; }
+      items.push(e);
+    }
+  });
+  return items;
+}
+function buildHonesty(mode, outcome, keyPresent, actions, cmp, scope) {
+  var hw = [], blocked = [];
+  if (mode === 'live-linux') { hw.push('physical-boot-and-reboot'); }
+  if (mode === 'windows-host' || mode === 'macos-host') { hw.push('host-os-native-behavior'); }
+  if (actions.some(function (a) {
+    return a.stages.some(function (s) { return s.stage === 'execute'; }) && ['verified', 'rolled-back', 'failed'].indexOf(a.final_outcome) >= 0;
+  })) { hw.push('disk-repair-read-back'); }
+  var table = { 'no-key': 'provider-key-missing', 'network-error': 'network-unreachable', 'evidence-only': 'analysis-not-run-offline-mode',
+    'dry-run': 'analysis-not-run-offline-mode', 'analysis-failed': 'analysis-failed', 'scan-failed': 'scan-not-completed',
+    'evidence-invalid': 'scan-not-completed', 'scan-skipped': 'scan-not-completed', 'interrupted': 'scan-not-completed',
+    'preflight-failed': 'hardware-preflight-failed', 'analyzer-missing': 'analysis-failed' };
+  if (has(table, outcome)) { blocked.push(table[outcome]); }
+  if (!keyPresent && blocked.indexOf('provider-key-missing') < 0 && outcome !== 'preflight-failed') { blocked.push('provider-key-missing'); }
+  if (cmp.reason === 'rescan-missing') { blocked.push('rescan-not-completed'); }
+  return { hardware_required: hw, environment_blocked: blocked, scope_limited: !(scope.length === 1 && scope[0] === 'all') };
+}
+function buildReport(inp) {
+  var info = inp.action_info || {};
+  var ev = inp.evidence, after = inp.evidence_after, evSha = inp.evidence_sha256;
+  if (!saneEvidence(ev)) { ev = null; evSha = null; }
+  if (!saneEvidence(after)) { after = null; }
+  var lines = inp.journal_lines;
+  var evRun = ev ? ev.run_id : null;
+  var jrun = evRun || inp.run_id;
+  var chain = 'absent', records = [], runRecords = 0;
+  if (lines !== null) {
+    chain = chainProblems(lines).length ? 'INVALID' : 'valid';
+    lines.forEach(function (l) { var r = parseJson(l); if (isPlain(r)) { records.push(r); } });
+    runRecords = records.filter(function (r) { return r.run_id === jrun; }).length;
+  }
+  var actions = buildActions(records, jrun, info);
+  var det = buildDetection(ev);
+  var cmp = buildComparison(ev, after, actions);
+  var text = inp.analysis_text, truncated = false, redactions = 0;
+  if (text !== null) {
+    var red = redactText(cleanText(text));
+    text = red[0];
+    redactions = red[1] + (inp.key_redactions || 0);
+    if (text.length > MAX_ANALYSIS) { text = text.slice(0, MAX_ANALYSIS); truncated = true; }
+    if (text.trim().length === 0) { text = null; }
+  }
+  var counts = inp.ai_counts;
+  var outcome = inp.outcome;
+  if (outcome === 'completed' && actions.some(function (a) { return a.final_outcome === 'failed' || a.final_outcome === 'rolled-back'; })) { outcome = 'completed-with-failures'; }
+  var scope = ev && ev.scope && ev.scope.length ? ev.scope : (inp.scope && inp.scope.length ? inp.scope : ['all']);
+  var policy = (ev && ev.repair_policy) || inp.repair_policy || null;
+  var keyPresent = !!inp.key_present;
+  var report = {
+    report_version: '1.0', report_type: 'rescue-run-report', run_id: inp.run_id, classification: 'confidential',
+    header: { started_at: inp.started_at, ended_at: inp.ended_at, mode: inp.mode, toolkit_version: inp.version, catalog_sha256: inp.catalog_sha256,
+      scope: scope.slice(), repair_policy: policy, provider_key_present: keyPresent, outcome: outcome, evidence_run_id: evRun, evidence_sha256: evSha },
+    readiness: buildReadiness(inp.readiness),
+    detection: det,
+    analysis: { status: text ? 'completed' : 'not_run', model_id: ev && ev.ai_provider ? ev.ai_provider.model_id : null, evidence_sha256: evSha,
+      text: text, text_truncated: truncated, redactions: text !== null ? redactions : 0, proposals: { accepted: counts ? counts[0] : null, rejected: counts ? counts[1] : null } },
+    remediation: { journal: { chain: chain, records_total: records.length, records_run: runRecords }, actions: actions },
+    comparison: cmp
+  };
+  report.open_items = buildOpenItems(det, actions, cmp, chain);
+  report.honesty = buildHonesty(inp.mode, outcome, keyPresent, actions, cmp, scope);
+  var acts = { total: actions.length };
+  FINALS.forEach(function (f) { acts[f.replace('-', '_')] = 0; });
+  actions.forEach(function (a) { acts[a.final_outcome.replace('-', '_')] += 1; });
+  var sumChecks = {};
+  STATUSES.forEach(function (s) { sumChecks[s] = det.totals[s]; });
+  report.summary = { checks: sumChecks, actions: acts, status_changes: cmp.changed.length };
+  report.privacy_check = { status: 'passed', findings: [] };
+  return report;
+}
+function minimalReport(inp, findings) {
+  var s = {};
+  ['run_id', 'mode', 'started_at', 'ended_at', 'version', 'key_present', 'scope', 'repair_policy'].forEach(function (k) { if (has(inp, k)) { s[k] = inp[k]; } });
+  s.outcome = 'report-privacy-refused';
+  s.run_id = 'privacy-refused';
+  s.evidence = null; s.evidence_after = null; s.analysis_text = null; s.ai_counts = null; s.journal_lines = null; s.readiness = null;
+  s.evidence_sha256 = null; s.catalog_sha256 = null; s.action_info = {};
+  var report = buildReport(s);
+  var uniq = findings.filter(function (f, i) { return findings.indexOf(f) === i; }).sort();
+  report.privacy_check = { status: 'refused', findings: uniq };
+  return report;
+}
+
+// ---- rendering ---------------------------------------------------------------------------
+function table(header, rows) {
+  var out = ['| ' + header.join(' | ') + ' |', '|' + header.map(function () { return '---'; }).join('|') + '|'];
+  rows.forEach(function (r) { out.push('| ' + r.map(String).join(' | ') + ' |'); });
+  return out;
+}
+function valueText(v) { return v ? fmtNum(v.number) + UNITS[v.kind] : ''; }
+function yesNo(f) { return f ? 'ya / yes' : 'tidak / no'; }
+var DECISION_TEXT = { 'operator-interactive': 'operator (interaktif)', cli: 'operator (CLI --approve)', 'auto-safe': 'otomatis (auto-safe)',
+  declined: 'ditolak operator', 'not-interactive': 'ditolak (tanpa terminal)', 'policy-detect-only': 'tidak dijalankan (detect-only)',
+  skipped: 'dilewati', 'not-reached': 'tidak sampai persetujuan' };
+var OPEN_TEXT = {
+  'action-failed': 'Aksi GAGAL; periksa tahap di bagian 5 dan pertimbangkan bantuan teknisi.',
+  'action-rolled-back': 'Aksi dibatalkan otomatis (rollback); kondisi awal dipulihkan, masalah belum selesai.',
+  'action-declined': 'Aksi ditolak; masalah terkait belum diperbaiki.',
+  'action-skipped': 'Aksi dilewati (prasyarat, parameter, atau backup tidak terpenuhi).',
+  'action-not-run': 'Aksi hanya diusulkan (kebijakan detect-only); belum dijalankan.',
+  'manual-rollback': 'Rollback MANUAL diperlukan; ikuti dokumen yang ditautkan.',
+  'journal-invalid': 'Rantai hash journal TIDAK VALID; jangan percaya bagian remediasi sebelum diperiksa.',
+  'escalate-encrypted-disk': 'Disk terenkripsi tidak dapat dipindai penuh; buka kunci dengan kunci pemulihan milik pemilik, lalu jalankan ulang.',
+  'escalate-hardware-fault': 'Indikasi kerusakan perangkat keras; cadangkan data sekarang dan bawa ke teknisi.',
+  'stale-signatures': 'Signature antivirus kedaluwarsa; perbarui signature lalu pindai ulang.',
+  'review-malware-detections': 'Ada temuan/pemindaian malware yang perlu ditinjau di daftar deteksi lokal (bukan di laporan ini).',
+  'unknown-checks': 'Ada pemeriksaan berstatus unknown (tidak dapat ditentukan, BUKAN sehat); jalankan dengan hak akses yang sesuai.',
+  'regression-after-repair': 'Status pemeriksaan memburuk sesudah perbaikan; periksa aksi yang dijalankan.'
+};
+var HONESTY_TEXT = {
+  'physical-boot-and-reboot': 'Hardware-required: boot fisik dan reboot dari USB tidak dibuktikan oleh laporan ini.',
+  'host-os-native-behavior': 'Hardware-required: perilaku pada Windows/macOS nyata tidak dibuktikan oleh laporan ini.',
+  'disk-repair-read-back': 'Hardware-required: hasil perbaikan pada disk fisik harus dikonfirmasi dengan pemeriksaan ulang di mesin nyata.',
+  'provider-key-missing': 'Environment-blocked: tidak ada kunci provider, sehingga analisis AI tidak dijalankan.',
+  'network-unreachable': 'Environment-blocked: jaringan/HTTP ke provider gagal, analisis AI tidak dijalankan.',
+  'analysis-not-run-offline-mode': 'Environment-blocked: mode offline (evidence-only/dry-run), analisis AI tidak dijalankan.',
+  'analysis-failed': 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.',
+  'scan-not-completed': 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.',
+  'hardware-preflight-failed': 'Environment-blocked: preflight perangkat keras gagal; pemindaian tidak dijalankan.',
+  'rescan-not-completed': 'Environment-blocked: pemindaian ulang setelah perbaikan tidak selesai; hasil perbaikan belum dibandingkan.'
+};
+function renderMarkdown(rep) {
+  var h = rep.header, det = rep.detection, ai = rep.analysis, rem = rep.remediation, cmp = rep.comparison, rd = rep.readiness;
+  var out = ['# Laporan Proses Rescue / Rescue Run Report', '',
+    '> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.',
+    '> RAHASIA / CONFIDENTIAL: berkas ini ada di USB rescue. Tidak memuat nama pengguna, nama komputer, serial, IP/MAC, path, nama file, nama signature malware, nama paket, atau log mentah. Jangan dibagikan tanpa ditinjau.', ''];
+  if (rep.privacy_check.status === 'refused') {
+    out.push('## LAPORAN DITOLAK OLEH PEMERIKSAAN PRIVASI / REPORT REFUSED BY THE PRIVACY SELF-CHECK', '',
+      'Laporan lengkap tidak ditulis karena isinya mengandung pola pengenal (' + rep.privacy_check.findings.join(', ') + '). Hanya laporan minimal ini yang disimpan. Periksa artefak sumber (evidence, analisis, journal) di USB secara manual.', '');
+  }
+  out.push('## 1. Header / Ringkasan Proses', '');
+  out = out.concat(table(['Field', 'Nilai / Value'], [
+    ['Run ID', rep.run_id], ['Mulai (UTC) / Started', h.started_at], ['Selesai (UTC) / Ended', h.ended_at], ['Mode', h.mode],
+    ['Versi toolkit / Toolkit version', h.toolkit_version || 'unknown'], ['Catalog SHA-256', h.catalog_sha256 || 'unavailable'],
+    ['Scope', h.scope.join(', ')], ['Repair policy', h.repair_policy || 'unknown'],
+    ['Kunci provider ada / Provider key present (nilai tidak pernah dicatat)', yesNo(h.provider_key_present)],
+    ['Hasil / Outcome', h.outcome], ['Evidence SHA-256', h.evidence_sha256 || 'none']]));
+  out.push('', '## 2. Preflight perangkat keras / Hardware readiness', '');
+  if (rd.performed) {
+    out.push('Gerbang / Gate: **' + rd.gate.toUpperCase() + '** (overall: ' + rd.overall + ')', '');
+    out = out.concat(table(['Check', 'Status', 'Required'], rd.checks.map(function (c) { return [c.check_id, c.status, yesNo(c.required)]; })));
+    out.push('', 'Diverifikasi: hasil pemeriksaan perangkat lunak saat boot. TIDAK diverifikasi: boot fisik dari firmware, reboot.');
+  } else {
+    out.push('Tidak dijalankan pada mode ini / Not performed in this mode (hanya mode live-linux).');
+  }
+  out.push('', '## 3. Deteksi / Detection', '');
+  if (!det.available) {
+    out.push('Tidak ada evidence: pemindaian tidak selesai / No evidence: the scan did not complete. Tidak ada yang diverifikasi.');
+  } else {
+    var t = det.totals;
+    out.push('Legenda / Legend: `unknown` = tidak dapat ditentukan (BUKAN sehat) / could not be determined (NOT healthy). `not_applicable` = tidak berlaku. Hanya kode status dan angka terbatas.', '');
+    out.push('Total: pass=' + t.pass + ' fail=' + t.fail + ' warn=' + t.warn + ' unknown=' + t.unknown + ' not_applicable=' + t.not_applicable);
+    DOMAINS.forEach(function (domain) {
+      var items = det.domains[domain];
+      out.push('', '### ' + domain + ' (' + items.length + ')', '');
+      if (domain === 'os') {
+        det.targets.forEach(function (tg) {
+          var g = function (k) { return has(tg, k) ? tg[k] : '-'; };
+          out.push('- ' + tg.ref + ': family=' + g('family') + ' arch=' + g('architecture') + ' detection=' + g('detection') + ' encryption=' + g('encryption') + ' access=' + g('access'));
+        });
+        if (det.targets.length) { out.push(''); }
+      }
+      if (!items.length) {
+        out.push('Tidak ada pemeriksaan di domain ini pada run ini / No checks in this domain in this run (scope: ' + h.scope.join(', ') + ').');
+        return;
+      }
+      out = out.concat(table(['Check', 'Target', 'Status', 'Nilai / Value'], items.map(function (c) { return [c.check_id, c.target_ref || '-', c.status, valueText(c.value)]; })));
+    });
+  }
+  out.push('', '## 4. Analisis AI / AI analysis', '');
+  out = out.concat(table(['Field', 'Nilai / Value'], [
+    ['Status', ai.status], ['Model', ai.model_id || 'none'], ['Evidence SHA-256', ai.evidence_sha256 || 'none'],
+    ['Usulan diterima / accepted', ai.proposals.accepted === null ? 'unknown' : ai.proposals.accepted],
+    ['Usulan ditolak / rejected', ai.proposals.rejected === null ? 'unknown' : ai.proposals.rejected]]));
+  out.push('');
+  if (ai.text === null) {
+    out.push('Tidak ada analisis AI pada run ini / No AI analysis in this run.');
+  } else {
+    out.push('KELUARAN MODEL, hanya untuk dibaca; TIDAK PERNAH dijalankan sebagai perintah. / MODEL OUTPUT, read-only; never executed. Karakter kontrol dihapus. Kebenarannya tidak diverifikasi.', '');
+    if (ai.text_truncated) { out.push('(dipotong pada ' + MAX_ANALYSIS + ' karakter / truncated at ' + MAX_ANALYSIS + ' characters)', ''); }
+    if (ai.redactions > 0) {
+      out.push('(' + ai.redactions + ' bagian yang menyerupai pengenal (path, MAC, IP, kunci) diganti placeholder / ' + ai.redactions + ' identifier-shaped parts replaced by placeholders)', '');
+    }
+    ai.text.split('\n').forEach(function (l) { out.push(('> ' + l).replace(/\s+$/, '')); });
+  }
+  out.push('', '## 5. Remediasi / Remediation', '');
+  var chain = rem.journal.chain;
+  if (chain === 'INVALID') {
+    out.push('**PERINGATAN: RANTAI HASH JOURNAL INVALID / JOURNAL HASH CHAIN INVALID.** Isi journal mungkin diubah atau rusak; jangan dipercaya sebelum diperiksa dengan `rescue-repair.py --verify-journal`.', '');
+  } else if (chain === 'valid') {
+    out.push('Rantai hash journal: valid (' + rem.journal.records_total + ' catatan total, ' + rem.journal.records_run + ' untuk run ini). Diverifikasi: urutan dan hash berantai; bukan bukti bahwa perintah benar-benar mengubah disk.', '');
+  } else {
+    out.push('Journal: tidak ada / absent (tidak ada aksi yang dicatat).', '');
+  }
+  if (!rem.actions.length) { out.push('Tidak ada aksi perbaikan pada run ini / No repair actions in this run.'); }
+  rem.actions.forEach(function (a) {
+    out.push('', '### ' + a.action_id + (a.target_ref ? ' (' + a.target_ref + ')' : ''), '');
+    var pl = Object.keys(a.params).map(function (k) { return k + '=' + a.params[k]; });
+    out = out.concat(table(['Field', 'Nilai / Value'], [
+      ['Origin', a.origin], ['Risk', a.risk], ['Policy', a.policy],
+      ['Persetujuan / Approval', DECISION_TEXT[a.approval.decision] + (a.approval.reason ? ' [' + a.approval.reason + ']' : '')],
+      ['Parameter', pl.length ? '`' + pl.join(', ') + '`' : '-'],
+      ['Backup', a.backup === null ? '-' : a.backup.size_bytes + ' B, fingerprint ' + a.backup.fingerprint],
+      ['Hasil akhir / Final outcome', '**' + a.final_outcome + '**']]));
+    if (a.stages.length) {
+      out.push('');
+      out = out.concat(table(['Tahap / Stage', 'Outcome', 'Alasan / Reason', 'Exit'],
+        a.stages.map(function (s) { return [s.stage, s.outcome, s.reason || '-', has(s, 'exit_code') ? s.exit_code : '-']; })));
+    }
+    if (a.manual_rollback_required) {
+      out.push('', 'Rollback MANUAL diperlukan / manual rollback required: ' + (a.manual_rollback_doc ? '`' + a.manual_rollback_doc + '`' : 'lihat katalog'));
+    }
+  });
+  out.push('', '## 6. Sebelum/sesudah / Before-after', '');
+  if (!cmp.performed) {
+    out.push(cmp.reason === 'no-action-executed'
+      ? 'Tidak ada aksi yang dijalankan, jadi tidak ada pemindaian ulang / No action ran, so no re-scan was made.'
+      : 'Aksi dijalankan tetapi pemindaian ulang tidak tersedia / An action ran but the re-scan is missing: hasil belum dibandingkan.');
+  } else {
+    out.push('Pemindaian ulang dengan scope yang sama / Re-scan with the same scope. Dibandingkan: ' + cmp.compared + ', tidak berubah: ' + cmp.unchanged + ', berubah: ' + cmp.changed.length + ', hanya sebelum: ' + cmp.only_before + ', hanya sesudah: ' + cmp.only_after + '.');
+    if (cmp.changed.length) {
+      out.push('');
+      out = out.concat(table(['Check', 'Target', 'Sebelum / Before', 'Sesudah / After'], cmp.changed.map(function (c) { return [c.check_id, c.target_ref || '-', c.before, c.after]; })));
+    }
+    out.push('', 'Pemindaian ulang hanya membuktikan status pada saat itu; bukan bukti kesehatan.');
+  }
+  out.push('', '## 7. Butir terbuka / Open items', '');
+  if (!rep.open_items.length) { out.push('Tidak ada butir terbuka yang terdeteksi / No open items detected (bukan jaminan sistem sehat).'); }
+  rep.open_items.forEach(function (item) {
+    var label = item.kind + (item.ref ? ' ' + item.ref + (item.target_ref ? ' (' + item.target_ref + ')' : '') : '');
+    var doc = item.doc ? ' Dokumen: `' + item.doc + '`.' : '';
+    out.push('- **' + label + '**: ' + OPEN_TEXT[item.kind] + doc);
+  });
+  if (rep.open_items.some(function (i) { return !!i.doc; })) {
+    out.push('', 'Dokumen ada di bundle rescue-omes: `/usr/local/lib/rescue-omes/docs/` di live USB, `rescue-omes/docs/` di USB pada mode host. / Documents live in the rescue-omes bundle: `/usr/local/lib/rescue-omes/docs/` on the live USB, `rescue-omes/docs/` on the USB in host mode.');
+  }
+  out.push('', '## 8. Kejujuran / Honesty', '');
+  rep.honesty.hardware_required.concat(rep.honesty.environment_blocked).forEach(function (k) { out.push('- ' + HONESTY_TEXT[k]); });
+  if (rep.honesty.scope_limited) { out.push('- Scope dibatasi (' + h.scope.join(', ') + '): area di luar scope tidak dipindai dan tidak boleh dianggap sehat.'); }
+  out.push('- Hasil bersih BUKAN bukti kesehatan: pemeriksaan hanya mencakup yang tercantum di bagian 3, `unknown` berarti tidak diketahui, dan kerusakan yang tidak diperiksa tidak terlihat. / A clean result is not proof of health.',
+    '- Laporan ini dibuat dari artefak yang ada (evidence, analisis, journal); ia tidak menjalankan pemeriksaan sendiri.');
+  return out.join('\n') + '\n';
+}
+function summaryLine(rep) {
+  var s = rep.summary, a = s.actions;
+  return { checks: s.checks.fail + '/' + s.checks.warn + '/' + s.checks.unknown, actions: a.verified + '/' + (a.failed + a.rolled_back) + '/' + (a.declined + a.skipped + a.proposed) };
+}
+function renderIndex(entries) {
+  var out = ['# Indeks laporan rescue / Rescue report index', '',
+    '> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.',
+    '> Satu baris per run, terbaru dulu. Kolom checks = fail/warn/unknown; actions = verified/failed/tidak-dijalankan.', ''];
+  if (!entries.length) { out.push('Belum ada run / No runs yet.'); } else {
+    out = out.concat(table(['Mulai (UTC) / Started', 'Mode', 'Hasil / Outcome', 'Checks F/W/U', 'Actions V/F/O', 'Laporan / Report'],
+      entries.map(function (e) {
+        var l = summaryLine(e.doc);
+        return [e.doc.header.started_at, e.doc.header.mode, e.doc.header.outcome, l.checks, l.actions, '[' + e.name + '/report.md](' + e.name + '/report.md)'];
+      })));
+  }
+  return out.join('\n') + '\n';
+}
+function privacyFindings(text) {
+  var found = [];
+  PRIVACY_RULES.forEach(function (r) { if (r[1].test(text)) { found.push(r[0]); } });
+  return found;
+}
+
+// ---- inputs (environment) ------------------------------------------------------------------
+function jsonFile(p) {
+  var t = readText(p);
+  if (t === null) { return { doc: null, sha: null }; }
+  var d = parseJson(t);
+  return { doc: d === undefined ? null : d, sha: sha256(utf8Bytes(t)) };
+}
+function collectInputs() {
+  var ev = jsonFile(envv('RESCUE_RR_EVIDENCE'));
+  var after = jsonFile(envv('RESCUE_RR_EVIDENCE_AFTER'));
+  var rd = jsonFile(envv('RESCUE_RR_READINESS'));
+  var analysis = envv('RESCUE_RR_ANALYSIS') ? readText(envv('RESCUE_RR_ANALYSIS')) : null;
+  var lines = null;
+  if (envv('RESCUE_RR_JOURNAL')) {
+    var jt = readText(envv('RESCUE_RR_JOURNAL'));
+    lines = jt === null ? ['\u0000unreadable'] : jt.split('\n').filter(function (l) { return l.trim().length > 0; });
+  }
+  var info = {};
+  envv('RESCUE_RR_ACTION_INFO').split('\n').forEach(function (line) {
+    var f = line.split('\t');
+    if (f.length < 3 || !f[0]) { return; }
+    var params = {};
+    f[2].split(',').forEach(function (pair) { var i = pair.indexOf(':'); if (i > 0) { params[pair.slice(0, i)] = pair.slice(i + 1); } });
+    info[f[0]] = { doc: f[1] === '-' ? null : f[1], params: params };
+  });
+  var version = envv('RESCUE_RR_VERSION');
+  var scope = envv('RESCUE_RR_SCOPE').split(',').filter(function (s) { return s.length > 0; });
+  var accepted = envv('RESCUE_RR_AI_ACCEPTED'), rejected = envv('RESCUE_RR_AI_REJECTED');
+  var counts = null;
+  if (!analysis || analysis.trim().length === 0) { counts = [0, 0]; }
+  else if (/^[0-9]+$/.test(accepted) && /^[0-9]+$/.test(rejected)) { counts = [parseInt(accepted, 10), parseInt(rejected, 10)]; }
+  return {
+    run_id: envv('RESCUE_RR_RUN_ID'), mode: envv('RESCUE_RR_MODE'), outcome: envv('RESCUE_RR_OUTCOME'), started_at: envv('RESCUE_RR_STARTED'),
+    ended_at: envv('RESCUE_RR_ENDED'), version: /^[0-9]+\.[0-9]+\.[0-9]+$/.test(version) ? version : null,
+    catalog_sha256: envv('RESCUE_RR_CATALOG_SHA') || null, scope: scope, repair_policy: envv('RESCUE_RR_POLICY') || null,
+    key_present: envv('RESCUE_RR_KEY_PRESENT') === 'yes', evidence: ev.doc, evidence_sha256: ev.sha, evidence_after: after.doc,
+    analysis_text: analysis, key_redactions: /^[0-9]+$/.test(envv('RESCUE_RR_KEY_REDACTIONS')) ? parseInt(envv('RESCUE_RR_KEY_REDACTIONS'), 10) : 0, ai_counts: counts, journal_lines: lines, readiness: rd.doc, action_info: info
+  };
+}
+function loadEntries() {
+  var entries = [];
+  envv('RESCUE_RR_RUNS').split('\n').forEach(function (p) {
+    if (!p) { return; }
+    var parts = p.split('/'), name = parts[parts.length - 2];
+    if (!/^run-\d{8}T\d{6}Z(-\d+)?$/.test(name)) { return; }
+    var d = parseJson(readText(p) || '');
+    if (!isPlain(d) || d.report_type !== 'rescue-run-report' || !isPlain(d.header) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(String(d.header.started_at)) || !isPlain(d.summary)) { return; }
+    entries.push({ name: name, doc: d });
+  });
+  entries.sort(function (a, b) {
+    var ka = a.doc.header.started_at, kb = b.doc.header.started_at;
+    if (ka !== kb) { return ka < kb ? 1 : -1; }
+    return a.name < b.name ? 1 : (a.name > b.name ? -1 : 0);
+  });
+  return entries;
+}
+function main() {
+  var what = envv('RESCUE_RR_OUT');
+  if (what === 'index') { return renderIndex(loadEntries()); }
+  var inp = collectInputs();
+  var report = buildReport(inp);
+  var findings = privacyFindings(JSON.stringify(report, null, 2) + '\n' + renderMarkdown(report));
+  var forced = envv('RESCUE_RR_FORCE_REFUSE');
+  if (forced) { findings.push(forced); }
+  if (findings.length) { report = minimalReport(inp, findings); }
+  return what === 'md' ? renderMarkdown(report) : JSON.stringify(report, null, 2) + '\n';
+}
+main();
+JXA_REPORT_END
+
+rr_action_info() {
+  # One line per planned action: ID <TAB> manual-rollback doc or - <TAB> name:type,... or -
+  local id name pairs
+  for id in ${(k)A_risk}; do
+    pairs=''
+    for name in ${=A_params[$id]}; do pairs+=${pairs:+,}$name:${P_type[$id'|'$name]}; done
+    print -r -- "$id"$'\t'"${A_rbdoc[$id]:--}"$'\t'"${pairs:--}"
+  done
+}
+
+rr_run() {
+  # rr_run json|md|index [FORCE_REFUSE_RULE]  (environment RESCUE_RR_* prepared by emit_report)
+  local -x RESCUE_RR_OUT=$1 RESCUE_RR_FORCE_REFUSE=${2:-}
+  osascript -l JavaScript -e "$JXA_REPORT" 2>/dev/null
+}
+
+emit_report() {
+  # Writes <reports>/run-<utc>/report.{json,md} and index.md. Never blocks and never changes the exit code.
+  local out_json out_md out_index name base n=1 version tmp
+  (( rr_ready && ! rr_done )) || return 0
+  rr_done=1
+  if ! (( $+commands[osascript] )); then
+    print -r -- 'catatan / note: osascript tidak ada; laporan proses dilewati / run report skipped.'
+    return 0
+  fi
+  version=$(head -n 1 -- "$bundle/VERSION" 2>/dev/null)
+  version=${version//[[:space:]]/}
+  local -x RESCUE_RR_RUN_ID=$rr_run_id RESCUE_RR_MODE=macos-host RESCUE_RR_OUTCOME=$rr_outcome RESCUE_RR_STARTED=$rr_started
+  local -x RESCUE_RR_ENDED=$(date -u +%Y-%m-%dT%H:%M:%SZ) RESCUE_RR_VERSION=$version RESCUE_RR_CATALOG_SHA=$catalog_sha
+  local -x RESCUE_RR_SCOPE=${(j:,:)scope_items} RESCUE_RR_POLICY=$repair_policy RESCUE_RR_KEY_PRESENT=no
+  (( have_key )) && RESCUE_RR_KEY_PRESENT=yes
+  local -x RESCUE_RR_EVIDENCE=$rr_evidence RESCUE_RR_EVIDENCE_AFTER=$rr_after RESCUE_RR_ANALYSIS=$rr_analysis RESCUE_RR_JOURNAL=''
+  [[ -s $rr_evidence ]] || RESCUE_RR_EVIDENCE=''
+  [[ -s $rr_after ]] || RESCUE_RR_EVIDENCE_AFTER=''
+  [[ -s $rr_analysis ]] || RESCUE_RR_ANALYSIS=''
+  [[ -e $reports/repairs/journal.jsonl ]] && RESCUE_RR_JOURNAL=$reports/repairs/journal.jsonl
+  local -x RESCUE_RR_ACTION_INFO=$(rr_action_info)
+  local -x RESCUE_RR_AI_ACCEPTED='' RESCUE_RR_AI_REJECTED=''
+  if (( plan_ran )); then RESCUE_RR_AI_ACCEPTED=$ai_accepted; RESCUE_RR_AI_REJECTED=$ai_rejected; fi
+  local -x RESCUE_RR_KEY_REDACTIONS=0
+  local rtxt tmp2=$reports/.report-analysis.$$.tmp
+  if [[ -n $rr_key && ${#rr_key} -ge 8 && -n $RESCUE_RR_ANALYSIS ]]; then  # the key value in the model text is redacted here
+    rtxt=$(cat -- "$RESCUE_RR_ANALYSIS"; printf x)
+    rtxt=${rtxt%x}
+    while [[ $rtxt == *"$rr_key"* ]] && (( RESCUE_RR_KEY_REDACTIONS < 1000 )); do
+      rtxt=${rtxt/"$rr_key"/'<redacted>'}
+      (( RESCUE_RR_KEY_REDACTIONS++ ))
+    done
+    if (( RESCUE_RR_KEY_REDACTIONS )); then
+      print -rn -- "$rtxt" > "$tmp2" && RESCUE_RR_ANALYSIS=$tmp2
+    fi
+  fi
+  out_json=$(rr_run json) && out_md=$(rr_run md) || { print -r -- 'PERINGATAN / WARNING: run report generator failed.' >&2; rm -f -- "$tmp2"; return 0; }
+  if [[ -n $rr_key && $out_json$out_md == *"$rr_key"* ]]; then  # the key value must never appear in a report
+    out_json=$(rr_run json configured-key-value) && out_md=$(rr_run md configured-key-value) || return 0
+  fi
+  base=run-${${rr_started//-/}//:/}
+  name=$base
+  while [[ -e $reports/$name ]]; do (( n++ )); name=$base-$n; done
+  mkdir -p -- "$reports/$name" 2>/dev/null || { print -r -- 'PERINGATAN / WARNING: cannot create the report folder.' >&2; rm -f -- "$tmp2"; return 0; }
+  tmp=$reports/.report.$$.tmp
+  print -r -- "$out_json" > "$tmp" && mv -f -- "$tmp" "$reports/$name/report.json"
+  print -r -- "$out_md" > "$tmp" && mv -f -- "$tmp" "$reports/$name/report.md"
+  local -x RESCUE_RR_RUNS=${(F)${(f)"$(print -rl -- $reports/run-*/report.json(N))"}}
+  out_index=$(rr_run index)
+  print -r -- "$out_index" > "$tmp" && mv -f -- "$tmp" "$reports/index.md"
+  rm -f -- "$tmp" "$tmp2" 2>/dev/null
+  print -r -- "Laporan tersimpan / report saved: $reports/$name/report.md"
+  rr_key=''
+}
+
 # --- evidence assembly ---------------------------------------------------------------------
 check_items=()
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1200,6 +1994,12 @@ add_check() {
 # ---------------------------------------------------------------------------------------
 print -r -- 'Rescue host launcher (macOS) - read-only checks; output goes to the USB only.'
 print -r -- 'Menjalankan pemeriksaan read-only / running read-only checks...'
+
+# collect_checks: every read-only check (also re-run after repairs for the report's before/after comparison).
+# Variables are global on purpose: the evidence assembly below reads them.
+collect_checks() {
+check_items=()
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # os-detection
 os_ver=$(sw_vers -productVersion 2>/dev/null)
@@ -1336,13 +2136,16 @@ for domain in hardware os software malware; do
   done
 done
 
+}
+collect_checks
+
 # ---------------------------------------------------------------------------------------
 # API key (only when it will be used)
 # ---------------------------------------------------------------------------------------
 api_key=${OPENCODE_GO_API_KEY:-}
 [[ -n $api_key ]] || api_key=$(read_api_key "$bundle/config/rescue.env")
 have_key=0
-if [[ -n $api_key && $api_key != *[[:cntrl:]]* ]]; then have_key=1; fi
+if [[ -n $api_key && $api_key != *[[:cntrl:]]* ]]; then have_key=1; rr_key=$api_key; fi
 authenticated=false
 destination=unknown
 if (( have_key && ! offline )); then authenticated=true; destination=cloud; fi
@@ -1350,6 +2153,13 @@ if (( have_key && ! offline )); then authenticated=true; destination=cloud; fi
 # ---------------------------------------------------------------------------------------
 # Evidence (schema 1.2). Strings come from closed sets or are escaped by json_str.
 # ---------------------------------------------------------------------------------------
+run_ts=$(date -u +%Y%m%d-%H%M%S)
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+evidence_path=$reports/macos-$stamp-evidence.json
+analysis_path=$reports/macos-$stamp-analysis.md
+
+# build_evidence RUN_SUFFIX: assembles the evidence text into the global $ev (mh, or mh-after for the re-scan).
+build_evidence() {
 seed=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/ {print $4; exit}')
 [[ -n $seed ]] && seed="platform-uuid:$seed" || seed="fallback:$RANDOM$RANDOM$(date +%s)"
 opaque=target-$(sha256_str "$seed")
@@ -1372,15 +2182,10 @@ done
 compact+=']'
 manifest=$(sha256_str "$compact")
 
-run_ts=$(date -u +%Y%m%d-%H%M%S)
-stamp=$(date -u +%Y%m%dT%H%M%SZ)
-evidence_path=$reports/macos-$stamp-evidence.json
-analysis_path=$reports/macos-$stamp-analysis.md
-
 if [[ -n $release ]]; then release_json=$(json_str "$release"); else release_json=null; fi
 ev=$'{\n'
 ev+='  "schema_version": "1.2",'$'\n'
-ev+='  "run_id": "rescue-'$run_ts'-mh",'$'\n'
+ev+='  "run_id": "rescue-'$run_ts'-'$1'",'$'\n'
 ev+='  "source_platform": "macos-host",'$'\n'
 ev+='  "boot_mode": "unknown",'$'\n'
 ev+='  "collected_at": "'$now'",'$'\n'
@@ -1401,6 +2206,9 @@ ev+='  "source_references": ["opencode-go:provider","nist:sp-800-86","apple:maco
 ev+='  "scope": ['$scope_json'],'$'\n'
 ev+='  "repair_policy": "'$repair_policy'"'$'\n'
 ev+='}'
+}
+build_evidence mh
+rr_outcome=evidence-invalid
 
 if [[ ! $opaque =~ '^target-[A-Za-z0-9][A-Za-z0-9._-]{3,47}$' || ! $manifest =~ '^[a-f0-9]{64}$' ]]; then
   print -r -- 'ERROR: evidence gagal pemeriksaan internal / evidence failed the internal self-check.' >&2
@@ -1435,10 +2243,34 @@ print -r -- ''
 print -r -- "Evidence tersimpan / saved: $evidence_path"
 
 repair_plan_only=$(( offline || list_repairs ))
+rr_evidence=$evidence_path
+rr_outcome=completed
+
+rescan_after() {
+  # When an action executed in this run: collect again with the same scope (report before/after comparison).
+  local after_path
+  (( ! repair_plan_only )) || return 0
+  [[ -s $journal ]] || return 0
+  grep -F -- "\"run_id\":\"$run_id\"" "$journal" 2>/dev/null | grep -Fq -- '"stage":"execute"' || return 0
+  print -r -- 'Memindai ulang setelah perbaikan (scope sama) / re-scanning after repairs (same scope)...'
+  collect_checks
+  build_evidence mh-after
+  after_path=$reports/macos-$stamp-evidence-after.json
+  tmp_files+=("$after_path.tmp")
+  if print -r -- "$ev" > "$after_path.tmp" && mv -f -- "$after_path.tmp" "$after_path"; then
+    rr_after=$after_path
+  else
+    print -r -- 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.' >&2
+  fi
+}
+
 end_run() {
   # end_run BASE_RC [ANALYSIS_FILE]: run the repair phase, then exit (a journal failure outranks the rest).
   local base=$1 rc
   run_repairs "${2:-}"
+  (( repair_rc == 2 )) && rr_outcome=repair-invalid
+  (( repair_rc == 5 )) && rr_outcome=journal-unusable
+  rescan_after
   rc=$base
   if (( repair_rc == 5 )); then rc=5
   elif (( base == 0 )); then rc=$repair_rc; fi
@@ -1447,6 +2279,7 @@ end_run() {
 
 if (( evidence_only && ! dry_run )); then
   print -r -- 'Mode --evidence-only: tidak ada panggilan jaringan / no network call was made.'
+  rr_outcome=evidence-only
   end_run 0
 fi
 
@@ -1470,6 +2303,7 @@ if (( dry_run )); then
   print -r -- "  evidence      : ${#ev} chars"
   print -r -- "  API key found : $key_state (value is never shown)"
   print -r -- "  repair catalog: ${#catalog_text} chars appended"
+  rr_outcome=dry-run
   end_run 0
 fi
 
@@ -1494,6 +2328,7 @@ guidance() {
 
 if (( ! have_key )); then
   guidance nokey
+  rr_outcome=no-key
   end_run 3
 fi
 
@@ -1521,6 +2356,7 @@ rm -f -- "$req"
 if [[ $http != 200 ]]; then
   print -r -- "Kegagalan / failure: HTTP ${http:-000}" >&2
   guidance network
+  rr_outcome=network-error
   end_run 4
 fi
 
@@ -1535,6 +2371,7 @@ rm -f -- "$resp"
 if [[ -z ${answer//[[:space:]]/} ]]; then
   print -r -- 'Kegagalan / failure: respons kosong atau tidak terbaca / empty or unreadable response' >&2
   guidance network
+  rr_outcome=network-error
   end_run 4
 fi
 
@@ -1553,4 +2390,5 @@ print -r -- '==================== ANALISIS / ANALYSIS ===================='
 print -r -- "$answer"
 print -r -- '============================================================='
 print -r -- "Analisis tersimpan / analysis saved: $analysis_path"
+rr_analysis=$analysis_path
 end_run 0 "$analysis_path"

@@ -75,6 +75,7 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - Installed software inventory, health, and repair ([software](docs/software.md)): numbers-only `sw-*` checks for all packages or `--scope software.selected --packages firefox,vlc`. Repairs are destructive catalog actions (dpkg/apt, winget) that need a backup reference and a typed approval. **Implemented**; real package managers are **Hardware-required**.
 - OS detection and repair for Linux Mint, Windows, and macOS ([OS repair](docs/os-repair.md)): scoped checks, per-action approval, and offline Linux repairs through an operator-approved read-write remount (`scripts/lib/target_mount.py`). **Implemented**; real mounts, chroot, and Windows execution are **Hardware-required**.
 - Repairs from the Windows and macOS host launchers ([host repair](docs/host-repair.md)): the same catalog, policy, approval, and journal as on Linux, run natively without a shell and without elevation. **Implemented** at source level; real Windows 10/11 and macOS execution is **Hardware-required**.
+- Comprehensive run report ([run report](docs/run-report.md)): at the end of every run, including failed or partial ones, the launchers write `reports/run-<utc>/report.md` (Bahasa Indonesia) and a schema-validated `report.json` plus `reports/index.md` to the USB: readiness, every check by domain, the AI analysis (marked, never executed), each repair action from the hash-chained journal, a before/after re-scan, open items, and what was not verified. No identifiers, paths, package or signature names; a privacy self-check refuses to write a full report that contains any. **Implemented** (Python, PowerShell, and JXA generators are cross-checked); real Windows/macOS runs are **Hardware-required**.
 - Malware detection and quarantine ([malware](docs/malware.md)): `--scope malware`, detection only or detection plus repair. ClamAV on the read-only mounted OS (live USB) and on Linux hosts, Microsoft Defender status on Windows, XProtect age on macOS; evidence carries counts only and the paths stay in a local `0600` list. Quarantine is reversible and always asks; deletion is destructive; a clean result is not proof of absence. **Implemented**; ClamAV/Defender on real machines are **Hardware-required**, signature downloads are **Environment-blocked**.
 - Candidate learning, feedback, and signed promotion — **Planned** ([learning loop](docs/hermes-learning-loop.md)).
 
@@ -289,6 +290,7 @@ See:
 - [Hardware detection and repair](docs/hardware.md)
 - [Installed software: inventory, health, repair](docs/software.md)
 - [OS detection and repair](docs/os-repair.md)
+- [Run report (detection through remediation, on the USB)](docs/run-report.md)
 - [Malware detection and quarantine](docs/malware.md)
 - [Repairs from the Windows and macOS launchers](docs/host-repair.md)
 - [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.3.0`)

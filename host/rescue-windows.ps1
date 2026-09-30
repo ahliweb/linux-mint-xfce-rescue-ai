@@ -1784,6 +1784,1034 @@ function Invoke-RepairPhase {
 }
 
 # ----------------------------------------------------------------------------------------
+# Run report (docs/run-report.md). Same construction rules as scripts/lib/run_report.py; the
+# tests assert that both produce equal report.json for the same inputs. Read-only over the
+# evidence, analysis, journal and readiness files; writes only <reports>\run-<stamp>\ and
+# <reports>\index.md on the USB. Never records usernames, hostnames, serials, IP/MAC, paths,
+# file names, signature names, package names or raw output.
+# ----------------------------------------------------------------------------------------
+
+$script:RrStatuses = @('pass', 'fail', 'warn', 'not_applicable', 'unknown')
+$script:RrDomains = @('hardware', 'os', 'software', 'malware', 'environment')
+$script:RrUnits = @{ percent = '%'; count = ''; bytes = ' B'; days = ' hari'; seconds = ' s'; celsius = ' C' }
+$script:RrReadinessIds = @('cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media')
+$script:RrEnvChecks = @('network-connectivity', 'iso-integrity', 'block-device-discovery', 'filesystem-discovery', 'lvm-or-raid-discovery', 'firmware-boot-entry', 'kernel-log', 'system-journal')
+$script:RrHardwareHealth = @('smart-health', 'nvme-health', 'hw-memory-errors', 'hw-disk')
+$script:RrScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware')
+$script:RrPolicies = @('detect-only', 'approve-each', 'auto-safe')
+$script:RrOrigins = @('catalog-trigger', 'ai-proposal', 'operator')
+$script:RrRisks = @('safe', 'reversible', 'destructive')
+$script:RrStages = @('proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback')
+$script:RrRecordOutcomes = @('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable')
+$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable')
+$script:RrTargetEnums = @{
+    family = @('linuxmint', 'linux-other', 'windows', 'macos', 'unknown')
+    architecture = @('x86_64', 'arm64', 'unknown')
+    detection = @('live-offline', 'host-native')
+    encryption = @('none', 'bitlocker', 'filevault', 'luks', 'unknown')
+    access = @('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown')
+}
+$script:RrFinals = @('verified', 'rolled-back', 'failed', 'skipped', 'declined', 'proposed')
+$script:RrMaxAnalysis = 32768
+$script:RrControl = '[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]'
+$script:RrRunRe = '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$'
+$script:RrActionRe = '^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*$'
+$script:RrDocRe = '^docs/[A-Za-z0-9._/-]+(#[A-Za-z0-9._-]+)?$'
+$script:RrPrivacyRules = @(
+    @('unix-home-path', '/home/[^/\s]+', 'None'),
+    @('macos-user-path', '/Users/[^/\s]+', 'None'),
+    @('windows-user-path', '[A-Za-z]:\\Users\\', 'IgnoreCase'),
+    @('mac-address', '(?<![0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])', 'None'),
+    @('ipv4-address', '(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])', 'None'),
+    @('ipv6-address', '(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])', 'None')
+)
+
+function Get-RrProp {
+    # Like Get-JsonProp, but arrays keep their shape (a one-element JSON array must not collapse to a scalar).
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $null }
+    $p = $Obj.PSObject.Properties[$Name]
+    if ($null -eq $p) { return $null }
+    $v = $p.Value
+    if ($v -is [array]) { return , $v }
+    return $v
+}
+
+# Identifier-shaped substrings inside the model text are redacted (same patterns and order as scripts/lib/run_report.py).
+# Each entry: pattern, keeps boundary group 1, placeholder, ignore case.
+$script:RrRedactions = @(
+    @('[A-Za-z]:\\Users\\[^\\\s,;)\]"''<>]+(?:\\[^\\\s,;)\]"''<>]+)*', $false, '<path>', $true),
+    @('/home/[^/\s,;)\]"''<>]+(?:/[^/\s,;)\]"''<>]+)*', $false, '<path>', $false),
+    @('/Users/[^/\s,;)\]"''<>]+(?:/[^/\s,;)\]"''<>]+)*', $false, '<path>', $false),
+    @('(^|[^0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])', $true, '<mac>', $false),
+    @('(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])', $true, '<ip>', $false),
+    @('(^|[^\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])', $true, '<ip>', $false)
+)
+
+function Invoke-RrRedact {
+    # Returns @(text, count). The configured key value first, then the patterns.
+    param([string]$Text, [string[]]$Secrets = @())
+    $count = 0
+    foreach ($s in $Secrets) {
+        if ($s -and $s.Length -ge 8 -and $Text.Contains($s)) {
+            $count += $Text.Split([string[]]@($s), [System.StringSplitOptions]::None).Count - 1
+            $Text = $Text.Replace($s, '<redacted>')
+        }
+    }
+    foreach ($r in $script:RrRedactions) {
+        $opt = [System.Text.RegularExpressions.RegexOptions]::None
+        if ($r[3]) { $opt = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase }
+        $keep = $r[1]
+        $ph = $r[2]
+        $counter = @{ n = 0 }
+        $ev = { param($m) $counter.n++; if ($keep) { return $m.Groups[1].Value + $ph }; return $ph }.GetNewClosure()
+        $Text = [regex]::Replace($Text, $r[0], [System.Text.RegularExpressions.MatchEvaluator]$ev, $opt)
+        $count += $counter.n
+    }
+    return @($Text, $count)
+}
+
+function Test-RrStr { param($V, [string]$Pattern); return (($V -is [string]) -and [regex]::IsMatch($V, $Pattern)) }
+function Test-RrInt { param($V); return (($V -is [int]) -or ($V -is [long]) -or ($V -is [int16]) -or ($V -is [byte])) }
+function Test-RrNum { param($V); return ((Test-RrInt $V) -or ($V -is [double]) -or ($V -is [decimal]) -or ($V -is [single])) }
+function Test-RrObj { param($V); return ($V -is [System.Management.Automation.PSCustomObject]) }
+function Test-RrIn { param($V, $Set); return (($V -is [string]) -and ($Set -ccontains $V)) }
+function Get-RrArr { param($V); if ($null -eq $V) { return @() }; return @($V) }
+function Get-RrSha { param([byte[]]$Bytes); return (Get-Sha256HexBytes -Bytes $Bytes) }
+
+function Get-RrCleanText {
+    param([string]$Text)
+    $t = $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+    return [regex]::Replace($t, $script:RrControl, '')
+}
+
+function Get-RrDomain {
+    param([string]$Id)
+    if ($Id.StartsWith('hw-') -or $Id -ceq 'smart-health' -or $Id -ceq 'nvme-health') { return 'hardware' }
+    if ($Id.StartsWith('sw-')) { return 'software' }
+    if ($Id.StartsWith('malware-')) { return 'malware' }
+    if ($script:RrEnvChecks -ccontains $Id) { return 'environment' }
+    return 'os'
+}
+
+function Format-RrNum {
+    param($V)
+    $d = [double]$V
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    if ($d -eq [Math]::Floor($d)) { return ([decimal]$d).ToString('0', $inv) }
+    return $d.ToString('0.###', $inv)
+}
+
+function Test-RrSaneEvidence {
+    param($Doc)
+    if (-not (Test-RrObj $Doc)) { return $false }
+    if (-not (Test-RrStr (Get-RrProp $Doc 'run_id') $script:RrRunRe)) { return $false }
+    $checks = Get-RrProp $Doc 'checks'
+    if ($checks -isnot [array] -and $null -ne $checks) { return $false }
+    $checks = @(Get-RrArr $checks)
+    if ($checks.Count -gt 160) { return $false }
+    foreach ($c in $checks) {
+        if (-not (Test-RrObj $c)) { return $false }
+        $id = Get-RrProp $c 'check_id'
+        if (-not (Test-RrStr $id '^[a-z0-9]+(-[a-z0-9]+)*$') -or $id.Length -gt 64) { return $false }
+        if (-not (Test-RrIn (Get-RrProp $c 'status') $script:RrStatuses)) { return $false }
+        if ((Test-JsonHas $c 'target_ref') -and -not (Test-RrStr (Get-RrProp $c 'target_ref') '^os-[0-7]$')) { return $false }
+        if (Test-JsonHas $c 'value') {
+            $v = Get-RrProp $c 'value'
+            if (-not (Test-RrObj $v)) { return $false }
+            $kind = Get-RrProp $v 'kind'
+            $num = Get-RrProp $v 'number'
+            if (-not ($kind -is [string]) -or -not $script:RrUnits.ContainsKey($kind) -or -not (Test-RrNum $num) -or $num -lt 0 -or $num -gt 1e15) { return $false }
+        }
+    }
+    if (Test-JsonHas $Doc 'scope') {
+        $scope = Get-RrProp $Doc 'scope'
+        if ($null -eq $scope -or $scope -isnot [array]) { return $false }
+        if ($scope.Count -lt 1 -or $scope.Count -gt 14) { return $false }
+        foreach ($s in $scope) { if (-not (Test-RrIn $s $script:RrScopeValues)) { return $false } }
+    }
+    if ((Test-JsonHas $Doc 'repair_policy') -and -not (Test-RrIn (Get-RrProp $Doc 'repair_policy') $script:RrPolicies)) { return $false }
+    if (Test-JsonHas $Doc 'target_systems') {
+        $targets = Get-RrProp $Doc 'target_systems'
+        if ($targets -isnot [array] -or $targets.Count -gt 8) { return $false }
+        foreach ($t in $targets) {
+            if (-not (Test-RrObj $t) -or -not (Test-RrStr (Get-RrProp $t 'ref') '^os-[0-7]$')) { return $false }
+            foreach ($k in $script:RrTargetEnums.Keys) {
+                if ((Test-JsonHas $t $k) -and -not (Test-RrIn (Get-RrProp $t $k) $script:RrTargetEnums[$k])) { return $false }
+            }
+        }
+    }
+    if (Test-JsonHas $Doc 'ai_provider') {
+        $p = Get-RrProp $Doc 'ai_provider'
+        if (-not (Test-RrObj $p) -or -not (Test-RrStr (Get-RrProp $p 'model_id') '^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$')) { return $false }
+    }
+    return $true
+}
+
+function Test-RrRecordOk {
+    param($R)
+    $aid = Get-RrProp $R 'action_id'
+    if (-not (Test-RrStr $aid $script:RrActionRe) -or $aid.Length -gt 64) { return $false }
+    if (-not (Test-RrIn (Get-RrProp $R 'origin') $script:RrOrigins) -or -not (Test-RrIn (Get-RrProp $R 'risk') $script:RrRisks) -or -not (Test-RrIn (Get-RrProp $R 'policy') $script:RrPolicies)) { return $false }
+    if (-not (Test-RrIn (Get-RrProp $R 'stage') $script:RrStages) -or -not (Test-RrIn (Get-RrProp $R 'outcome') $script:RrRecordOutcomes)) { return $false }
+    if ((Test-JsonHas $R 'reason') -and -not (Test-RrIn (Get-RrProp $R 'reason') $script:RrReasons)) { return $false }
+    if ((Test-JsonHas $R 'target_ref') -and -not (Test-RrStr (Get-RrProp $R 'target_ref') '^os-[0-7]$')) { return $false }
+    if ((Test-JsonHas $R 'backup') -and $null -ne (Get-RrProp $R 'backup')) {
+        $b = Get-RrProp $R 'backup'
+        if (-not (Test-RrObj $b) -or -not (Test-RrInt (Get-RrProp $b 'size_bytes')) -or (Get-RrProp $b 'size_bytes') -lt 1 -or -not (Test-RrStr (Get-RrProp $b 'fingerprint_sha256') '^[a-f0-9]{64}$')) { return $false }
+    }
+    return $true
+}
+
+function Get-RrChainProblems {
+    param($Lines)
+    $problems = New-Object System.Collections.Generic.List[string]
+    $strict = New-Object System.Text.UTF8Encoding($false, $true)
+    $prev = '0' * 64
+    $expected = 1
+    $n = 0
+    foreach ($line in $Lines) {
+        $n++
+        $rec = $null
+        $ok = $true
+        try { $rec = $strict.GetString($line) | ConvertFrom-Json } catch { $ok = $false }
+        if (-not $ok) {
+            $problems.Add("record ${n}: not JSON")
+            $prev = Get-RrSha -Bytes $line
+            $expected++
+            continue
+        }
+        if (-not (Test-RrObj $rec)) {
+            $problems.Add("record ${n}: not an object")
+            $prev = Get-RrSha -Bytes $line
+            $expected++
+            continue
+        }
+        $seq = Get-RrProp $rec 'seq'
+        if (-not ((Test-RrNum $seq) -and $seq -eq $expected)) { $problems.Add("record ${n}: seq") }
+        if ((Get-RrProp $rec 'prev_sha256') -cne $prev) { $problems.Add("record ${n}: prev_sha256") }
+        $prev = Get-RrSha -Bytes $line
+        if (Test-RrInt $seq) { $expected = [int]$seq + 1 } else { $expected++ }
+    }
+    return , @($problems)
+}
+
+function Get-RrRedactedParam {
+    param([string]$ActionId, [string]$Name, $Value, $Info)
+    if (Test-RrInt $Value) { return $Value }
+    $kind = $null
+    if ($Info.ContainsKey($ActionId) -and $Info[$ActionId].params.ContainsKey($Name)) { $kind = $Info[$ActionId].params[$Name] }
+    $text = [string]$Value
+    if ($kind -ceq 'enum' -and [regex]::IsMatch($text, '^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$')) { return $text }
+    if ($kind -ceq 'integer' -and [regex]::IsMatch($text, '^[0-9]{1,15}$')) { return [long]$text }
+    if ($kind -ceq 'detection_ref' -and [regex]::IsMatch($text, '^d-[0-9]{1,4}$')) { return "<detection $text>" }
+    if ($kind -ceq 'package_name') { return '<package>' }
+    if ($kind -ceq 'service_name') { return '<service>' }
+    if ($kind -ceq 'block_device') { return '<device>' }
+    return '<value>'
+}
+
+function Get-RrFinalOutcome {
+    param($ByStage)
+    $last = { param($stage) if ($ByStage.ContainsKey($stage)) { return $ByStage[$stage][$ByStage[$stage].Count - 1] } return $null }
+    $rollback = & $last 'rollback'
+    if ($rollback) { if ((Get-RrProp $rollback 'outcome') -ceq 'ok') { return 'rolled-back' } return 'failed' }
+    $execute = & $last 'execute'
+    if ($execute) {
+        if ((Get-RrProp $execute 'outcome') -ceq 'unavailable') { return 'skipped' }
+        $verify = & $last 'verify'
+        if ((Get-RrProp $execute 'outcome') -ceq 'ok' -and $verify -and (Get-RrProp $verify 'outcome') -ceq 'ok') { return 'verified' }
+        return 'failed'
+    }
+    if ($ByStage.ContainsKey('precondition')) {
+        foreach ($r in $ByStage['precondition']) { if ((Get-RrProp $r 'outcome') -cne 'ok') { return 'skipped' } }
+    }
+    $rw = & $last 'target-rw'
+    if ($rw -and (Get-RrProp $rw 'outcome') -ceq 'fail') { return 'failed' }
+    if ($rw -and (Get-RrProp $rw 'outcome') -cne 'ok') { return 'skipped' }
+    $backup = & $last 'backup'
+    if ($backup -and (Get-RrProp $backup 'outcome') -cne 'ok') { return 'skipped' }
+    $approval = & $last 'approval'
+    if ($approval) {
+        if ((Get-RrProp $approval 'outcome') -ceq 'declined') { return 'declined' }
+        if ((Get-RrProp $approval 'outcome') -ceq 'skipped') {
+            if ((Get-RrProp $approval 'reason') -ceq 'policy-detect-only') { return 'proposed' }
+            return 'skipped'
+        }
+    }
+    return 'skipped'
+}
+
+function Get-RrApprovalDecision {
+    param($Record)
+    if ($null -eq $Record) { return @('not-reached', $null) }
+    $outcome = Get-RrProp $Record 'outcome'
+    $reason = Get-RrProp $Record 'reason'
+    if ($outcome -ceq 'ok') {
+        if ($reason -ceq 'auto-safe') { return @('auto-safe', $reason) }
+        if ($reason -ceq 'cli-approved') { return @('cli', $reason) }
+        return @('operator-interactive', $reason)
+    }
+    if ($outcome -ceq 'declined') {
+        if ($reason -ceq 'not-interactive') { return @('not-interactive', $reason) }
+        return @('declined', $reason)
+    }
+    if ($reason -ceq 'policy-detect-only') { return @('policy-detect-only', $reason) }
+    return @('skipped', $reason)
+}
+
+function Get-RrActions {
+    param($Records, [string]$RunId, $Info)
+    $groups = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $Records) {
+        if ((Get-RrProp $r 'run_id') -cne $RunId -or -not (Test-RrRecordOk $r)) { continue }
+        if ((Get-RrProp $r 'stage') -ceq 'proposed' -or $groups.Count -eq 0) { $groups.Add((New-Object System.Collections.Generic.List[object])) }
+        $groups[$groups.Count - 1].Add($r)
+    }
+    $actions = New-Object System.Collections.Generic.List[object]
+    foreach ($group in $groups) {
+        $first = $group[0]
+        $byStage = @{}
+        foreach ($r in $group) {
+            $st = Get-RrProp $r 'stage'
+            if (-not $byStage.ContainsKey($st)) { $byStage[$st] = New-Object System.Collections.Generic.List[object] }
+            $byStage[$st].Add($r)
+        }
+        $approvalRec = $null
+        if ($byStage.ContainsKey('approval')) { $approvalRec = $byStage['approval'][$byStage['approval'].Count - 1] }
+        $dec = Get-RrApprovalDecision -Record $approvalRec
+        $aid = [string](Get-RrProp $first 'action_id')
+        $item = [ordered]@{ action_id = $aid; origin = (Get-RrProp $first 'origin'); risk = (Get-RrProp $first 'risk') }
+        if (Get-RrProp $first 'target_ref') { $item['target_ref'] = Get-RrProp $first 'target_ref' }
+        $item['policy'] = Get-RrProp $first 'policy'
+        $params = [ordered]@{}
+        if ($byStage.ContainsKey('approval')) {
+            foreach ($rec in $byStage['approval']) {
+                $p = Get-RrProp $rec 'params'
+                if ((Get-RrProp $rec 'outcome') -ceq 'ok' -and (Test-RrObj $p)) {
+                    $i = 0
+                    foreach ($prop in $p.PSObject.Properties) {
+                        if ($i -ge 4) { break }
+                        $i++
+                        $params[$prop.Name] = Get-RrRedactedParam -ActionId $aid -Name $prop.Name -Value $prop.Value -Info $Info
+                    }
+                }
+            }
+        }
+        $item['params'] = $params
+        $approval = [ordered]@{ decision = $dec[0] }
+        if ($dec[1]) { $approval['reason'] = $dec[1] }
+        $item['approval'] = $approval
+        $backup = $null
+        if ($byStage.ContainsKey('backup')) { $backup = Get-RrProp $byStage['backup'][$byStage['backup'].Count - 1] 'backup' }
+        if ((Test-RrObj $backup) -and (Test-RrInt (Get-RrProp $backup 'size_bytes'))) {
+            $item['backup'] = [ordered]@{ size_bytes = (Get-RrProp $backup 'size_bytes'); fingerprint = ([string](Get-RrProp $backup 'fingerprint_sha256')).Substring(0, 12) }
+        } else { $item['backup'] = $null }
+        $stages = New-Object System.Collections.Generic.List[object]
+        foreach ($r in $group) {
+            $st = Get-RrProp $r 'stage'
+            if ($st -ceq 'proposed' -or $st -ceq 'approval') { continue }
+            $entry = [ordered]@{ stage = $st; outcome = (Get-RrProp $r 'outcome') }
+            if (Get-RrProp $r 'reason') { $entry['reason'] = Get-RrProp $r 'reason' }
+            $ec = Get-RrProp $r 'exit_code'
+            if (Test-RrInt $ec) { $entry['exit_code'] = $ec }
+            $du = Get-RrProp $r 'duration_seconds'
+            if (Test-RrNum $du) { $entry['duration_seconds'] = $du }
+            $stages.Add($entry)
+        }
+        $item['stages'] = $stages.ToArray()
+        $item['final_outcome'] = Get-RrFinalOutcome -ByStage $byStage
+        $manual = $false
+        foreach ($s in $stages) { if ($s['stage'] -ceq 'rollback' -and $s['reason'] -ceq 'manual-rollback-required') { $manual = $true } }
+        $doc = $null
+        if ($manual -and $Info.ContainsKey($aid)) { $doc = $Info[$aid].doc }
+        if (-not (Test-RrStr $doc $script:RrDocRe)) { $doc = $null }
+        $item['manual_rollback_required'] = $manual
+        $item['manual_rollback_doc'] = $doc
+        $actions.Add($item)
+    }
+    $arr = $actions.ToArray()
+    if ($arr.Count -gt 500) { $arr = $arr[0..499] }
+    return , $arr
+}
+
+function Get-RrDetection {
+    param($Evidence)
+    $domains = [ordered]@{}
+    foreach ($d in $script:RrDomains) { $domains[$d] = New-Object System.Collections.Generic.List[object] }
+    $totals = [ordered]@{}
+    foreach ($s in $script:RrStatuses) { $totals[$s] = 0 }
+    if ($null -eq $Evidence) {
+        foreach ($d in $script:RrDomains) { $domains[$d] = $domains[$d].ToArray() }
+        return [ordered]@{ available = $false; totals = $totals; targets = @(); domains = $domains }
+    }
+    foreach ($c in @(Get-RrArr (Get-RrProp $Evidence 'checks'))) {
+        $item = [ordered]@{ check_id = (Get-RrProp $c 'check_id'); status = (Get-RrProp $c 'status') }
+        if (Get-RrProp $c 'target_ref') { $item['target_ref'] = Get-RrProp $c 'target_ref' }
+        $v = Get-RrProp $c 'value'
+        if (Test-RrObj $v) { $item['value'] = [ordered]@{ kind = (Get-RrProp $v 'kind'); number = (Get-RrProp $v 'number') } }
+        $domains[(Get-RrDomain $item['check_id'])].Add($item)
+        $totals[$item['status']] = $totals[$item['status']] + 1
+    }
+    $targets = New-Object System.Collections.Generic.List[object]
+    foreach ($t in @(Get-RrArr (Get-RrProp $Evidence 'target_systems'))) {
+        $o = [ordered]@{}
+        foreach ($k in @('ref', 'family', 'architecture', 'detection', 'encryption', 'access')) {
+            if (Test-JsonHas $t $k) { $o[$k] = Get-RrProp $t $k }
+        }
+        $targets.Add($o)
+    }
+    foreach ($d in $script:RrDomains) { $domains[$d] = $domains[$d].ToArray() }
+    return [ordered]@{ available = $true; totals = $totals; targets = $targets.ToArray(); domains = $domains }
+}
+
+function Get-RrCheckKey {
+    param($C)
+    $t = Get-RrProp $C 'target_ref'
+    if ($null -eq $t) { $t = '' }
+    return ([string](Get-RrProp $C 'check_id')) + '|' + $t
+}
+
+function Get-RrComparison {
+    param($Evidence, $After, $Actions)
+    $executed = 0
+    foreach ($a in $Actions) {
+        $has = $false
+        foreach ($s in $a['stages']) { if ($s['stage'] -ceq 'execute') { $has = $true } }
+        if ($has) { $executed++ }
+    }
+    if ($null -eq $After) {
+        $reason = 'rescan-missing'
+        if ($executed -eq 0) { $reason = 'no-action-executed' }
+        return [ordered]@{ performed = $false; reason = $reason; compared = 0; unchanged = 0; only_before = 0; only_after = 0; changed = @() }
+    }
+    $before = [ordered]@{}
+    if ($null -ne $Evidence) { foreach ($c in @(Get-RrArr (Get-RrProp $Evidence 'checks'))) { $before[(Get-RrCheckKey $c)] = $c } }
+    $later = [ordered]@{}
+    foreach ($c in @(Get-RrArr (Get-RrProp $After 'checks'))) { $later[(Get-RrCheckKey $c)] = $c }
+    $changed = New-Object System.Collections.Generic.List[object]
+    $unchanged = 0
+    foreach ($key in $before.Keys) {
+        if (-not $later.Contains($key)) { continue }
+        $old = $before[$key]
+        $new = $later[$key]
+        if ((Get-RrProp $new 'status') -ceq (Get-RrProp $old 'status')) { $unchanged++; continue }
+        $item = [ordered]@{ check_id = (Get-RrProp $old 'check_id') }
+        if (Get-RrProp $old 'target_ref') { $item['target_ref'] = Get-RrProp $old 'target_ref' }
+        $item['before'] = Get-RrProp $old 'status'
+        $item['after'] = Get-RrProp $new 'status'
+        $changed.Add($item)
+    }
+    $onlyBefore = 0
+    foreach ($k in $before.Keys) { if (-not $later.Contains($k)) { $onlyBefore++ } }
+    $onlyAfter = 0
+    foreach ($k in $later.Keys) { if (-not $before.Contains($k)) { $onlyAfter++ } }
+    $reason = 'rescan-without-action'
+    if ($executed -gt 0) { $reason = 'executed' }
+    return [ordered]@{ performed = $true; reason = $reason; compared = ($changed.Count + $unchanged); unchanged = $unchanged
+        only_before = $onlyBefore; only_after = $onlyAfter; changed = $changed.ToArray() }
+}
+
+function Get-RrReadiness {
+    param($Readiness)
+    if (-not (Test-RrObj $Readiness)) { return [ordered]@{ performed = $false; gate = 'not_applicable'; overall = $null; checks = @() } }
+    $checks = New-Object System.Collections.Generic.List[object]
+    foreach ($c in @(Get-RrArr (Get-RrProp $Readiness 'checks'))) {
+        if ((Test-RrIn (Get-RrProp $c 'check_id') $script:RrReadinessIds) -and (Test-RrIn (Get-RrProp $c 'status') @('pass', 'fail', 'warn', 'unknown'))) {
+            $checks.Add([ordered]@{ check_id = (Get-RrProp $c 'check_id'); status = (Get-RrProp $c 'status'); required = [bool](Get-RrProp $c 'required') })
+        }
+    }
+    $overall = $null
+    $summary = Get-RrProp $Readiness 'summary'
+    if (Test-RrObj $summary) { $overall = Get-RrProp $summary 'overall' }
+    if (-not (Test-RrIn $overall @('ready', 'ready_with_warnings', 'not_ready'))) {
+        $overall = 'ready'
+        foreach ($c in $checks) { if ($c['status'] -ceq 'fail' -and $c['required']) { $overall = 'not_ready' } }
+    }
+    $gate = 'passed'
+    if ($overall -ceq 'not_ready') { $gate = 'failed' }
+    return [ordered]@{ performed = $true; gate = $gate; overall = $overall; checks = $checks.ToArray() }
+}
+
+function Get-RrOpenItems {
+    param($Detection, $Actions, $Comparison, [string]$Chain)
+    $items = New-Object System.Collections.Generic.List[object]
+    foreach ($a in $Actions) {
+        $final = $a['final_outcome']
+        $kind = $null
+        if ($final -ceq 'failed') { $kind = 'action-failed' }
+        elseif ($final -ceq 'rolled-back') { $kind = 'action-rolled-back' }
+        elseif ($final -ceq 'declined') { $kind = 'action-declined' }
+        elseif ($final -ceq 'skipped') { $kind = 'action-skipped' }
+        elseif ($final -ceq 'proposed') { $kind = 'action-not-run' }
+        if ($kind) {
+            $e = [ordered]@{ kind = $kind; ref = $a['action_id'] }
+            if ($a.Contains('target_ref')) { $e['target_ref'] = $a['target_ref'] }
+            $items.Add($e)
+        }
+        if ($a['manual_rollback_required']) {
+            $e = [ordered]@{ kind = 'manual-rollback'; ref = $a['action_id'] }
+            if ($a.Contains('target_ref')) { $e['target_ref'] = $a['target_ref'] }
+            if ($a['manual_rollback_doc']) { $e['doc'] = $a['manual_rollback_doc'] }
+            $items.Add($e)
+        }
+    }
+    if ($Chain -ceq 'INVALID') { $items.Add([ordered]@{ kind = 'journal-invalid' }) }
+    $enc = $false
+    foreach ($t in $Detection['targets']) {
+        if ($t['access'] -ceq 'not-mounted-encrypted') { $enc = $true }
+        elseif (@('bitlocker', 'filevault', 'luks') -ccontains $t['encryption'] -and @('read-only-mounted', 'host-running') -cnotcontains $t['access']) { $enc = $true }
+    }
+    if ($enc) { $items.Add([ordered]@{ kind = 'escalate-encrypted-disk' }) }
+    $hw = $false
+    foreach ($c in $Detection['domains']['hardware']) {
+        if ($c['status'] -ceq 'fail' -or ($c['status'] -ceq 'warn' -and $script:RrHardwareHealth -ccontains $c['check_id'])) { $hw = $true }
+    }
+    if ($hw) { $items.Add([ordered]@{ kind = 'escalate-hardware-fault' }) }
+    $stale = $false
+    $review = $false
+    foreach ($c in $Detection['domains']['malware']) {
+        if ($c['check_id'] -ceq 'malware-signatures' -and @('warn', 'fail') -ccontains $c['status']) { $stale = $true }
+        if ($c['check_id'] -ceq 'malware-scan' -and @('warn', 'fail') -ccontains $c['status']) { $review = $true }
+    }
+    if ($stale) { $items.Add([ordered]@{ kind = 'stale-signatures' }) }
+    if ($review) { $items.Add([ordered]@{ kind = 'review-malware-detections' }) }
+    if ($Detection['totals']['unknown'] -gt 0) { $items.Add([ordered]@{ kind = 'unknown-checks' }) }
+    foreach ($ch in $Comparison['changed']) {
+        if ($ch['after'] -ceq 'fail' -and $ch['before'] -cne 'fail') {
+            $e = [ordered]@{ kind = 'regression-after-repair'; ref = $ch['check_id'] }
+            if ($ch.Contains('target_ref')) { $e['target_ref'] = $ch['target_ref'] }
+            $items.Add($e)
+        }
+    }
+    return , $items.ToArray()
+}
+
+function Get-RrHonesty {
+    param([string]$Mode, [string]$Outcome, [bool]$KeyPresent, $Actions, $Comparison, $Scope)
+    $hardware = New-Object System.Collections.Generic.List[string]
+    if ($Mode -ceq 'live-linux') { $hardware.Add('physical-boot-and-reboot') }
+    if ($Mode -ceq 'windows-host' -or $Mode -ceq 'macos-host') { $hardware.Add('host-os-native-behavior') }
+    $ran = $false
+    foreach ($a in $Actions) {
+        $has = $false
+        foreach ($s in $a['stages']) { if ($s['stage'] -ceq 'execute') { $has = $true } }
+        if ($has -and @('verified', 'rolled-back', 'failed') -ccontains $a['final_outcome']) { $ran = $true }
+    }
+    if ($ran) { $hardware.Add('disk-repair-read-back') }
+    $blocked = New-Object System.Collections.Generic.List[string]
+    $table = @{ 'no-key' = 'provider-key-missing'; 'network-error' = 'network-unreachable'; 'evidence-only' = 'analysis-not-run-offline-mode'
+        'dry-run' = 'analysis-not-run-offline-mode'; 'analysis-failed' = 'analysis-failed'; 'scan-failed' = 'scan-not-completed'
+        'evidence-invalid' = 'scan-not-completed'; 'scan-skipped' = 'scan-not-completed'; 'interrupted' = 'scan-not-completed'
+        'preflight-failed' = 'hardware-preflight-failed'; 'analyzer-missing' = 'analysis-failed' }
+    if ($table.ContainsKey($Outcome)) { $blocked.Add($table[$Outcome]) }
+    if (-not $KeyPresent -and $blocked -cnotcontains 'provider-key-missing' -and $Outcome -cne 'preflight-failed') { $blocked.Add('provider-key-missing') }
+    if ($Comparison['reason'] -ceq 'rescan-missing') { $blocked.Add('rescan-not-completed') }
+    $limited = -not (@($Scope).Count -eq 1 -and @($Scope)[0] -ceq 'all')
+    return [ordered]@{ hardware_required = @($hardware); environment_blocked = @($blocked); scope_limited = $limited }
+}
+
+function New-RunReportModel {
+    # $In keys: run_id mode outcome started_at ended_at version catalog_sha256 scope repair_policy key_present
+    # evidence evidence_sha256 evidence_after analysis_text ai_counts journal_lines readiness action_info
+    param($In)
+    $info = $In['action_info']
+    if ($null -eq $info) { $info = @{} }
+    $evidence = $In['evidence']
+    $after = $In['evidence_after']
+    $evidenceSha = $In['evidence_sha256']
+    if (-not (Test-RrSaneEvidence $evidence)) { $evidence = $null; $evidenceSha = $null }
+    if (-not (Test-RrSaneEvidence $after)) { $after = $null }
+    $lines = $In['journal_lines']
+    $evidenceRun = $null
+    if ($null -ne $evidence) { $evidenceRun = Get-RrProp $evidence 'run_id' }
+    $journalRun = $In['run_id']
+    if ($evidenceRun) { $journalRun = $evidenceRun }
+    $chain = 'absent'
+    $records = @()
+    $runRecords = 0
+    if ($null -ne $lines) {
+        $problems = Get-RrChainProblems -Lines $lines
+        if (@($problems).Count -gt 0) { $chain = 'INVALID' } else { $chain = 'valid' }
+        $strict = New-Object System.Text.UTF8Encoding($false, $true)
+        $list = New-Object System.Collections.Generic.List[object]
+        foreach ($line in $lines) {
+            $r = $null
+            try { $r = $strict.GetString($line) | ConvertFrom-Json } catch { continue }
+            if (Test-RrObj $r) { $list.Add($r) }
+        }
+        $records = $list.ToArray()
+        foreach ($r in $records) { if ((Get-RrProp $r 'run_id') -ceq $journalRun) { $runRecords++ } }
+    }
+    $actions = Get-RrActions -Records $records -RunId $journalRun -Info $info
+    $detection = Get-RrDetection -Evidence $evidence
+    $comparison = Get-RrComparison -Evidence $evidence -After $after -Actions $actions
+    $text = $In['analysis_text']
+    $truncated = $false
+    $redactions = 0
+    if ($null -ne $text) {
+        $red = Invoke-RrRedact -Text (Get-RrCleanText -Text $text) -Secrets @($In['secrets'])
+        $text = $red[0]
+        $redactions = [int]$red[1] + [int]$In['key_redactions']
+        if ($text.Length -gt $script:RrMaxAnalysis) { $text = $text.Substring(0, $script:RrMaxAnalysis); $truncated = $true }
+        if ($text.Trim().Length -eq 0) { $text = $null }
+    }
+    $modelId = $null
+    if ($null -ne $evidence -and (Test-JsonHas $evidence 'ai_provider')) { $modelId = Get-RrProp (Get-RrProp $evidence 'ai_provider') 'model_id' }
+    $counts = $In['ai_counts']
+    $outcome = [string]$In['outcome']
+    if ($outcome -ceq 'completed') {
+        foreach ($a in $actions) { if ($a['final_outcome'] -ceq 'failed' -or $a['final_outcome'] -ceq 'rolled-back') { $outcome = 'completed-with-failures' } }
+    }
+    $scope = @()
+    if ($null -ne $evidence -and (Test-JsonHas $evidence 'scope') -and (Get-RrProp $evidence 'scope').Count -gt 0) { $scope = Get-RrProp $evidence 'scope' }
+    elseif ($In['scope'] -and @($In['scope']).Count -gt 0) { $scope = @($In['scope']) }
+    else { $scope = @('all') }
+    $policy = $null
+    if ($null -ne $evidence -and (Get-RrProp $evidence 'repair_policy')) { $policy = Get-RrProp $evidence 'repair_policy' }
+    elseif ($In['repair_policy']) { $policy = $In['repair_policy'] }
+    $keyPresent = [bool]$In['key_present']
+    $header = [ordered]@{
+        started_at = $In['started_at']; ended_at = $In['ended_at']; mode = $In['mode']
+        toolkit_version = $In['version']; catalog_sha256 = $In['catalog_sha256']
+        scope = @($scope); repair_policy = $policy; provider_key_present = $keyPresent
+        outcome = $outcome; evidence_run_id = $evidenceRun; evidence_sha256 = $evidenceSha
+    }
+    $analysisStatus = 'not_run'
+    if ($text) { $analysisStatus = 'completed' }
+    $accepted = $null
+    $rejected = $null
+    if ($null -ne $counts) { $accepted = $counts[0]; $rejected = $counts[1] }
+    $report = [ordered]@{
+        report_version = '1.0'; report_type = 'rescue-run-report'; run_id = $In['run_id']; classification = 'confidential'
+        header = $header
+        readiness = (Get-RrReadiness -Readiness $In['readiness'])
+        detection = $detection
+        analysis = [ordered]@{ status = $analysisStatus; model_id = $modelId; evidence_sha256 = $evidenceSha; text = $text
+            text_truncated = $truncated; redactions = $(if ($null -ne $text) { $redactions } else { 0 }); proposals = [ordered]@{ accepted = $accepted; rejected = $rejected } }
+        remediation = [ordered]@{ journal = [ordered]@{ chain = $chain; records_total = @($records).Count; records_run = $runRecords }
+            actions = @($actions) }
+        comparison = $comparison
+    }
+    $report['open_items'] = Get-RrOpenItems -Detection $detection -Actions $actions -Comparison $comparison -Chain $chain
+    $report['honesty'] = Get-RrHonesty -Mode $In['mode'] -Outcome $outcome -KeyPresent $keyPresent -Actions $actions -Comparison $comparison -Scope $scope
+    $counts2 = [ordered]@{ total = @($actions).Count }
+    foreach ($f in $script:RrFinals) { $counts2[$f.Replace('-', '_')] = 0 }
+    foreach ($a in $actions) { $k = $a['final_outcome'].Replace('-', '_'); $counts2[$k] = $counts2[$k] + 1 }
+    $sumChecks = [ordered]@{}
+    foreach ($s in $script:RrStatuses) { $sumChecks[$s] = $detection['totals'][$s] }
+    $report['summary'] = [ordered]@{ checks = $sumChecks; actions = $counts2; status_changes = @($comparison['changed']).Count }
+    $report['privacy_check'] = [ordered]@{ status = 'passed'; findings = @() }
+    return $report
+}
+
+function New-RunReportMinimal {
+    param($In, $Findings)
+    $stripped = @{}
+    foreach ($k in @('run_id', 'mode', 'started_at', 'ended_at', 'version', 'key_present', 'scope', 'repair_policy')) { if ($In.ContainsKey($k)) { $stripped[$k] = $In[$k] } }
+    $stripped['outcome'] = 'report-privacy-refused'
+    $stripped['run_id'] = 'privacy-refused'
+    $report = New-RunReportModel -In $stripped
+    $sorted = [string[]]@($Findings | Select-Object -Unique)
+    [Array]::Sort($sorted, [System.StringComparer]::Ordinal)
+    $report['privacy_check'] = [ordered]@{ status = 'refused'; findings = @($sorted) }
+    return $report
+}
+
+# ---- rendering --------------------------------------------------------------------------
+
+function ConvertTo-RrTable {
+    param([string[]]$Header, $Rows)
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('| ' + ($Header -join ' | ') + ' |')
+    $out.Add('|' + ((@($Header | ForEach-Object { '---' })) -join '|') + '|')
+    foreach ($row in $Rows) { $out.Add('| ' + ((@($row | ForEach-Object { [string]$_ })) -join ' | ') + ' |') }
+    return , @($out)
+}
+
+function Format-RrValue {
+    param($V)
+    if ($null -eq $V) { return '' }
+    return (Format-RrNum $V.number) + $script:RrUnits[[string]$V.kind]
+}
+
+function Get-RrYesNo { param([bool]$F); if ($F) { return 'ya / yes' } return 'tidak / no' }
+
+$script:RrDecisionText = @{
+    'operator-interactive' = 'operator (interaktif)'; 'cli' = 'operator (CLI --approve)'; 'auto-safe' = 'otomatis (auto-safe)'
+    'declined' = 'ditolak operator'; 'not-interactive' = 'ditolak (tanpa terminal)'; 'policy-detect-only' = 'tidak dijalankan (detect-only)'
+    'skipped' = 'dilewati'; 'not-reached' = 'tidak sampai persetujuan'
+}
+$script:RrOpenText = @{
+    'action-failed' = 'Aksi GAGAL; periksa tahap di bagian 5 dan pertimbangkan bantuan teknisi.'
+    'action-rolled-back' = 'Aksi dibatalkan otomatis (rollback); kondisi awal dipulihkan, masalah belum selesai.'
+    'action-declined' = 'Aksi ditolak; masalah terkait belum diperbaiki.'
+    'action-skipped' = 'Aksi dilewati (prasyarat, parameter, atau backup tidak terpenuhi).'
+    'action-not-run' = 'Aksi hanya diusulkan (kebijakan detect-only); belum dijalankan.'
+    'manual-rollback' = 'Rollback MANUAL diperlukan; ikuti dokumen yang ditautkan.'
+    'journal-invalid' = 'Rantai hash journal TIDAK VALID; jangan percaya bagian remediasi sebelum diperiksa.'
+    'escalate-encrypted-disk' = 'Disk terenkripsi tidak dapat dipindai penuh; buka kunci dengan kunci pemulihan milik pemilik, lalu jalankan ulang.'
+    'escalate-hardware-fault' = 'Indikasi kerusakan perangkat keras; cadangkan data sekarang dan bawa ke teknisi.'
+    'stale-signatures' = 'Signature antivirus kedaluwarsa; perbarui signature lalu pindai ulang.'
+    'review-malware-detections' = 'Ada temuan/pemindaian malware yang perlu ditinjau di daftar deteksi lokal (bukan di laporan ini).'
+    'unknown-checks' = 'Ada pemeriksaan berstatus unknown (tidak dapat ditentukan, BUKAN sehat); jalankan dengan hak akses yang sesuai.'
+    'regression-after-repair' = 'Status pemeriksaan memburuk sesudah perbaikan; periksa aksi yang dijalankan.'
+}
+$script:RrHonestyText = @{
+    'physical-boot-and-reboot' = 'Hardware-required: boot fisik dan reboot dari USB tidak dibuktikan oleh laporan ini.'
+    'host-os-native-behavior' = 'Hardware-required: perilaku pada Windows/macOS nyata tidak dibuktikan oleh laporan ini.'
+    'disk-repair-read-back' = 'Hardware-required: hasil perbaikan pada disk fisik harus dikonfirmasi dengan pemeriksaan ulang di mesin nyata.'
+    'provider-key-missing' = 'Environment-blocked: tidak ada kunci provider, sehingga analisis AI tidak dijalankan.'
+    'network-unreachable' = 'Environment-blocked: jaringan/HTTP ke provider gagal, analisis AI tidak dijalankan.'
+    'analysis-not-run-offline-mode' = 'Environment-blocked: mode offline (evidence-only/dry-run), analisis AI tidak dijalankan.'
+    'analysis-failed' = 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.'
+    'scan-not-completed' = 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.'
+    'hardware-preflight-failed' = 'Environment-blocked: preflight perangkat keras gagal; pemindaian tidak dijalankan.'
+    'rescan-not-completed' = 'Environment-blocked: pemindaian ulang setelah perbaikan tidak selesai; hasil perbaikan belum dibandingkan.'
+}
+
+function ConvertTo-RunReportMarkdown {
+    param($Report)
+    $h = $Report['header']; $det = $Report['detection']; $ai = $Report['analysis']
+    $rem = $Report['remediation']; $cmp = $Report['comparison']; $rd = $Report['readiness']
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.AddRange([string[]]@('# Laporan Proses Rescue / Rescue Run Report', '',
+            '> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.',
+            '> RAHASIA / CONFIDENTIAL: berkas ini ada di USB rescue. Tidak memuat nama pengguna, nama komputer, serial, IP/MAC, path, nama file, nama signature malware, nama paket, atau log mentah. Jangan dibagikan tanpa ditinjau.', ''))
+    if ($Report['privacy_check']['status'] -ceq 'refused') {
+        $out.AddRange([string[]]@('## LAPORAN DITOLAK OLEH PEMERIKSAAN PRIVASI / REPORT REFUSED BY THE PRIVACY SELF-CHECK', '',
+                ('Laporan lengkap tidak ditulis karena isinya mengandung pola pengenal (' + (@($Report['privacy_check']['findings']) -join ', ') + '). Hanya laporan minimal ini yang disimpan. Periksa artefak sumber (evidence, analisis, journal) di USB secara manual.'), ''))
+    }
+    $ver = 'unknown'; if ($h['toolkit_version']) { $ver = $h['toolkit_version'] }
+    $cat = 'unavailable'; if ($h['catalog_sha256']) { $cat = $h['catalog_sha256'] }
+    $pol = 'unknown'; if ($h['repair_policy']) { $pol = $h['repair_policy'] }
+    $esha = 'none'; if ($h['evidence_sha256']) { $esha = $h['evidence_sha256'] }
+    $out.AddRange([string[]]@('## 1. Header / Ringkasan Proses', ''))
+    $out.AddRange([string[]](ConvertTo-RrTable -Header @('Field', 'Nilai / Value') -Rows @(
+                @('Run ID', $Report['run_id']), @('Mulai (UTC) / Started', $h['started_at']), @('Selesai (UTC) / Ended', $h['ended_at']),
+                @('Mode', $h['mode']), @('Versi toolkit / Toolkit version', $ver), @('Catalog SHA-256', $cat),
+                @('Scope', (@($h['scope']) -join ', ')), @('Repair policy', $pol),
+                @('Kunci provider ada / Provider key present (nilai tidak pernah dicatat)', (Get-RrYesNo $h['provider_key_present'])),
+                @('Hasil / Outcome', $h['outcome']), @('Evidence SHA-256', $esha))))
+    $out.AddRange([string[]]@('', '## 2. Preflight perangkat keras / Hardware readiness', ''))
+    if ($rd['performed']) {
+        $out.Add(('Gerbang / Gate: **' + $rd['gate'].ToUpperInvariant() + '** (overall: ' + $rd['overall'] + ')'))
+        $out.Add('')
+        $rows = @(); foreach ($c in $rd['checks']) { $rows += , @($c['check_id'], $c['status'], (Get-RrYesNo $c['required'])) }
+        $out.AddRange([string[]](ConvertTo-RrTable -Header @('Check', 'Status', 'Required') -Rows $rows))
+        $out.AddRange([string[]]@('', 'Diverifikasi: hasil pemeriksaan perangkat lunak saat boot. TIDAK diverifikasi: boot fisik dari firmware, reboot.'))
+    } else {
+        $out.Add('Tidak dijalankan pada mode ini / Not performed in this mode (hanya mode live-linux).')
+    }
+    $out.AddRange([string[]]@('', '## 3. Deteksi / Detection', ''))
+    if (-not $det['available']) {
+        $out.Add('Tidak ada evidence: pemindaian tidak selesai / No evidence: the scan did not complete. Tidak ada yang diverifikasi.')
+    } else {
+        $t = $det['totals']
+        $out.Add('Legenda / Legend: `unknown` = tidak dapat ditentukan (BUKAN sehat) / could not be determined (NOT healthy). `not_applicable` = tidak berlaku. Hanya kode status dan angka terbatas.')
+        $out.Add('')
+        $out.Add(('Total: pass={0} fail={1} warn={2} unknown={3} not_applicable={4}' -f $t['pass'], $t['fail'], $t['warn'], $t['unknown'], $t['not_applicable']))
+        foreach ($domain in $script:RrDomains) {
+            $items = $det['domains'][$domain]
+            $out.AddRange([string[]]@('', ('### {0} ({1})' -f $domain, @($items).Count), ''))
+            if ($domain -ceq 'os') {
+                foreach ($tg in $det['targets']) {
+                    $g = { param($k) if ($tg.Contains($k)) { return $tg[$k] } return '-' }
+                    $out.Add(('- {0}: family={1} arch={2} detection={3} encryption={4} access={5}' -f $tg['ref'], (& $g 'family'), (& $g 'architecture'), (& $g 'detection'), (& $g 'encryption'), (& $g 'access')))
+                }
+                if (@($det['targets']).Count -gt 0) { $out.Add('') }
+            }
+            if (@($items).Count -eq 0) {
+                $out.Add('Tidak ada pemeriksaan di domain ini pada run ini / No checks in this domain in this run (scope: ' + (@($h['scope']) -join ', ') + ').')
+                continue
+            }
+            $rows = @()
+            foreach ($c in $items) {
+                $tr = '-'; if ($c.Contains('target_ref')) { $tr = $c['target_ref'] }
+                $val = ''; if ($c.Contains('value')) { $val = Format-RrValue ([pscustomobject]$c['value']) }
+                $rows += , @($c['check_id'], $tr, $c['status'], $val)
+            }
+            $out.AddRange([string[]](ConvertTo-RrTable -Header @('Check', 'Target', 'Status', 'Nilai / Value') -Rows $rows))
+        }
+    }
+    $out.AddRange([string[]]@('', '## 4. Analisis AI / AI analysis', ''))
+    $mid = 'none'; if ($ai['model_id']) { $mid = $ai['model_id'] }
+    $aes = 'none'; if ($ai['evidence_sha256']) { $aes = $ai['evidence_sha256'] }
+    $acc = 'unknown'; if ($null -ne $ai['proposals']['accepted']) { $acc = $ai['proposals']['accepted'] }
+    $rej = 'unknown'; if ($null -ne $ai['proposals']['rejected']) { $rej = $ai['proposals']['rejected'] }
+    $out.AddRange([string[]](ConvertTo-RrTable -Header @('Field', 'Nilai / Value') -Rows @(
+                @('Status', $ai['status']), @('Model', $mid), @('Evidence SHA-256', $aes),
+                @('Usulan diterima / accepted', $acc), @('Usulan ditolak / rejected', $rej))))
+    $out.Add('')
+    if ($null -eq $ai['text']) {
+        $out.Add('Tidak ada analisis AI pada run ini / No AI analysis in this run.')
+    } else {
+        $out.AddRange([string[]]@('KELUARAN MODEL, hanya untuk dibaca; TIDAK PERNAH dijalankan sebagai perintah. / MODEL OUTPUT, read-only; never executed. Karakter kontrol dihapus. Kebenarannya tidak diverifikasi.', ''))
+        if ($ai['text_truncated']) { $out.AddRange([string[]]@(('(dipotong pada {0} karakter / truncated at {0} characters)' -f $script:RrMaxAnalysis), '')) }
+        if ($ai['redactions'] -gt 0) { $out.AddRange([string[]]@(('({0} bagian yang menyerupai pengenal (path, MAC, IP, kunci) diganti placeholder / {0} identifier-shaped parts replaced by placeholders)' -f $ai['redactions']), '')) }
+        foreach ($line in $ai['text'].Split("`n")) { $out.Add(('> ' + $line).TrimEnd()) }
+    }
+    $out.AddRange([string[]]@('', '## 5. Remediasi / Remediation', ''))
+    $chain = $rem['journal']['chain']
+    if ($chain -ceq 'INVALID') {
+        $out.AddRange([string[]]@('**PERINGATAN: RANTAI HASH JOURNAL INVALID / JOURNAL HASH CHAIN INVALID.** Isi journal mungkin diubah atau rusak; jangan dipercaya sebelum diperiksa dengan `rescue-repair.py --verify-journal`.', ''))
+    } elseif ($chain -ceq 'valid') {
+        $out.AddRange([string[]]@(('Rantai hash journal: valid ({0} catatan total, {1} untuk run ini). Diverifikasi: urutan dan hash berantai; bukan bukti bahwa perintah benar-benar mengubah disk.' -f $rem['journal']['records_total'], $rem['journal']['records_run']), ''))
+    } else {
+        $out.AddRange([string[]]@('Journal: tidak ada / absent (tidak ada aksi yang dicatat).', ''))
+    }
+    if (@($rem['actions']).Count -eq 0) { $out.Add('Tidak ada aksi perbaikan pada run ini / No repair actions in this run.') }
+    foreach ($a in $rem['actions']) {
+        $title = $a['action_id']; if ($a.Contains('target_ref')) { $title += ' (' + $a['target_ref'] + ')' }
+        $out.AddRange([string[]]@('', ('### ' + $title), ''))
+        $apr = $script:RrDecisionText[$a['approval']['decision']]
+        if ($a['approval'].Contains('reason')) { $apr += ' [' + $a['approval']['reason'] + ']' }
+        $pl = @(); foreach ($k in $a['params'].Keys) { $pl += ('{0}={1}' -f $k, $a['params'][$k]) }
+        $plt = '-'; if ($pl.Count -gt 0) { $plt = '`' + ($pl -join ', ') + '`' }
+        $bk = '-'; if ($null -ne $a['backup']) { $bk = ('{0} B, fingerprint {1}' -f $a['backup']['size_bytes'], $a['backup']['fingerprint']) }
+        $out.AddRange([string[]](ConvertTo-RrTable -Header @('Field', 'Nilai / Value') -Rows @(
+                    @('Origin', $a['origin']), @('Risk', $a['risk']), @('Policy', $a['policy']), @('Persetujuan / Approval', $apr),
+                    @('Parameter', $plt), @('Backup', $bk), @('Hasil akhir / Final outcome', ('**' + $a['final_outcome'] + '**')))))
+        if (@($a['stages']).Count -gt 0) {
+            $out.Add('')
+            $rows = @()
+            foreach ($s in $a['stages']) {
+                $rs = '-'; if ($s.Contains('reason')) { $rs = $s['reason'] }
+                $ec = '-'; if ($s.Contains('exit_code')) { $ec = $s['exit_code'] }
+                $rows += , @($s['stage'], $s['outcome'], $rs, $ec)
+            }
+            $out.AddRange([string[]](ConvertTo-RrTable -Header @('Tahap / Stage', 'Outcome', 'Alasan / Reason', 'Exit') -Rows $rows))
+        }
+        if ($a['manual_rollback_required']) {
+            $lnk = 'lihat katalog'
+            if ($a['manual_rollback_doc']) { $lnk = '`' + $a['manual_rollback_doc'] + '`' }
+            $out.AddRange([string[]]@('', ('Rollback MANUAL diperlukan / manual rollback required: ' + $lnk)))
+        }
+    }
+    $out.AddRange([string[]]@('', '## 6. Sebelum/sesudah / Before-after', ''))
+    if (-not $cmp['performed']) {
+        if ($cmp['reason'] -ceq 'no-action-executed') { $out.Add('Tidak ada aksi yang dijalankan, jadi tidak ada pemindaian ulang / No action ran, so no re-scan was made.') }
+        else { $out.Add('Aksi dijalankan tetapi pemindaian ulang tidak tersedia / An action ran but the re-scan is missing: hasil belum dibandingkan.') }
+    } else {
+        $out.Add(('Pemindaian ulang dengan scope yang sama / Re-scan with the same scope. Dibandingkan: {0}, tidak berubah: {1}, berubah: {2}, hanya sebelum: {3}, hanya sesudah: {4}.' -f $cmp['compared'], $cmp['unchanged'], @($cmp['changed']).Count, $cmp['only_before'], $cmp['only_after']))
+        if (@($cmp['changed']).Count -gt 0) {
+            $out.Add('')
+            $rows = @()
+            foreach ($c in $cmp['changed']) {
+                $tr = '-'; if ($c.Contains('target_ref')) { $tr = $c['target_ref'] }
+                $rows += , @($c['check_id'], $tr, $c['before'], $c['after'])
+            }
+            $out.AddRange([string[]](ConvertTo-RrTable -Header @('Check', 'Target', 'Sebelum / Before', 'Sesudah / After') -Rows $rows))
+        }
+        $out.AddRange([string[]]@('', 'Pemindaian ulang hanya membuktikan status pada saat itu; bukan bukti kesehatan.'))
+    }
+    $out.AddRange([string[]]@('', '## 7. Butir terbuka / Open items', ''))
+    if (@($Report['open_items']).Count -eq 0) { $out.Add('Tidak ada butir terbuka yang terdeteksi / No open items detected (bukan jaminan sistem sehat).') }
+    foreach ($item in $Report['open_items']) {
+        $label = $item['kind']
+        if ($item.Contains('ref')) { $label += ' ' + $item['ref']; if ($item.Contains('target_ref')) { $label += ' (' + $item['target_ref'] + ')' } }
+        $doc = ''
+        if ($item.Contains('doc')) { $doc = ' Dokumen: `' + $item['doc'] + '`.' }
+        $out.Add(('- **{0}**: {1}{2}' -f $label, $script:RrOpenText[$item['kind']], $doc))
+    }
+    $anyDoc = $false
+    foreach ($item in $Report['open_items']) { if ($item.Contains('doc')) { $anyDoc = $true } }
+    if ($anyDoc) {
+        $out.AddRange([string[]]@('', 'Dokumen ada di bundle rescue-omes: `/usr/local/lib/rescue-omes/docs/` di live USB, `rescue-omes/docs/` di USB pada mode host. / Documents live in the rescue-omes bundle: `/usr/local/lib/rescue-omes/docs/` on the live USB, `rescue-omes/docs/` on the USB in host mode.'))
+    }
+    $out.AddRange([string[]]@('', '## 8. Kejujuran / Honesty', ''))
+    $hon = $Report['honesty']
+    foreach ($key in (@($hon['hardware_required']) + @($hon['environment_blocked']))) { $out.Add('- ' + $script:RrHonestyText[$key]) }
+    if ($hon['scope_limited']) { $out.Add('- Scope dibatasi (' + (@($h['scope']) -join ', ') + '): area di luar scope tidak dipindai dan tidak boleh dianggap sehat.') }
+    $out.Add('- Hasil bersih BUKAN bukti kesehatan: pemeriksaan hanya mencakup yang tercantum di bagian 3, `unknown` berarti tidak diketahui, dan kerusakan yang tidak diperiksa tidak terlihat. / A clean result is not proof of health.')
+    $out.Add('- Laporan ini dibuat dari artefak yang ada (evidence, analisis, journal); ia tidak menjalankan pemeriksaan sendiri.')
+    return (($out -join "`n") + "`n")
+}
+
+function Get-RrSummaryLine {
+    param($S)
+    $a = $S['actions']
+    return @(('{0}/{1}/{2}' -f $S['checks']['fail'], $S['checks']['warn'], $S['checks']['unknown']),
+        ('{0}/{1}/{2}' -f $a['verified'], ($a['failed'] + $a['rolled_back']), ($a['declined'] + $a['skipped'] + $a['proposed'])))
+}
+
+function ConvertTo-RunReportIndex {
+    # $Entries: array of @{ Name; Started; Mode; Outcome; Summary } newest first.
+    param($Entries)
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.AddRange([string[]]@('# Indeks laporan rescue / Rescue report index', '',
+            '> Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.',
+            '> Satu baris per run, terbaru dulu. Kolom checks = fail/warn/unknown; actions = verified/failed/tidak-dijalankan.', ''))
+    $rows = @()
+    foreach ($e in $Entries) {
+        $l = Get-RrSummaryLine $e.Summary
+        $rows += , @($e.Started, $e.Mode, $e.Outcome, $l[0], $l[1], ('[' + $e.Name + '/report.md](' + $e.Name + '/report.md)'))
+    }
+    if ($rows.Count -eq 0) { $out.Add('Belum ada run / No runs yet.') }
+    else { $out.AddRange([string[]](ConvertTo-RrTable -Header @('Mulai (UTC) / Started', 'Mode', 'Hasil / Outcome', 'Checks F/W/U', 'Actions V/F/O', 'Laporan / Report') -Rows $rows)) }
+    return (($out -join "`n") + "`n")
+}
+
+function Get-RrPrivacyFindings {
+    param([string]$Text, [string[]]$Secrets = @())
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($rule in $script:RrPrivacyRules) {
+        $opt = [System.Text.RegularExpressions.RegexOptions]::None
+        if ($rule[2] -ceq 'IgnoreCase') { $opt = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase }
+        if ([regex]::IsMatch($Text, $rule[1], $opt)) { $found.Add($rule[0]) }
+    }
+    foreach ($s in $Secrets) { if ($s -and $s.Length -ge 8 -and $Text.Contains($s)) { $found.Add('configured-key-value'); break } }
+    return , @($found)
+}
+
+function Write-RrPrivate {
+    param([string]$Path, [string]$Text)
+    $dir = [System.IO.Path]::GetDirectoryName($Path)
+    $tmp = Join-Path $dir ('.report-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [System.IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
+        try { [System.IO.File]::SetUnixFileMode($tmp, 384) } catch { }  # 0600 where the platform and filesystem allow it
+        if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $Path) }
+    } catch {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        throw
+    }
+}
+
+function Read-RrEntries {
+    param([string]$Reports)
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($dir in [System.IO.Directory]::GetDirectories($Reports)) {
+        $name = [System.IO.Path]::GetFileName($dir)
+        if (-not [regex]::IsMatch($name, '^run-\d{8}T\d{6}Z(-\d+)?$')) { continue }
+        try {
+            $raw = [System.IO.File]::ReadAllText((Join-Path $dir 'report.json'), [System.Text.Encoding]::UTF8)
+            $doc = $raw | ConvertFrom-Json
+            if ((Get-RrProp $doc 'report_type') -cne 'rescue-run-report') { continue }
+            $m = [regex]::Match($raw, '"started_at":\s*"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"')
+            if (-not $m.Success) { continue }
+            $s = $doc.summary
+            $summary = @{ checks = @{ fail = [int]$s.checks.fail; warn = [int]$s.checks.warn; unknown = [int]$s.checks.unknown }
+                actions = @{ verified = [int]$s.actions.verified; failed = [int]$s.actions.failed; rolled_back = [int]$s.actions.rolled_back
+                    declined = [int]$s.actions.declined; skipped = [int]$s.actions.skipped; proposed = [int]$s.actions.proposed } }
+            $entries.Add(@{ Name = $name; Started = $m.Groups[1].Value; Mode = [string]$doc.header.mode; Outcome = [string]$doc.header.outcome; Summary = $summary })
+        } catch { continue }
+    }
+    $sorted = @($entries | Sort-Object -Property @{ Expression = { $_.Started }; Descending = $true }, @{ Expression = { $_.Name }; Descending = $true })
+    return , $sorted
+}
+
+function Write-RunReportFiles {
+    # Returns @{ Name; Refused }. Throws only when the reports folder is not writable.
+    param([string]$Reports, $In, [string[]]$Secrets = @())
+    $report = New-RunReportModel -In $In
+    $jsonText = (ConvertTo-RescueJson -Value $report -Indent 2) + "`n"
+    $markdown = ConvertTo-RunReportMarkdown -Report $report
+    $findings = Get-RrPrivacyFindings -Text ($jsonText + $markdown) -Secrets $Secrets
+    if (@($findings).Count -gt 0) {
+        $report = New-RunReportMinimal -In $In -Findings $findings
+        $jsonText = (ConvertTo-RescueJson -Value $report -Indent 2) + "`n"
+        $markdown = ConvertTo-RunReportMarkdown -Report $report
+    }
+    if (-not (Test-Path -LiteralPath $Reports)) { [void](New-Item -ItemType Directory -Path $Reports -ErrorAction Stop) }
+    $base = 'run-' + ($In['started_at'] -replace '[-:]', '')
+    $name = $base
+    $n = 1
+    while (Test-Path -LiteralPath (Join-Path $Reports $name)) { $n++; $name = $base + '-' + $n }
+    $runDir = Join-Path $Reports $name
+    [void](New-Item -ItemType Directory -Path $runDir -ErrorAction Stop)
+    Write-RrPrivate -Path (Join-Path $runDir 'report.json') -Text $jsonText
+    Write-RrPrivate -Path (Join-Path $runDir 'report.md') -Text $markdown
+    Write-RrPrivate -Path (Join-Path $Reports 'index.md') -Text (ConvertTo-RunReportIndex -Entries (Read-RrEntries -Reports $Reports))
+    return @{ Name = $name; Refused = (@($findings).Count -gt 0) }
+}
+
+function Get-RrFileLines {
+    # Raw journal lines (bytes, newline removed, blank lines dropped) or $null when the file is absent.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $raw = [System.IO.File]::ReadAllBytes($Path)
+    $lines = New-Object System.Collections.Generic.List[object]
+    $start = 0
+    for ($i = 0; $i -le $raw.Length; $i++) {
+        if ($i -eq $raw.Length -or $raw[$i] -eq 10) {
+            $len = $i - $start
+            if ($len -gt 0) {
+                $seg = New-Object byte[] $len
+                [Array]::Copy($raw, $start, $seg, 0, $len)
+                if (([System.Text.Encoding]::UTF8.GetString($seg)).Trim().Length -gt 0) { $lines.Add($seg) }
+            }
+            $start = $i + 1
+        }
+    }
+    return , $lines
+}
+
+function Read-RrJsonFile {
+    # (object, sha256-of-bytes) or (null, null)
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @($null, $null) }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    try { $doc = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes) | ConvertFrom-Json } catch { return @($null, (Get-RrSha -Bytes $bytes)) }
+    return @($doc, (Get-RrSha -Bytes $bytes))
+}
+
+function Get-RrActionInfo {
+    param($Catalog)
+    $info = @{}
+    if ($null -eq $Catalog -or -not $Catalog.Ok -or -not $Catalog.Present) { return $info }
+    foreach ($id in $Catalog.Actions.Keys) {
+        $a = $Catalog.Actions[$id]
+        $pm = @{}
+        foreach ($p in @($a.params)) { if ($p) { $pm[[string]$p.name] = [string]$p.type } }
+        $doc = $null
+        if ($a.rollback -and $a.rollback.doc) { $doc = [string]$a.rollback.doc }
+        $info[$id] = @{ doc = $doc; params = $pm }
+    }
+    return $info
+}
+
+function Invoke-RunReport {
+    # Generates the report from the artifacts on the USB. Never throws; returns $true when written in full.
+    param([string]$Reports, [string]$RunId, [string]$Mode, [string]$Outcome, [string]$Started, [string]$Ended,
+        [string]$Version = '', [string]$CatalogSha = '', [string[]]$Scope = @(), [string]$Policy = '', [bool]$KeyPresent = $false,
+        [string]$EvidencePath = '', [string]$EvidenceAfterPath = '', [string]$AnalysisPath = '', [string]$JournalPath = '',
+        $ActionInfo = @{}, $AiCounts = $null, $Readiness = $null, [string[]]$Secrets = @())
+    try {
+        if (-not [regex]::IsMatch($Started, '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')) { $Started = Get-UtcIso }
+        if (-not [regex]::IsMatch($Ended, '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')) { $Ended = Get-UtcIso }
+        $ev = Read-RrJsonFile -Path $EvidencePath
+        $af = Read-RrJsonFile -Path $EvidenceAfterPath
+        $text = $null
+        if ($AnalysisPath -and (Test-Path -LiteralPath $AnalysisPath -PathType Leaf)) {
+            $text = (New-Object System.Text.UTF8Encoding($false)).GetString([System.IO.File]::ReadAllBytes($AnalysisPath))
+        }
+        $v = $null; if ($Version -match '^[0-9]+\.[0-9]+\.[0-9]+$') { $v = $Version }
+        $cs = $null; if ($CatalogSha) { $cs = $CatalogSha }
+        $pol = $null; if ($Policy) { $pol = $Policy }
+        $counts = $AiCounts
+        if ($null -eq $text -or $text.Trim().Length -eq 0) { $counts = @(0, 0) }
+        $inp = @{
+            run_id = $RunId; mode = $Mode; outcome = $Outcome; started_at = $Started; ended_at = $Ended; version = $v
+            catalog_sha256 = $cs; scope = @($Scope | Where-Object { $_ }); repair_policy = $pol; key_present = $KeyPresent
+            evidence = $ev[0]; evidence_sha256 = $ev[1]; evidence_after = $af[0]; analysis_text = $text; ai_counts = $counts
+            journal_lines = (Get-RrFileLines -Path $JournalPath); readiness = $Readiness; action_info = $ActionInfo
+            secrets = @($Secrets); key_redactions = 0
+        }
+        $res = Write-RunReportFiles -Reports $Reports -In $inp -Secrets $Secrets
+        Write-Host ('Laporan tersimpan / report saved: ' + (Join-Path (Join-Path $Reports $res.Name) 'report.md'))
+        if ($res.Refused) {
+            Write-Host 'PERINGATAN / WARNING: privacy self-check refused the full report; a minimal report was written.' -ForegroundColor Yellow
+            return $false
+        }
+        return $true
+    } catch {
+        Write-Host ('PERINGATAN / WARNING: the run report could not be written: ' + $_.Exception.Message) -ForegroundColor Yellow
+        return $false
+    }
+}
+
+# ----------------------------------------------------------------------------------------
 # OpenCode Go call + output
 # ----------------------------------------------------------------------------------------
 
@@ -1851,7 +2879,83 @@ function Write-Utf8File {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Invoke-RepairTracked {
+    # Repair phase + run-report bookkeeping: outcome for an unusable catalog/journal, and (when an action
+    # executed in this run) a re-scan with the same scope so the report can list before/after changes.
+    param($RepairArgs, [string]$AnalysisText, [bool]$Rescan)
+    $rc = Invoke-RepairPhase @RepairArgs -AnalysisText $AnalysisText
+    if ($rc -eq 2) { $script:Rep.Outcome = 'repair-invalid' }
+    elseif ($rc -eq 5) { $script:Rep.Outcome = 'journal-unusable' }
+    $script:Rep.AnalysisText = $AnalysisText
+    if ($Rescan -and $script:Rep.Collect -and $script:Rep.Evidence -and ($rc -eq 0 -or $rc -eq 1)) {
+        try {
+            $lines = Get-RrFileLines -Path (Join-Path (Join-Path $script:Rep.Reports 'repairs') 'journal.jsonl')
+            $ran = $false
+            if ($null -ne $lines) {
+                $needle = '"run_id":"' + [string]$script:Rep.RunEvidenceId + '"'
+                foreach ($l in $lines) {
+                    $t = [System.Text.Encoding]::UTF8.GetString($l)
+                    if ($t.Contains($needle) -and $t.Contains('"stage":"execute"')) { $ran = $true }
+                }
+            }
+            if ($ran) {
+                Write-Host 'Memindai ulang setelah perbaikan (scope sama) / re-scanning after repairs (same scope)...'
+                $c = $script:Rep.Collect
+                $again = Invoke-HostCollection -SkipNetwork $c.SkipNetwork -Authenticated $c.Authenticated -Destination $c.Destination `
+                    -Bundle $c.Bundle -Scope $c.Scope -PackageList $c.PackageList -RepairPolicy $c.Policy
+                $afterPath = $script:Rep.Evidence -replace '-evidence\.json$', '-evidence-after.json'
+                Write-Utf8File -Path $afterPath -Text ((ConvertTo-RescueJson -Value $again -Indent 2) + "`n")
+                $script:Rep.After = $afterPath
+            }
+        } catch {
+            Write-Host 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.' -ForegroundColor Yellow
+        }
+    }
+    return $rc
+}
+
+function Send-RunReport {
+    # Called from finally{} of Invoke-RescueMain: every exit after the reports folder is known writes the report.
+    $r = $script:Rep
+    if ($null -eq $r -or -not $r.Ready) { return }
+    try {
+        $counts = $null
+        if ($r.AnalysisText -and $r.Catalog -and $r.Catalog.Present -and $r.Catalog.Ok -and $r.EvidenceObj) {
+            $ai = Get-AiProposals -Text $r.AnalysisText -Catalog $r.Catalog -Evidence $r.EvidenceObj -Scope $r.Scope
+            $counts = @(@($ai.Accepted).Count, [int]$ai.Rejected)
+        }
+        $version = ''
+        try { $version = ([System.IO.File]::ReadAllText((Join-Path $r.Bundle 'VERSION'))).Trim() } catch { }
+        $catSha = ''
+        if ($r.Catalog -and $r.Catalog.Present -and $r.Catalog.Ok) { $catSha = $r.Catalog.Sha256 }
+        [void](Invoke-RunReport -Reports $r.Reports -RunId $r.RunId -Mode 'windows-host' -Outcome $r.Outcome -Started $r.Started -Ended (Get-UtcIso) `
+                -Version $version -CatalogSha $catSha -Scope @($r.Scope) -Policy $r.Policy -KeyPresent ([bool]$r.KeyPresent) `
+                -EvidencePath $r.Evidence -EvidenceAfterPath $r.After -AnalysisPath $r.Analysis `
+                -JournalPath (Join-Path (Join-Path $r.Reports 'repairs') 'journal.jsonl') `
+                -ActionInfo (Get-RrActionInfo -Catalog $r.Catalog) -AiCounts $counts -Secrets @($r.Secrets))
+    } catch {
+        Write-Host ('PERINGATAN / WARNING: the run report could not be written: ' + $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
 function Invoke-RescueMain {
+    param([bool]$EvidenceOnlyMode, [bool]$DryRunMode, [string]$Explicit, [string]$ScriptDir,
+        [string]$ScopeText = 'all', [string]$PackagesText = '', [string]$Policy = 'approve-each',
+        [string[]]$ApproveItems = @(), [string[]]$ParamItems = @(), [string]$BackupPath = '', [string[]]$SelectItems = @(),
+        [bool]$ListOnly = $false)
+    $script:Rep = @{ Ready = $false; Outcome = 'scan-failed'; Evidence = ''; After = ''; Analysis = ''; AnalysisText = ''; Reports = ''; Bundle = ''
+        Scope = @('all'); Policy = $Policy; KeyPresent = $false; Secrets = @(); Catalog = $null; Collect = $null; EvidenceObj = $null
+        RunEvidenceId = ''; Started = (Get-UtcIso); RunId = ('rescue-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '-win') }
+    try {
+        Invoke-RescueMainCore -EvidenceOnlyMode $EvidenceOnlyMode -DryRunMode $DryRunMode -Explicit $Explicit -ScriptDir $ScriptDir `
+            -ScopeText $ScopeText -PackagesText $PackagesText -Policy $Policy -ApproveItems $ApproveItems -ParamItems $ParamItems `
+            -BackupPath $BackupPath -SelectItems $SelectItems -ListOnly $ListOnly
+    } finally {
+        Send-RunReport
+    }
+}
+
+function Invoke-RescueMainCore {
     param([bool]$EvidenceOnlyMode, [bool]$DryRunMode, [string]$Explicit, [string]$ScriptDir,
         [string]$ScopeText = 'all', [string]$PackagesText = '', [string]$Policy = 'approve-each',
         [string[]]$ApproveItems = @(), [string[]]$ParamItems = @(), [string]$BackupPath = '', [string[]]$SelectItems = @(),
@@ -1901,20 +3005,32 @@ function Invoke-RescueMain {
     }
 
     $offline = $EvidenceOnlyMode -or $DryRunMode
+    $script:Rep.Ready = $true
+    $script:Rep.Reports = $reports
+    $script:Rep.Bundle = $bundle
+    $script:Rep.Scope = @($scopeResult.Scope)
     $envFile = Join-Path (Join-Path $bundle 'config') 'rescue.env'
     $apiKey = $env:OPENCODE_GO_API_KEY
     if ([string]::IsNullOrEmpty($apiKey)) { $apiKey = Get-ApiKeyFromEnvFile -Path $envFile }
     $haveKey = Test-KeyUsable -Key $apiKey
+    $script:Rep.KeyPresent = $haveKey
+    if ($haveKey) { $script:Rep.Secrets = @($apiKey) }
     $destination = 'unknown'
     if ($haveKey -and -not $offline) { $destination = 'cloud' }
 
     Write-Host 'Menjalankan pemeriksaan read-only / running read-only checks...'
     $evidence = Invoke-HostCollection -SkipNetwork $offline -Authenticated ($haveKey -and -not $offline) -Destination $destination `
         -Bundle $bundle -Scope $scopeResult.Scope -PackageList $packageList -RepairPolicy $Policy
+    $script:Rep.Collect = @{ SkipNetwork = $offline; Authenticated = ($haveKey -and -not $offline); Destination = $destination
+        Bundle = $bundle; Scope = $scopeResult.Scope; PackageList = $packageList; Policy = $Policy }
+    $script:Rep.EvidenceObj = $evidence
+    $script:Rep.RunEvidenceId = [string]$evidence['run_id']
 
     $problems = Test-RescueEvidence -Evidence $evidence
     if ($problems.Count -gt 0) {
         Write-Host ('ERROR: evidence tidak valid / evidence failed self-check: ' + ($problems -join ', ')) -ForegroundColor Red
+        $script:Rep.Outcome = 'evidence-invalid'
+        $script:Rep.EvidenceObj = $null
         $script:ExitCode = 2
         return
     }
@@ -1924,6 +3040,8 @@ function Invoke-RescueMain {
     $analysisPath = Join-Path $reports ("windows-$stamp-analysis.md")
     $evidenceJson = ConvertTo-RescueJson -Value $evidence -Indent 2
     Write-Utf8File -Path $evidencePath -Text ($evidenceJson + "`n")
+    $script:Rep.Evidence = $evidencePath
+    $script:Rep.Outcome = 'completed'
 
     Write-Host ''
     Write-Host 'Ringkasan pemeriksaan / check summary:'
@@ -1936,6 +3054,7 @@ function Invoke-RescueMain {
     Write-Host "Evidence tersimpan / saved: $evidencePath"
 
     $catalog = Read-RescueCatalog -Bundle $bundle
+    $script:Rep.Catalog = $catalog
     $planOnly = ($offline -or $ListOnly)
     $repairArgs = @{
         Catalog = $catalog; Evidence = $evidence; EvidencePath = $evidencePath; Reports = $reports
@@ -1945,7 +3064,8 @@ function Invoke-RescueMain {
 
     if ($EvidenceOnlyMode -and -not $DryRunMode) {
         Write-Host 'Mode -EvidenceOnly: tidak ada panggilan jaringan / no network call was made.'
-        $rc = Invoke-RepairPhase @repairArgs -AnalysisText ''
+        $script:Rep.Outcome = 'evidence-only'
+        $rc = Invoke-RepairTracked -RepairArgs $repairArgs -AnalysisText '' -Rescan (-not $planOnly)
         if ($rc -ne 0) { $script:ExitCode = $rc }
         return
     }
@@ -1966,7 +3086,8 @@ function Invoke-RescueMain {
         Write-Host "  evidence      : $($compactEvidence.Length) chars"
         Write-Host "  API key found : $keyState (value is never shown)"
         Write-Host ("  repair catalog: " + $catalogText.Length + ' chars appended')
-        $rc = Invoke-RepairPhase @repairArgs -AnalysisText ''
+        $script:Rep.Outcome = 'dry-run'
+        $rc = Invoke-RepairTracked -RepairArgs $repairArgs -AnalysisText '' -Rescan (-not $planOnly)
         if ($rc -ne 0) { $script:ExitCode = $rc }
         return
     }
@@ -1974,7 +3095,8 @@ function Invoke-RescueMain {
     if (-not $haveKey) {
         Write-Guidance -Kind 'nokey' -EvidencePath $evidencePath
         $script:ExitCode = 3
-        $rc = Invoke-RepairPhase @repairArgs -AnalysisText ''
+        $script:Rep.Outcome = 'no-key'
+        $rc = Invoke-RepairTracked -RepairArgs $repairArgs -AnalysisText '' -Rescan (-not $planOnly)
         if ($rc -eq 5) { $script:ExitCode = 5 }
         return
     }
@@ -1986,7 +3108,8 @@ function Invoke-RescueMain {
         Write-Host ('Kegagalan / failure: ' + $result.Error) -ForegroundColor Yellow
         Write-Guidance -Kind 'network' -EvidencePath $evidencePath
         $script:ExitCode = 4
-        $rc = Invoke-RepairPhase @repairArgs -AnalysisText ''
+        $script:Rep.Outcome = 'network-error'
+        $rc = Invoke-RepairTracked -RepairArgs $repairArgs -AnalysisText '' -Rescan (-not $planOnly)
         if ($rc -eq 5) { $script:ExitCode = 5 }
         return
     }
@@ -1998,7 +3121,8 @@ function Invoke-RescueMain {
     Write-Host $result.Text
     Write-Host '============================================================='
     Write-Host "Analisis tersimpan / analysis saved: $analysisPath"
-    $rc = Invoke-RepairPhase @repairArgs -AnalysisText $result.Text
+    $script:Rep.Analysis = $analysisPath
+    $rc = Invoke-RepairTracked -RepairArgs $repairArgs -AnalysisText $result.Text -Rescan (-not $planOnly)
     if ($rc -ne 0) { $script:ExitCode = $rc }
 }
 

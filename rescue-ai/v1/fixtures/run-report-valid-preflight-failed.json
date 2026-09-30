@@ -1,0 +1,128 @@
+{
+  "report_version": "1.0",
+  "report_type": "rescue-run-report",
+  "run_id": "rescue-20260930-080000-live",
+  "classification": "confidential",
+  "header": {
+    "started_at": "2026-09-30T08:00:00Z",
+    "ended_at": "2026-09-30T08:05:30Z",
+    "mode": "live-linux",
+    "toolkit_version": "0.3.0",
+    "catalog_sha256": "c9097f52dcebf388f77367671a509f731cb0396379bea7fde20ebf5da5c20fad",
+    "scope": [
+      "os"
+    ],
+    "repair_policy": "detect-only",
+    "provider_key_present": true,
+    "outcome": "preflight-failed",
+    "evidence_run_id": null,
+    "evidence_sha256": null
+  },
+  "readiness": {
+    "performed": true,
+    "gate": "failed",
+    "overall": "not_ready",
+    "checks": [
+      {
+        "check_id": "cpu",
+        "status": "pass",
+        "required": true
+      },
+      {
+        "check_id": "ram",
+        "status": "pass",
+        "required": true
+      },
+      {
+        "check_id": "usb-boot-media",
+        "status": "warn",
+        "required": true
+      },
+      {
+        "check_id": "internet-connectivity",
+        "status": "pass",
+        "required": true
+      }
+    ]
+  },
+  "detection": {
+    "available": false,
+    "totals": {
+      "pass": 0,
+      "fail": 0,
+      "warn": 0,
+      "not_applicable": 0,
+      "unknown": 0
+    },
+    "targets": [],
+    "domains": {
+      "hardware": [],
+      "os": [],
+      "software": [],
+      "malware": [],
+      "environment": []
+    }
+  },
+  "analysis": {
+    "status": "not_run",
+    "model_id": null,
+    "evidence_sha256": null,
+    "text": null,
+    "text_truncated": false,
+    "redactions": 0,
+    "proposals": {
+      "accepted": null,
+      "rejected": null
+    }
+  },
+  "remediation": {
+    "journal": {
+      "chain": "absent",
+      "records_total": 0,
+      "records_run": 0
+    },
+    "actions": []
+  },
+  "comparison": {
+    "performed": false,
+    "reason": "no-action-executed",
+    "compared": 0,
+    "unchanged": 0,
+    "only_before": 0,
+    "only_after": 0,
+    "changed": []
+  },
+  "open_items": [],
+  "honesty": {
+    "hardware_required": [
+      "physical-boot-and-reboot"
+    ],
+    "environment_blocked": [
+      "hardware-preflight-failed"
+    ],
+    "scope_limited": true
+  },
+  "summary": {
+    "checks": {
+      "pass": 0,
+      "fail": 0,
+      "warn": 0,
+      "not_applicable": 0,
+      "unknown": 0
+    },
+    "actions": {
+      "total": 0,
+      "verified": 0,
+      "rolled_back": 0,
+      "failed": 0,
+      "skipped": 0,
+      "declined": 0,
+      "proposed": 0
+    },
+    "status_changes": 0
+  },
+  "privacy_check": {
+    "status": "passed",
+    "findings": []
+  }
+}

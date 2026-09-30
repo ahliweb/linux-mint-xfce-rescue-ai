@@ -1,0 +1,107 @@
+{
+  "report_version": "1.0",
+  "report_type": "rescue-run-report",
+  "run_id": "rescue-20260930-080000-live",
+  "classification": "confidential",
+  "header": {
+    "started_at": "2026-09-30T08:00:00Z",
+    "ended_at": "2026-09-30T08:05:30Z",
+    "mode": "live-linux",
+    "toolkit_version": "0.3.0",
+    "catalog_sha256": null,
+    "scope": [
+      "all"
+    ],
+    "repair_policy": null,
+    "provider_key_present": true,
+    "outcome": "report-privacy-refused",
+    "evidence_run_id": null,
+    "evidence_sha256": null
+  },
+  "readiness": {
+    "performed": false,
+    "gate": "not_applicable",
+    "overall": null,
+    "checks": []
+  },
+  "detection": {
+    "available": false,
+    "totals": {
+      "pass": 0,
+      "fail": 0,
+      "warn": 0,
+      "not_applicable": 0,
+      "unknown": 0
+    },
+    "targets": [],
+    "domains": {
+      "hardware": [],
+      "os": [],
+      "software": [],
+      "malware": [],
+      "environment": []
+    }
+  },
+  "analysis": {
+    "status": "not_run",
+    "model_id": null,
+    "evidence_sha256": null,
+    "text": null,
+    "text_truncated": false,
+    "redactions": 0,
+    "proposals": {
+      "accepted": null,
+      "rejected": null
+    }
+  },
+  "remediation": {
+    "journal": {
+      "chain": "absent",
+      "records_total": 0,
+      "records_run": 0
+    },
+    "actions": []
+  },
+  "comparison": {
+    "performed": false,
+    "reason": "no-action-executed",
+    "compared": 0,
+    "unchanged": 0,
+    "only_before": 0,
+    "only_after": 0,
+    "changed": []
+  },
+  "open_items": [],
+  "honesty": {
+    "hardware_required": [
+      "physical-boot-and-reboot"
+    ],
+    "environment_blocked": [],
+    "scope_limited": false
+  },
+  "summary": {
+    "checks": {
+      "pass": 0,
+      "fail": 0,
+      "warn": 0,
+      "not_applicable": 0,
+      "unknown": 0
+    },
+    "actions": {
+      "total": 0,
+      "verified": 0,
+      "rolled_back": 0,
+      "failed": 0,
+      "skipped": 0,
+      "declined": 0,
+      "proposed": 0
+    },
+    "status_changes": 0
+  },
+  "privacy_check": {
+    "status": "refused",
+    "findings": [
+      "ipv4-address"
+    ]
+  }
+}
