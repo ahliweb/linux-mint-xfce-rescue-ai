@@ -46,7 +46,7 @@ Jalankan sebagai pengguna biasa (tidak pernah meminta hak administrator). Bila l
 | `-Select ID[:os-N]` | `--select ID[:os-N]` | Pilih aksi katalog secara manual; di host `:os-0` boleh dihilangkan |
 | `-ListRepairs` | `--list-repairs` | Hanya tampilkan rencana; tidak menjalankan dan tidak menulis journal |
 | `-EvidenceOnly` / `-DryRun` | `--evidence-only` / `--dry-run` | Juga hanya rencana (tanpa jaringan, tanpa eksekusi, tanpa journal) |
-| `-Scope`, `-Packages` | `--scope`, `--packages` | Cakupan deteksi dan aksi; `software.selected` membatasi nama paket |
+| `-Scope`, `-Packages` | `--scope`, `--packages` | Cakupan deteksi dan aksi; `software.selected` membatasi nama paket; `malware` memilih modul malware ([malware](malware.md)) |
 
 Contoh:
 
