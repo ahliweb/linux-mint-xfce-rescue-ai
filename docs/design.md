@@ -13,7 +13,9 @@ flowchart LR
     Q --> U
 ```
 
-The companion boots from Linux Mint XFCE selected through Ventoy and runs an isolated Hermes Rescue profile. The target PC's CPU/RAM/network are used by the live session; OpenCode Go provides cloud inference.
+This is the architecture as implemented at `VERSION` `0.3.0`. Status labels: **Implemented** (source level, `make check`), **Hardware-required**, **Environment-blocked**, **Planned** (see [testing](testing.md)). Feature details live in the linked documents; this page shows how the parts fit together.
+
+The companion boots from Linux Mint XFCE selected through Ventoy (or runs from the USB on a running Windows, macOS, or Linux) and drives an isolated Hermes Rescue profile. The target PC's CPU/RAM/network are used by the live session; OpenCode Go provides cloud inference.
 
 ## Boundary
 
@@ -26,44 +28,164 @@ flowchart TD
     H -. no ISO builder .-> X[OMES core boundary]
 ```
 
-The live session is configured for automatic Hermes startup after the one-time bootstrap has installed Hermes into the writable state directory. The generated XFCE autostart entry invokes the launcher in `auto` hardware mode; it validates the persisted state, provider configuration, network, and API-key presence before opening Hermes. The installer places a runtime bundle in `/usr/local/lib/rescue-omes` and symlinks the launcher and check scripts into `/usr/local/bin`; the autostart `Exec=` line points at that installed launcher and the state directory. The API key may be provisioned from an ignored local `.env` during USB preparation, but that makes the USB a credential-bearing device and requires physical access control. The rescue bundle itself is copied from an allowlist and never contains dotenv files; only the explicit provisioning step writes the allowlisted key. Use `--no-provision-secrets` when the USB must not contain credentials. See the [security model](security-model.md) for the threat and control table and the [testing guide](testing.md) for what is verified at source level versus in a lab.
+The companion is an operator-run external system, not an OMES ISO or a second agent runtime:
 
-The companion is an operator-run external system, not an OMES ISO or a second
-agent runtime:
-- **Ventoy/Linux live media** boots the affected computer or provides tools.
-- **Raspberry Pi 5 8 GB or equivalent ARM64 SBC** can act as an independent
-  evidence workstation when the target disk is connected through a suitable
-  USB-SATA/NVMe adapter.
-- **OpenCode Go** is the explicit AI provider route. Hermes/OpenCode own model
-  and provider routing; OMES does not implement another LLM router.
-- **OMES** owns deterministic validation, provenance, bounded evidence, and
-  reconciliation. It does not build an ISO, partition disks, or silently repair
-  a target system.
+- **Ventoy/Linux live media** boots the affected computer or provides tools. **Hermes/OpenCode** own model and provider routing; OMES does not implement another LLM router.
+- **OMES** owns deterministic validation, provenance, bounded evidence, and reconciliation. It does not build an ISO, partition disks, or silently repair a target system.
+- A USB flash drive alone cannot replace the target computer's CPU/RAM.
+- **Planned / Hardware-required:** a Raspberry Pi 5 8 GB or equivalent ARM64 SBC as an independent evidence workstation with the target disk on a USB-SATA/NVMe adapter. It is a separate computer with its own power, storage, and network. No script targets it specifically today.
 
-A USB flash drive alone cannot replace the target computer's CPU/RAM. A Pi/SBC
-is a separate computer and needs its own power, storage, network, and usually a
- display or SSH path.
+## Components
+
+| Component | Role | Script or file |
+|---|---|---|
+| Media tooling | Download and install Ventoy, verify the Mint ISO, copy ISO and allowlisted bundle, persistence entry | `download-ventoy.sh`, `install-ventoy-usb.sh`, `verify-mint-iso.sh`, `prepare-ventoy-usb.sh` |
+| Persistence image | Ventoy `casper-rw` image with Hermes, the toolkit, and the XFCE autostart pre-installed | `build-persistence.sh`, `lib/overlay_whiteouts.py` ([persistence](persistence.md)) |
+| Bootstrap and launcher | Isolated `HERMES_HOME`, profile, skills, autostart; the run sequence | `install-hermes-rescue.sh`, `launch-hermes-rescue.sh`, `check-hermes-rescue.sh`, `verify-autostart.sh` |
+| Config parser | Allowlisted `KEY=VALUE` data parser shared by the shell scripts | `lib/rescue-env.sh` |
+| Preflight | CPU, RAM, display, internet, USB live medium | `check-hardware-readiness.py` |
+| Live scanner | Read-only mount and inspection of installed OSes, then the detection modules | `scan-target-os.py`, `rescue_modules/` |
+| Detection modules | Numbers-only checks per domain | `rescue_modules/{hardware,operating_system,software,malware}.py`, `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh` |
+| Evidence contract | Closed schema 1.0 / 1.1 / 1.2, validator, fixtures | `rescue-ai/v1/rescue-evidence.schema.json`, `validate-evidence.py` |
+| Analyzer | One bounded request to OpenCode Go, text-only answer | `opencode-go-analyze.py`, `analyze-opencode-go.sh`, `profiles/rescue-hermes/analysis-prompt.md` |
+| Repair catalog and engine | Typed actions, policy gate, backup, verify, rollback, journal | `rescue-ai/v1/catalog/*.json`, `lib/repair_catalog.py`, `rescue-repair.py` ([repair framework](repair-framework.md)) |
+| Target mounts and quarantine | Operator-approved read-write remount; reversible quarantine | `lib/target_mount.py`, `malware-quarantine.py`, `lib/quarantine_store.py`, `lib/malware_detections.py` |
+| Run report | `report.md`, `report.json`, `index.md` from evidence, analysis, and journal | `rescue-report.py`, `lib/run_report.py` ([run report](run-report.md)) |
+| Host launchers | The same flow on a running Windows, macOS, or Linux | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`, `host/rescue-linux.sh` ([host launchers](host-launchers.md)) |
+| Skill submission | Sanitized candidate skills to GitHub Issues after operator confirmation | `submit-skill.py`, `lib/skill_sanitize.py` ([skill submission](skill-submission.md)) |
+| Hermes profile | Runtime policy and skills | `profiles/rescue-hermes/` ([learning loop](hermes-learning-loop.md)) |
+
+## End-to-end flow on the live USB
+
+```mermaid
+flowchart TD
+    B[Boot from the USB] --> AS[XFCE autostart: launch-hermes-rescue.sh]
+    AS --> PF{Hardware preflight}
+    PF -- fail or unknown --> RF[Run report: preflight-failed]
+    PF -- pass --> SC["scan-target-os.py via sudo -n: mounts read-only"]
+    SC --> MOD[Detection modules: hardware, OS, software, malware]
+    MOD --> EV["Evidence 1.2 on the USB: numbers only"]
+    MOD -. paths, sha256, signature names .-> DL[("Local detection list 0600")]
+    EV --> VAL[Schema and semantic validation]
+    VAL --> AN[opencode-go-analyze.py: evidence plus catalog action list]
+    AN --> TXT[analysis.md: text, never executed]
+    EV --> RE["rescue-repair.py: policy, catalog, approval"]
+    TXT --> RE
+    DL --> RE
+    RE --> JR[("Hash-chained journal on the USB")]
+    RE --> RS{Any action executed?}
+    RS -- yes --> RS2[Re-scan with the same scope]
+    RS -- no --> RP
+    RS2 --> RP[Run report: report.md, report.json, index.md]
+    RF --> HE
+    RP --> HE[Hermes reads report.md first]
+```
+
+A failed scan, a missing key, or a network error never blocks Hermes and never blocks the report; the outcome is recorded in `header.outcome` of the report. The sequence of one run:
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant L as launch-hermes-rescue.sh
+    participant S as scan-target-os.py
+    participant A as opencode-go-analyze.py
+    participant G as OpenCode Go
+    participant R as rescue-repair.py
+    participant P as rescue-report.py
+    participant H as Hermes
+    L->>L: preflight (report JSON)
+    L->>S: scope, policy, state dir (sudo -n)
+    S-->>L: evidence 1.2 plus local detection list
+    L->>A: evidence
+    A->>G: system prompt, evidence, catalog IDs
+    G-->>A: text with a rescue-proposals block
+    A-->>L: analysis.md
+    L->>R: evidence, analysis, policy
+    R->>Op: card per proposal (approve or decline)
+    Op-->>R: approval, backup reference
+    R-->>L: journal records, exit code
+    L->>S: re-scan when something executed
+    L->>P: evidence, analysis, journal, readiness
+    P-->>L: report.md and report.json
+    L->>H: exec hermes (token removed from its environment)
+```
+
+## Host mode (running Windows, macOS, Linux)
+
+```mermaid
+flowchart TD
+    D[Double-click or run the launcher on the USB] --> BN[Find the bundle: rescue-omes next to the launcher]
+    BN --> CK[Read-only host checks plus detection modules]
+    CK --> EH[Evidence 1.2 to rescue-omes/reports/]
+    EH --> AH{Key present and not evidence-only or dry-run?}
+    AH -- no --> GD[Bilingual guidance, evidence kept]
+    AH -- yes --> CL[Direct OpenCode Go call: key in-process or stdin only]
+    CL --> RH["Repair engine: rescue-repair.py (Linux) or native engine (Windows PowerShell, macOS JXA)"]
+    GD --> RH
+    RH --> JH[("reports/repairs/journal.jsonl")]
+    JH --> RR[Re-scan when something executed]
+    RR --> RPH[Run report: PowerShell, JXA, or Python generator]
+```
+
+Nothing is installed or written on the host disk; there is no AutoRun, so one click by the operator is the approval point. The three launchers implement the same contract with different tools: `host/rescue-linux.sh` uses the Python engine and generator; `host/rescue-windows.ps1` and `host/RESCUE-MACOS.command` have native engines and generators (no Python on the host) whose output is cross-checked against the Python implementation in the tests. Details: [host launchers](host-launchers.md), [host repair](host-repair.md). Real Windows 10/11 and macOS execution is Hardware-required.
+
+## Persistence
 
 ```mermaid
 flowchart LR
-    V[Ventoy USB] --> P[Target PC live session]
-    A[Optional Pi/SBC] --> D[Disk via USB-SATA/NVMe]
-    P --> H[Hermes Rescue]
-    D --> H
-    H --> G[OpenCode Go]
+    ISO[Verified Mint 22.3 ISO] --> BP[build-persistence.sh in docker]
+    BP --> DAT["rescue-omes-casper-rw.dat (ext4 label casper-rw)"]
+    DAT --> PV[prepare-ventoy-usb.sh --persistence]
+    PV --> VJ["/ventoy/ventoy.json persistence entry"]
+    VJ --> LIVE[Live session: overlay on the .dat]
+    LIVE --> ST[("HERMES_HOME, reports, journal, quarantine, clamav on the USB")]
 ```
+
+With the persistence image, Hermes, the runtime bundle, and the autostart are already installed, and every write of the live session (Hermes memory and sessions, reports, journal, quarantine, signature database) survives reboot on the USB. Building needs docker and network; a real persistence boot is Hardware-required. See [persistence](persistence.md).
+
+## Data versus commands
+
+```mermaid
+flowchart TD
+    subgraph DATA[Data: never executed]
+      LG[Logs, filenames, journal messages]
+      WB[Web content]
+      MO[Model output]
+      EVD[Evidence JSON]
+      DLS[Detection list d-N]
+    end
+    subgraph CMD[Commands: only from the repository]
+      CAT["Catalog argv (reviewed JSON)"]
+      ALW[Fixed allowlisted probes in collectors]
+    end
+    MO -->|may name only| AID[action_id]
+    EVD -->|triggers| AID
+    AID --> ENG[Engine]
+    CAT --> ENG
+    OP[Operator: --param, --select, --approve, --backup-ref] --> ENG
+    ENG --> EX["Execute: fixed argv, no shell"]
+```
+
+| Source | May influence | May never influence |
+|---|---|---|
+| Model output | Which catalog `action_id` is proposed (a `rescue-proposals` block: at most 4 KiB and 16 items, exact IDs that apply to the platform, scope, and target family) | argv, parameter values, paths, approvals |
+| Evidence and logs | Catalog triggers (`repair_proposals` with `origin: catalog-trigger`) | Anything beyond the closed check IDs and numbers |
+| File and signature names on a target | Nothing: they stay in the local `0600` detection list and are referenced as `d-N` | Evidence, journal, analyzer request, report |
+| Operator | Parameter values (typed and validated), selection, approval, backup reference | Programs outside the catalog |
+| Catalog | The fixed argv arrays | Shells, interpreters, `sudo`, network fetchers, and `dd` are refused by the loader |
 
 ## Evidence contract
 
-`rescue-ai/v1/rescue-evidence.schema.json` accepts only bounded metadata:
+`rescue-ai/v1/rescue-evidence.schema.json` accepts only bounded metadata (schema 1.0, 1.1, and 1.2; every shipped scanner and host launcher writes 1.2, `collect-evidence.sh` writes 1.0):
 
 - source live platform, boot mode, timestamps, opaque target identifier;
 - tool and release identifiers;
-- allowlisted check IDs and pass/fail/warn status;
+- allowlisted check IDs and pass/fail/warn/unknown/not_applicable status, with bounded numeric values;
 - evidence manifest count, storage class, and SHA-256;
 - explicit OpenCode Go provider/model identity without credentials;
 - analysis, mutation, and verification status;
-- data classification and closed source references.
+- data classification and closed source references;
+- (1.1) `target_systems` and per-check `target_ref`; (1.2) `scope`, `repair_policy`, `repair_proposals`, up to 160 checks.
 
 ```mermaid
 flowchart TD
@@ -75,17 +197,14 @@ flowchart TD
     X -. restricted, not sent .-> G
 ```
 
-It rejects prompts, model responses, raw logs, credentials, private keys,
-arbitrary command fields, and extra properties. Raw evidence belongs in an
-operator-controlled store and must not be sent to OpenCode Go when classified
-`restricted`.
-
+It rejects prompts, model responses, raw logs, credentials, private keys, arbitrary command fields, and extra properties. Raw evidence belongs in an operator-controlled store and must not be sent to OpenCode Go when classified `restricted`.
 
 Field semantics that every collector follows (schema 1.2):
 
 - `classification`: `confidential` evidence may be sent to the configured provider (OpenCode Go). `restricted` evidence never leaves the machine: `opencode-go-analyze.py` and `analyze-opencode-go.sh` refuse it. All shipped collectors write `confidential`.
 - `ai_provider.authenticated` is `true` only when the producing launcher has a usable `OPENCODE_GO_API_KEY` and will send this evidence in this run. `destination_class` is then `cloud`; otherwise `false` and `unknown`. `cloud` without `authenticated` is invalid. The key itself never appears in evidence.
 - Value kinds are `percent`, `count`, `bytes`, `days`, `seconds`, and (1.2) `celsius` for temperatures.
+- `unknown` means "could not be determined", never "healthy". Areas outside `scope` were not examined.
 
 ## Hardware readiness gate
 
@@ -98,51 +217,34 @@ flowchart LR
     C --> D{All required checks pass?}
     N --> D
     U --> D
-    D -- yes --> H[Start Hermes]
+    D -- yes --> H[Continue: scan, analysis, Hermes]
     D -- no --> R[Stop and write report]
 ```
 
-Before Hermes starts, `scripts/check-hardware-readiness.py` validates that the
-live PC has the minimum resources needed for diagnosis: 2 logical CPUs, 4 GiB
-RAM, a display adapter, working internet access for OpenCode Go, and a detected
-USB live medium of at least 8 GiB. The launcher defaults to `--hardware-mode
-auto`; `--hardware-mode wizard` asks for confirmation at each step. Thresholds
-are explicit and configurable with `--min-cpu`, `--min-ram-gib`, and
-`--min-usb-gib`.
+Before the scan and Hermes start, `scripts/check-hardware-readiness.py` validates that the live PC has the minimum resources needed for diagnosis: 2 logical CPUs, 4 GiB RAM, a display adapter, working internet access for OpenCode Go, and a detected USB live medium of at least 8 GiB. The launcher defaults to `--hardware-mode auto`; `--hardware-mode wizard` asks for confirmation at each step. Thresholds are configurable with `--min-cpu`, `--min-ram-gib`, and `--min-usb-gib`.
 
-The result is a timestamped, permission-restricted JSON report under
-`<state-dir>/reports/`. A failed or unknown required check blocks Hermes and
-states the observed value and minimum. Software cannot prove that a particular
-firmware boot menu selected the USB, so that physical acceptance test remains a
-separate warning and must be tested on real hardware.
+The result is a timestamped, permission-restricted JSON report under `<state-dir>/reports/`. A failed or unknown required check blocks the run and states the observed value and minimum; the run report is still written. Software cannot prove that a particular firmware boot menu selected the USB, so that physical acceptance test remains a separate warning and must be tested on real hardware.
 
 ## OpenCode Go procedure
 
-1. Authenticate interactively with OpenCode using `/connect` and select
-   **OpenCode Go**. Credentials are stored by OpenCode; never place them in a
-   Ventoy partition, report, command argument, or log.
-2. Run `/models` and choose an available exact model identifier. Do not assume
-   that a model name remains available; record the selected `provider/model`
-   identifier only.
-3. Verify the network path and perform a minimal non-sensitive probe.
-4. Send only a sanitized, bounded summary. Treat all logs as untrusted data and
-   require the model to separate facts, hypotheses, missing evidence, and
-   read-only next checks.
-5. If OpenCode Go is unavailable, produce the evidence report and mark AI status
-   `manual_intervention`; do not silently switch providers.
+1. The key comes from `OPENCODE_GO_API_KEY`: the environment, `config/rescue.env`, or `<state-dir>/hermes/env`, read as data by `scripts/lib/rescue-env.sh` (the Python and PowerShell clients apply the same rules). Never place it in a report, command argument, or log; `check-hermes-rescue.sh` and the macOS launcher hand it to `curl` on stdin, the Windows launcher and the Python analyzer send it only in an in-process `Authorization` header.
+2. The model ID is `mimo-v2.6-flash` on `https://opencode.ai/zen/go/v1`. Do not assume that a model name remains available; `check-hermes-rescue.sh` verifies the configured ID and endpoint.
+3. Only sanitized, bounded evidence is sent, followed by the list of catalog action IDs that apply. Treat all logs as untrusted data; the prompt requires the model to separate facts, hypotheses, missing evidence, and read-only next checks, and to propose only catalog IDs.
+4. The answer is displayed and saved as text; it is never executed or parsed as a command.
+5. If OpenCode Go is unavailable, the evidence and the report are still produced (`no-key`, `network-error`, or `analysis-failed`); do not silently switch providers.
 
 ```mermaid
 sequenceDiagram
     participant Op as Operator
-    participant H as Hermes
-    participant G as OpenCode Go
+    participant H as Launcher or Hermes
     participant V as Validator
-    Op->>H: Authenticate and select rescue profile
-    H->>V: Validate sanitized summary
+    participant G as OpenCode Go
+    Op->>H: Start the run
+    H->>V: Validate evidence
     V-->>H: Allow or block
-    H->>G: Send bounded metadata
-    G-->>H: Facts, hypotheses, next checks
-    H-->>Op: Explain uncertainty and request approval
+    H->>G: Send bounded evidence and catalog IDs
+    G-->>H: Facts, hypotheses, next checks, action IDs
+    H-->>Op: Explain uncertainty and request approval per action
 ```
 
 ## Read-only collection contract
@@ -150,128 +252,122 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     A[Allowlisted checks] --> C[Collector]
-    C --> H[Hash and timestamp]
-    H --> E[Evidence manifest]
+    C --> H[Timestamp and hash]
+    H --> E[Evidence]
     E --> V[Validator]
 ```
 
-**Implemented today:** `scripts/collect-evidence.sh` runs a fixed set of read-only probes (`journalctl -k`/`dmesg`, `findmnt`, `ip`, `lsblk`) and emits four checks (`kernel-log`, `filesystem-discovery`, `network-connectivity`, `block-device-discovery`) whose status derives from those signals (`pass`, `warn`, or `unknown`), never a hard-coded pass. It sets `verification` to `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`, because nothing is compared with a trusted reference. `target_device_opaque_id` is a truncated SHA-256 of `/etc/machine-id` (or a hostname/kernel fallback), and the output is created `0600` atomically. `scripts/analyze-opencode-go.sh` validates the file with `validate-evidence.py` before piping it to the operator-configured `OPENCODE_ADAPTER_COMMAND`.
+**Implemented:**
 
-**Planned:** the fuller external collector should use a fixed allowlist such as:
+- `scripts/scan-target-os.py` (live USB) and the host launchers run fixed read-only probes and modules, mount targets `ro,noexec,nosuid,nodev` without journal replay, never unlock BitLocker, LUKS, or FileVault, and emit only closed check IDs, statuses, and bounded numbers ([target OS scan](target-os-scan.md)).
+- `scripts/collect-evidence.sh` is the small generic collector (schema 1.0): `journalctl -k`/`dmesg`, `findmnt`, `ip`, `lsblk` feed four checks (`kernel-log`, `filesystem-discovery`, `network-connectivity`, `block-device-discovery`) whose status derives from those signals, never a hard-coded pass. It sets `verification` to `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`, because nothing is compared with a trusted reference. `target_device_opaque_id` is a truncated SHA-256 of `/etc/machine-id` (or a hostname/kernel fallback), and the output is created `0600` atomically. `scripts/analyze-opencode-go.sh` validates a file with `validate-evidence.py` before piping it to the operator-configured `OPENCODE_ADAPTER_COMMAND`.
 
-- `lsblk -f`, `blkid`, `findmnt`;
-- `dmesg`, `journalctl -b` and offline journal queries;
-- `efibootmgr -v` where UEFI access is available;
-- `smartctl -a` or the corresponding NVMe health query;
-- non-modifying LVM/RAID/encryption discovery;
-- filesystem checks in non-repair mode;
-- IP, route, DNS, and HTTPS connectivity checks.
+**Planned:** a fuller external forensic collector (`blkid`, `efibootmgr -v`, offline journal queries, non-repair filesystem checks, LVM/RAID discovery, GNU ddrescue imaging for failing disks). It must record command identity, exit status, timestamp, target opaque ID, and manifest hash, and must never accept a command string from AI or a remote request. Filesystem repair, `grub-install`, NVRAM changes, partitioning, formatting, and disk writes stay outside the catalog and require a human approval gate, backup/image reference, rollback plan, and post-action read-back verification.
 
-The collector must record command identity, exit status, timestamp, target
-opaque ID, and manifest hash. It must never accept a command string from AI or
-from a remote request. Filesystem repair, `grub-install`, NVRAM changes,
-partitioning, formatting, and disk writes require a human approval gate,
-backup/image reference, rollback plan, and post-action read-back verification.
+## Scoped detection and repair
+
+Detection is scoped (`--scope`) and read-only. A repair is only ever a typed catalog action executed under the operator's policy. The full contract is in [repair-framework](repair-framework.md); the domains are [hardware](hardware.md), [OS repair](os-repair.md), [software](software.md), and [malware](malware.md).
 
 ```mermaid
 flowchart TD
-    R[Read-only request] --> A{Allowlisted?}
-    A -- no --> B[Block]
-    A -- yes --> T[Typed adapter]
-    T --> E[Evidence + exit status + hash]
-    E --> H[Hermes summary]
-    H --> O{Mutation requested?}
-    O -- no --> F[Finish]
-    O -- yes --> P[Approval + backup + rollback]
-    P --> W[Write action]
-    W --> Q[Read-back verification]
+    SC["--scope, --packages"] --> D[Detection modules: read-only]
+    D --> E["Evidence 1.2 + catalog-trigger proposals"]
+    E --> AI[Analyzer: action IDs only]
+    E --> EN[rescue-repair.py]
+    AI --> EN
+    OPS["Operator: --select, --param, --backup-ref"] --> EN
+    CAT[("Catalog: hardware, os-linux, os-windows, os-macos, software, malware")] --> EN
+    EN --> PG{Policy}
+    PG -- detect-only --> JN[("Journal")]
+    PG -- "approve-each (default)" --> AP[Approval per action]
+    PG -- "auto-safe (opt-in)" --> AS2["Only safe catalog-trigger actions"]
+    AP --> RUN
+    AS2 --> RUN
+    subgraph RUN[Per action]
+      direction TB
+      PRE[Preconditions] --> MNT["Target mount rw, if requires_target_rw"]
+      MNT --> EXE[Execute: fixed argv]
+      EXE --> VER[Verify]
+      VER -- fails --> RB[Rollback step or manual rollback doc]
+    end
+    RUN --> JN
+    JN --> REP[Run report and re-scan comparison]
 ```
 
 ## Recovery media workflow
 
 1. Verify Ventoy and Linux Mint ISO provenance/checksums.
 2. Install Ventoy only to the confirmed USB whole disk; this erases that USB.
-3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper verifies the ISO first (GPG signature from the pinned Linux Mint signer fingerprint plus direct SHA-256 comparison), copies it, read-back verifies the copy, writes a Ventoy control configuration to `/ventoy/ventoy.json` (the only path Ventoy reads plugin settings from) that auto-selects the verified ISO after a timeout, copies only an allowlisted rescue bundle, and can provision only the API key from an ignored local `.env` into the USB's private `config/rescue.env`.
+3. Copy ISO files to the Ventoy data partition; do not write the ISO with `dd`. The preparation helper verifies the ISO first (GPG signature from the pinned Linux Mint signer fingerprint plus direct SHA-256 comparison), copies it, read-back verifies the copy, writes a Ventoy control configuration to `/ventoy/ventoy.json` (the only path Ventoy reads plugin settings from) that auto-selects the verified ISO after a timeout, copies only an allowlisted rescue bundle and the host launchers, optionally adds a persistence image, and can provision only the API key from an ignored local `.env` into the USB's private `config/rescue.env`.
 4. Boot the USB from the firmware menu; auto-selection by Ventoy is not the same as firmware auto-selection.
-5. Boot the live environment and record UEFI/Legacy and Secure Boot state.
-6. Connect the affected disk read-only first. For formal forensic work, prefer a
-   suitable hardware write blocker; software read-only controls have limitations.
-7. If the disk has I/O errors, image to a separate destination with GNU
-   ddrescue and a mapfile before attempting filesystem repair.
+5. In the live environment the launcher records the preflight and the OS scan; record UEFI/Legacy and Secure Boot state.
+6. Connect the affected disk read-only first. For formal forensic work, prefer a suitable hardware write blocker; software read-only controls have limitations.
+7. If the disk has I/O errors, image to a separate destination with GNU ddrescue and a mapfile before attempting filesystem repair (manual today; no script automates it).
 8. Produce bounded metadata and a separate evidence manifest.
-9. Use OpenCode Go only on sanitized evidence and preserve the operator's final
-   decision separately from model output.
+9. Use OpenCode Go only on sanitized evidence and preserve the operator's final decision separately from model output.
 
 ```mermaid
 flowchart LR
     D[Download Mint ISO] --> G[Verify GPG + SHA-256]
     G --> V[Install Ventoy to confirmed USB]
-    V --> C[Copy ISO and rescue bundle]
+    V --> C[Copy ISO, bundle, host launchers]
     C --> B[Boot from firmware menu]
     B --> L[Live XFCE]
     L --> P[Hardware preflight]
-    P --> H[Bootstrap Hermes]
-    H --> R[Rescue report]
-```
-
-## Scoped detection and repair
-
-Detection is scoped (`--scope`) and read-only: domain modules (hardware, OS, software) plug into the live scanner and the host launchers. A repair is only ever a typed catalog action executed by `scripts/rescue-repair.py` under the operator's policy (`detect-only`, `approve-each` default, `auto-safe` opt-in), with backup reference, verify, rollback, and a hash-chained journal on the USB. The AI can propose catalog `action_id`s but never commands. The full contract is in [repair-framework.md](repair-framework.md).
-
-```mermaid
-flowchart LR
-    D[Scoped read-only detection] --> E[Evidence 1.2]
-    E --> A[AI: action IDs only]
-    E --> R[rescue-repair.py]
-    A --> R
-    R --> P{Policy + approval}
-    P --> V[execute, verify, rollback]
-    V --> J[(Journal on USB)]
+    P --> RUN[Scan, analysis, repairs]
+    RUN --> R[Run report]
+    R --> H[Hermes]
 ```
 
 ## Implementation stages
 
 | Stage | Deliverable | Status |
 |---|---|---|
-| 1 | `rescue-ai/v1` bounded schema and valid/invalid fixtures | Implemented |
-| 2 | Read-only collector and evidence validator | Implemented |
+| 1 | `rescue-ai/v1` bounded schema (1.0, 1.1, 1.2) and valid/invalid fixtures | Implemented |
+| 2 | Read-only collectors and evidence validator | Implemented |
 | 3 | Hermes Rescue profile with OpenCode Go/MiMo-V2.6-Flash default | Implemented |
 | 4 | Hermes bootstrap, isolated state, autostart, and health check | Implemented |
-| 5 | Ventoy download/install/preparation helpers with signer-pinned ISO verification and allowlisted bundle copy | Implemented; the Ventoy write and a physical boot require lab hardware |
-| 6 | Hardware readiness preflight with auto/wizard modes and JSON report | Implemented; physical firmware boot still requires lab test |
-| 7 | Candidate learning, feedback, regression evaluation, signed promotion | Design documented; implementation next |
-| 8 | Hardware boot validation on Pi 5/PC x86 and UEFI/BIOS matrix | Hardware-required |
-| 9 | Live OpenCode Go smoke test and reboot-autostart check | Environment-blocked (API key, provider spend, physical reboot) |
+| 5 | Ventoy download/install/preparation helpers with signer-pinned ISO verification and allowlisted bundle copy | Implemented; the Ventoy write and a physical boot are Hardware-required |
+| 6 | Hardware readiness preflight with auto/wizard modes and JSON report | Implemented; physical firmware boot is Hardware-required |
+| 7 | Live multi-OS scan, direct analyzer, host launchers (Windows, macOS, Linux) | Implemented; real disks and real Windows/macOS are Hardware-required, the cloud call is Environment-blocked |
+| 8 | Scoped detection (hardware, OS, software, malware), typed repair catalog, policy engine, hash-chained journal, target mounts, quarantine | Implemented; real repairs are Hardware-required |
+| 9 | Persistence image with Hermes pre-installed | Implemented (docker, network); boot is Hardware-required |
+| 10 | Comprehensive run report (Python, PowerShell, JXA) | Implemented |
+| 11 | Candidate skill submission to GitHub Issues | Implemented; real GitHub calls are Environment-blocked |
+| 12 | Candidate memory, feedback labels, regression evaluation, signed promotion | Planned ([learning loop](hermes-learning-loop.md)) |
+| 13 | Hardware boot validation on Pi 5/PC x86 and the UEFI/BIOS matrix | Hardware-required |
+| 14 | Live OpenCode Go smoke test and reboot-autostart check | Environment-blocked (API key, provider spend, physical reboot) |
 
 ```mermaid
 flowchart LR
-    S1[Schema] --> S2[Collector]
+    S1[Schema] --> S2[Collectors]
     S2 --> S3[Hermes profile]
     S3 --> S4[Bootstrap + health]
     S4 --> S5[Ventoy workflow]
     S5 --> S6[Hardware preflight]
-    S6 --> S7[Learning promotion]
-    S7 --> S8[Hardware matrix]
-    S8 --> S9[Live cloud and reboot checks]
+    S6 --> S7[Scan + host launchers]
+    S7 --> S8[Catalog + engine + journal]
+    S8 --> S9[Persistence]
+    S9 --> S10[Run report]
+    S10 --> S11[Skill submission]
+    S11 --> S12[Learning promotion: Planned]
+    S12 --> S13[Hardware matrix]
+    S13 --> S14[Live cloud and reboot checks]
 ```
 
 ## Verification requirements
 
 Before calling the integration ready:
 
-- `scripts/validate-evidence.py` accepts the valid fixture and rejects raw
-  prompt/response/credential/arbitrary-command fixtures for the intended reason;
+- `scripts/validate-evidence.py` accepts the valid fixtures and rejects raw prompt/response/credential/arbitrary-command fixtures for the intended reason;
 - validator never executes discovered files or commands;
 - checksum mismatch, a missing or wrong Linux Mint signer fingerprint, and a missing Ventoy digest all fail closed;
-- `make check` passes (syntax, `shellcheck -x`, fixture validation, unit tests, diff check); see [testing](testing.md);
-- the hardware preflight produces a report with all five check IDs and blocks on
-  failed or unknown required checks;
-- network failure still permits evidence collection and produces
-  `manual_intervention` rather than a false AI success;
+- `make check` passes (syntax, catalog validation, `shellcheck -x`, fixture validation, documentation check, unit tests, diff check); see [testing](testing.md);
+- the hardware preflight produces a report with all five check IDs and blocks on failed or unknown required checks;
+- network failure still permits evidence collection and produces `manual_intervention` or a report outcome (`no-key`, `network-error`) rather than a false AI success;
 - OpenCode Go provider/model identity is recorded without secrets;
-- all destructive actions remain approval-required;
-- architecture registry, security model, and documentation distinguish the
-  staged external companion from implemented OMES code.
+- all destructive actions remain approval-required, with a backup reference and a rollback plan;
+- the documentation distinguishes the staged external companion from implemented OMES code.
 
 ```mermaid
 flowchart TD
