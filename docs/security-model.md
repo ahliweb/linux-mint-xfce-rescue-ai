@@ -2,60 +2,135 @@
 
 > Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 
-Ringkasan ancaman dan kontrol untuk toolkit rescue. Arsitektur lengkap ada di [design.md](design.md); cara memverifikasi kontrol ada di [testing.md](testing.md). Kolom "Status" memakai label: Implemented, Hardware-required, Planned.
+Ringkasan ancaman dan kontrol untuk toolkit rescue, dikelompokkan per area. Arsitektur lengkap ada di [design.md](design.md); cara memverifikasi kontrol ada di [testing.md](testing.md). Kolom "Implemented in" menunjuk ke skrip yang menegakkan kontrol. Kolom "Status" memakai label: Implemented (level source, dicakup `make check`), Hardware-required (butuh PC/USB nyata), Environment-blocked (butuh jaringan, kunci, atau biaya provider), Planned. Perintah, ID, dan path dipertahankan apa adanya.
 
 ```mermaid
 flowchart TD
-    U[Untrusted input: logs, filenames, web, model output] --> S[Sanitize and schema validate]
+    U[Untrusted input: logs, filenames, web, model output, target disks] --> S[Sanitize and schema validate]
     S --> A[Allowlisted read-only checks]
-    A --> H[Operator approval]
-    H --> V[Backup, rollback, read-back]
-    K[API key] --> P[Private files and stdin-only use]
+    A --> C[Typed catalog action IDs only]
+    C --> H[Operator approval per action]
+    H --> V[Backup, rollback, read-back, journal]
+    K[API key and GitHub token] --> P[Private files, stdin or in-process header only]
     M[Media and downloads] --> Q[Pinned signer and digest checks]
+    T[Target disks] --> R[Read-only mount, no symlink following]
+    D[Detections and report] --> L[Local 0600 files on the USB, never in evidence]
 ```
 
-## Threats and controls
+## Trust boundaries
 
-| Threat | Control (actual behavior) | Status |
+| Boundary | Trusted | Untrusted (data only) |
 |---|---|---|
-| Wrong disk is formatted | `install-ventoy-usb.sh` requires `--device` and `--yes`; parses `lsblk -J`; refuses non-whole-disk, non-removable/non-USB, any mounted disk or child, and the disk backing `/`; prints model, size, transport first | Implemented; the write is Hardware-required |
-| Tampered or substituted Linux Mint ISO | `verify-mint-iso.sh` requires a valid GPG signature over `sha256sum.txt` from primary fingerprint `27DEB15644C6B3CF3BD7D291300F846BA25BAE09` (override: `--signer-fingerprint`), then compares the ISO hash directly against exactly one matching entry. The operator must import the Linux Mint key first (`gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-key "27DE B156 44C6 B3CF 3BD7  D291 300F 846B A25B AE09"`) | Implemented |
-| Tampered Ventoy download | `download-ventoy.sh` validates `--version`, makes one release API call, requires a `sha256:` digest, checks the URL prefix, and deletes the file on mismatch | Implemented |
-| Corrupt ISO copy on USB | `prepare-ventoy-usb.sh` re-hashes the copied ISO against the verified source | Implemented |
-| Secrets written to USB by the bundle copy | Allowlisted copy: no `.env`, `config/rescue.env`, `.git`, ISOs, images, archives; `assert_bundle_clean` re-checks; `--bundle-only DEST` allows inspection | Implemented |
-| API key on a USB the operator did not intend | Provisioning is a separate step that writes only `OPENCODE_GO_API_KEY` to `config/rescue.env` (mode `0600` requested; FAT/exFAT may not enforce it); `--no-provision-secrets` skips it. A provisioned USB is credential-bearing and needs physical access control | Implemented; residual risk documented |
-| Config file executes code | `scripts/lib/rescue-env.sh` parses `KEY=VALUE` as data with an allowlist of six keys; `$` and backticks in unquoted or double-quoted values invalidate the line; never `source`d | Implemented |
-| Config file tampering | World-writable config is refused; a file owned by another non-root user is skipped with a warning; existing environment variables are not overridden | Implemented |
-| Key visible in process list | `check-hermes-rescue.sh` passes the `Authorization` header to `curl --config -` on stdin; control characters in the key are rejected | Implemented |
-| Key stored insecurely in state | `<state-dir>/hermes/env` is written as `KEY='value'` under `umask 077` and `0600`; newlines in the key are refused | Implemented |
-| Unpinned Hermes installer | `install-hermes-rescue.sh --installer-sha256 HEX` (or `HERMES_INSTALLER_SHA256`) verifies the download before execution; without a pin it prints a warning | Implemented (pin optional) |
-| Installer run as root or clobbering a directory | Refuses root; refuses unsafe `--prefix` (`/`, `$HOME`, source tree, non-bundle directory); rejects newline or `%` in paths used for autostart | Implemented |
-| Case data leaks into the public repository through a skill submission | `submit-skill.py` sanitizes hostnames, usernames, paths, serials, MAC/IP/e-mail and disk UUIDs, then secret-scans and refuses on any finding; the operator sees the full body and confirms by typing `kirim`/`submit` or with `--confirm-sha256` bound to the previewed hash | Implemented; GitHub call Environment-blocked |
-| GitHub token misuse | `RESCUE_GITHUB_ISSUES_TOKEN` must be a fine-grained token with Issues read/write on this repository only; it is sent only in an in-process `Authorization` header to `api.github.com` (HTTPS, no redirects) and is removed from the Hermes environment by `launch-hermes-rescue.sh` | Implemented; token scope is the operator's responsibility |
-| Evidence meant to stay local is sent to the cloud | `classification: restricted` is refused by `opencode-go-analyze.py` and `analyze-opencode-go.sh` before anything is sent; shipped collectors write `confidential` | Implemented |
-| Unvalidated or raw evidence sent to the cloud | `analyze-opencode-go.sh` runs `validate-evidence.py` first and sends nothing on failure; the schema rejects prompts, responses, raw logs, credentials, and extra properties | Implemented |
-| Model output becomes a command | The adapter command comes only from the operator-set `OPENCODE_ADAPTER_COMMAND`; the collector runs a fixed allowlist; the Hermes profile forbids executing commands from logs or model output | Implemented (adapter itself is operator-supplied) |
-| False assurance in evidence | Collector states `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`; check status derives from real signals; opaque ID is a truncated hash of `/etc/machine-id` | Implemented |
-| Evidence or reports readable by others | Evidence and hardware reports are created `0600` atomically (temp file plus rename) | Implemented |
-| Rescue runs on unsuitable hardware | `check-hardware-readiness.py` gates Hermes on CPU, RAM, display, internet, and USB media; `fail` or `unknown` required checks block | Implemented; results depend on the target PC |
-| Silent provider substitution | OpenCode Go is the only configured provider; `check-hermes-rescue.sh` verifies `provider: custom`, model, and base URL and does not fall back | Implemented |
-| Unsafe repair or disk write | Read-only by default. Repairs exist only as typed catalog actions (fixed argv, forbidden shells/interpreters/`dd`, typed parameters, risk classes). `rescue-repair.py` requires approval under `approve-each` (default); `auto-safe` is opt-in and limited to `safe` catalog-trigger actions. Destructive actions need `--backup-ref` and the typed `action_id`. Every action runs verify, then an automatic rollback or a manual rollback doc | Implemented (catalogs empty until #15-#17); real repairs Hardware-required |
-| Model output becomes a repair command | The model can only name `action_id`s in a `rescue-proposals` block (size-limited, exact catalog IDs, applicable platform/scope/family); argv and parameter values never come from it; AI proposals are never auto-run | Implemented |
-| Repair history altered after the fact | Append-only journal with `seq` and a SHA-256 chain; `--verify-journal` detects edits and deletions; no raw output or identities stored | Implemented |
-| Malicious file names, paths, or signature names become a command or a path | They are data only: `clamscan` and `rescue-malware-quarantine` run from fixed argv arrays without a shell; the catalog names files only through an opaque `detection_ref` (`d-N`) that the engine resolves from the local list; evidence, journal, and analyzer request carry counts and `d-N`, never names (tests assert this) | Implemented |
-| Quarantine or delete acts on the wrong file (TOCTOU, symlink) | The engine and the helper require the path inside the target root, no symlink on the way, a regular file opened with `O_NOFOLLOW`, and the sha256 recorded at detection; a swapped file gives `invalid-param`; the helper copies, checks the original was not replaced, writes the manifest, and only then unlinks; restore never overwrites; `mw.delete-*` are `destructive` (backup reference and typed approval); residual window before `rm` is documented | Implemented; real mounts Hardware-required |
-| Detection list or quarantine leaks the customer's paths or malware | `malware-detections-<run>.json` and `<state-dir>/quarantine/` are `0600`, live only on the USB, and are never sent to the cloud, put into evidence, or written to the journal; the operator is told not to share them | Implemented |
-| A clean scan is read as "no malware" | Stale or unknown signature age and incomplete scans give `warn`, never `pass`; macOS reports `malware-scan` `unknown`; rootkits and firmware implants are stated as out of scope ([malware](malware.md)) | Implemented |
-| Detection module injects data or code | Modules are repository code; their output is validated against the evidence contract and invalid items are dropped; macOS modules run as child processes and Windows modules in a child scope (no string evaluation) | Implemented |
-| Run report leaks identifiers or is altered | `report.md`/`report.json` are generated from evidence, analysis, and the hash-chained journal with the same privacy rules as the evidence: parameters only as placeholders (`<package>`, `<device>`, `<detection d-N>`), no paths, names, signature names, or raw output, a closed JSON schema, and the model text as the only free field (marked, never executed). Identifier-shaped parts of the model text are redacted (`<path>`, `<mac>`, `<ip>`, `<redacted>`) and counted; a privacy self-check (home/user paths, MAC/IPv4/IPv6, the configured key value) on the structured parts refuses the full report and writes a minimal one; a broken journal chain is shown as INVALID; files are `0600` where allowed, written atomically, only on the USB ([run report](run-report.md)) | Implemented; real Windows/macOS runs Hardware-required |
-| Firmware boots the internal disk instead of the USB | Cannot be controlled by files; must be tested physically | Hardware-required |
+| Code | This repository at the release, the catalog JSON | Anything else |
+| Input to commands | The operator's flags and typed approvals | Model output, evidence, logs, filenames, signature names, web content |
+| Machine under repair | Nothing: it may be compromised | Files, symlinks, `os-release`, journals, detections |
+| Network | HTTPS to `opencode.ai` (analysis), `api.github.com` (skill submission, opt-in), the Ventoy release, `hermes-agent.nousresearch.com` (installer) | Everything else; redirects are refused by the Python clients |
+
+## Media, ISO, and Ventoy
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Wrong disk is formatted | Requires `--device` and `--yes`; parses `lsblk -J`; refuses non-whole-disk, non-removable/non-USB, any mounted disk or child, and the disk backing `/`; prints model, size, transport first | `scripts/install-ventoy-usb.sh` | Implemented; the write is Hardware-required |
+| Tampered or substituted Linux Mint ISO | Requires a valid GPG signature over `sha256sum.txt` from primary fingerprint `27DEB15644C6B3CF3BD7D291300F846BA25BAE09` (override: `--signer-fingerprint`), then compares the ISO hash directly against exactly one matching entry. The operator must import the Linux Mint key first (`gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-key "27DE B156 44C6 B3CF 3BD7  D291 300F 846B A25B AE09"`) | `scripts/verify-mint-iso.sh` | Implemented |
+| Tampered Ventoy download | Validates `--version`, makes one release API call, requires a `sha256:` digest, checks the URL prefix, and deletes the file on mismatch | `scripts/download-ventoy.sh` | Implemented |
+| Corrupt ISO or persistence image copy on the USB | Re-hashes the copied ISO and the copied `.dat` against the verified source; the `.dat` must be ext2/3/4 labelled `casper-rw` | `scripts/prepare-ventoy-usb.sh` | Implemented |
+| Persistence state overwritten by accident | An existing `/persistence/rescue-omes-casper-rw.dat` is only replaced with `--replace-persistence` | `scripts/prepare-ventoy-usb.sh` | Implemented |
+| Persistence build touches the host or a disk | Runs in docker, never uses a block device, refuses to overwrite `--output`, writes `0600`, fails when packages add system users | `scripts/build-persistence.sh`, `scripts/lib/persistence-container-build.sh`, `scripts/lib/persistence-container-image.sh` | Implemented (docker and network needed) |
+| Unpinned Hermes installer | `--installer-sha256 HEX` (or `HERMES_INSTALLER_SHA256`) verifies the download before execution; without a pin a warning is printed and the actual digest is shown | `scripts/install-hermes-rescue.sh`, `scripts/build-persistence.sh` | Implemented (pin optional) |
+| Installer run as root or clobbering a directory | Refuses root; refuses unsafe `--prefix` (`/`, `$HOME`, source tree, non-bundle directory); rejects newline or `%` in paths used for autostart | `scripts/install-hermes-rescue.sh` | Implemented |
+| Firmware boots the internal disk instead of the USB | Cannot be controlled by files; must be tested physically | Not automatable | Hardware-required |
+
+## Secrets and keys
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Secrets written to the USB by the bundle copy | Allowlisted copy: no `.env`, `config/rescue.env`, `.git`, ISOs, images, archives; the clean-bundle assertion re-checks; `--bundle-only DEST` allows inspection | `scripts/prepare-ventoy-usb.sh` (`copy_bundle`, `assert_bundle_clean`) | Implemented |
+| API key on a USB the operator did not intend | Provisioning is a separate step that writes only `OPENCODE_GO_API_KEY` to `config/rescue.env` (mode `0600` requested; FAT/exFAT may not enforce it); `--no-provision-secrets` skips it; the persistence build only puts the key into a network-less helper container just before `mkfs.ext4` | `scripts/prepare-ventoy-usb.sh`, `scripts/build-persistence.sh` | Implemented; residual risk documented |
+| Config file executes code | Parses `KEY=VALUE` as data with an allowlist of six keys (`OPENCODE_GO_API_KEY`, `RESCUE_STATE_DIR`, `HERMES_HOME`, `OPENCODE_ADAPTER_COMMAND`, `OPENCODE_TIMEOUT_SECONDS`, `RESCUE_GITHUB_ISSUES_TOKEN`); `$` and backticks in unquoted or double-quoted values invalidate the line; never `source`d. The Python, PowerShell, and zsh clients apply the same rules | `scripts/lib/rescue-env.sh`, `scripts/opencode-go-analyze.py`, `scripts/submit-skill.py`, `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command` | Implemented |
+| Config file tampering | World-writable config is refused; a file owned by another non-root user is skipped with a warning; existing environment variables are not overridden | `scripts/lib/rescue-env.sh` | Implemented |
+| Key visible in the process list | `Authorization` header goes to `curl --config -` on stdin, or is sent in-process by Python and PowerShell; control characters in the key are rejected; the key is never in argv, logs, or evidence | `scripts/check-hermes-rescue.sh`, `scripts/opencode-go-analyze.py`, `host/RESCUE-MACOS.command`, `host/rescue-windows.ps1` | Implemented |
+| Key stored insecurely in state | `<state-dir>/hermes/env` is written as `KEY='value'` under `umask 077` and `0600`; newlines in the key are refused | `scripts/install-hermes-rescue.sh` | Implemented |
+| GitHub token misuse | `RESCUE_GITHUB_ISSUES_TOKEN` must be a fine-grained token with Issues read/write on this repository only; it is sent only in an in-process `Authorization` header to `api.github.com` (HTTPS, no redirects), never in argv, logs, output, or the issue; it is removed from the Hermes environment before Hermes starts | `scripts/submit-skill.py`, `scripts/launch-hermes-rescue.sh`, `scripts/lib/rescue-env.sh` | Implemented; token scope is the operator's responsibility |
+| Key or token leaks into a skill or the report | The secret scan refuses a candidate skill that contains the configured key or token values; the report privacy check and redaction cover the configured key value | `scripts/lib/skill_sanitize.py`, `scripts/lib/run_report.py` | Implemented |
+
+## Evidence and the cloud
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Evidence meant to stay local is sent to the cloud | `classification: restricted` is refused before anything is sent; shipped collectors write `confidential` | `scripts/opencode-go-analyze.py`, `scripts/analyze-opencode-go.sh` | Implemented |
+| Unvalidated or raw evidence sent to the cloud | The analyzer validates first and sends nothing on failure; the schema rejects prompts, responses, raw logs, credentials, and extra properties; check IDs are a closed set and values are bounded numbers | `scripts/validate-evidence.py`, `rescue-ai/v1/rescue-evidence.schema.json` | Implemented |
+| Model output becomes a command | Model output is displayed and saved as text only. The adapter command comes only from the operator-set `OPENCODE_ADAPTER_COMMAND`; collectors run a fixed allowlist; the Hermes profile forbids executing commands from logs or model output | `scripts/opencode-go-analyze.py`, `scripts/analyze-opencode-go.sh`, `profiles/rescue-hermes/` | Implemented (adapter itself is operator-supplied) |
+| Silent provider substitution | OpenCode Go is the only configured provider; the health check verifies `provider: custom`, model, and base URL and does not fall back; the analyzer refuses redirects | `scripts/check-hermes-rescue.sh`, `scripts/opencode-go-analyze.py`, `config/hermes-rescue.config.yaml` | Implemented |
+| False assurance in evidence | The generic collector states `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`; check status derives from real signals; `unknown` never reads as healthy; areas outside `scope` are not reported as healthy; the opaque ID is a truncated hash | `scripts/collect-evidence.sh`, `scripts/scan-target-os.py`, `profiles/rescue-hermes/analysis-prompt.md` | Implemented |
+| Evidence or reports readable by others | Evidence, hardware reports, and reports are created `0600` atomically (temp file plus rename) where the filesystem allows; exFAT does not enforce modes | `scripts/collect-evidence.sh`, `scripts/scan-target-os.py`, `scripts/check-hardware-readiness.py`, `scripts/rescue-report.py` | Implemented |
+| Rescue runs on unsuitable hardware | Gate on CPU, RAM, display, internet, and USB media; `fail` or `unknown` required checks block | `scripts/check-hardware-readiness.py`, `scripts/launch-hermes-rescue.sh` | Implemented; results depend on the target PC |
+| Detection module injects data or code | Modules are repository code; their output is validated against the evidence contract and invalid items are dropped; macOS modules run as child processes and Windows modules in a child scope (no string evaluation) | `scripts/rescue_modules/__init__.py`, `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command` | Implemented |
+
+## Repair catalog and engine
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Unsafe repair or disk write | Read-only by default. Repairs exist only as typed catalog actions: fixed argv arrays, whole-element placeholders, forbidden shells, interpreters, privilege wrappers, network fetchers, and `dd`, typed parameters, and risk classes (`safe`, `reversible` with an automatic rollback, `destructive` with a backup and a manual or restore rollback). The engine adds `sudo -n --` itself | `scripts/lib/repair_catalog.py`, `rescue-ai/v1/repair-catalog.schema.json`, `rescue-ai/v1/catalog/*.json` | Implemented; real repairs are Hardware-required |
+| Repair runs without consent | `approve-each` (default) requires approval per action; `auto-safe` is opt-in and limited to `safe` catalog-trigger actions; `detect-only` executes nothing. Destructive actions need `--backup-ref` and the typed `action_id`. Every executed action is followed by `verify`, then an automatic rollback or a manual rollback doc | `scripts/rescue-repair.py`, `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command` | Implemented |
+| Model output becomes a repair command | The model can only name `action_id`s in a `rescue-proposals` block (at most 4 KiB and 16 items, exact catalog IDs, applicable platform, scope, and family); argv and parameter values never come from it; AI proposals are never auto-run | `scripts/lib/repair_catalog.py` (`parse_ai_proposals`), `scripts/opencode-go-analyze.py` | Implemented |
+| A parameter value smuggles an option or a device | Parameter types are validated (`enum`, `integer`, `block_device` re-checked with `lsblk` against the scanner's exclusions and never the rescue USB, `package_name` and `service_name` that cannot start or end with `-`, `detection_ref`, `state_dir`); each value stays one argv element; values come from `--param`, defaults, or a prompt, never from evidence or the model | `scripts/lib/repair_catalog.py`, `scripts/rescue-repair.py` | Implemented |
+| Repair history altered after the fact | Append-only journal with `seq` and a SHA-256 chain, written under `flock` with `fsync` and `0600`; `--verify-journal` detects edits and deletions; no raw output, identities, or paths stored (only exit code, duration, size, and output hash) | `scripts/rescue-repair.py`, `rescue-ai/v1/repair-journal.schema.json` | Implemented |
+| Host launchers elevate or run unlisted programs | The Windows and macOS engines run the same catalog without a shell: `System.Diagnostics.Process` with MSVCRT quoting and a minimal environment, or the argv array under `env -i`; only native programs; forbidden programs are refused again; `requires_root` runs only when the launcher is already elevated; no `block_device`, `target_root`, or `requires_target_rw` on hosts | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command` | Implemented; real Windows/macOS Hardware-required |
+
+## Target mounts
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| The scan alters or executes the customer's disk | Mounts only under a private `0700` directory, `ro,noexec,nosuid,nodev`, without journal replay; never fsck, `ntfsfix`, or `chkdsk`; unmounts in `finally` and on SIGINT/SIGTERM/SIGHUP; never mounts the rescue USB or removable disks | `scripts/scan-target-os.py` | Implemented; real disks Hardware-required |
+| A malicious target redirects a check to the live system | Files are read component by component without following symlinks (absolute links are re-rooted); case-insensitive lookup for NTFS | `scripts/scan-target-os.py`, `scripts/rescue_modules/operating_system.py`, `scripts/rescue_modules/software.py` | Implemented |
+| Encrypted volumes are opened or bypassed | BitLocker, LUKS, and FileVault are never unlocked; they are reported as `not-mounted-encrypted`, and no action can target them | `scripts/scan-target-os.py`, `scripts/lib/target_mount.py` | Implemented |
+| A read-write mount hits the wrong or a live system | The mount provider re-identifies the target with the scanner's logic, refuses a family mismatch, encryption, unknown refs, macOS `rw`, a hibernated or dirty (or unverifiable) NTFS volume, an already mounted target, and a missing separate `/boot`; outside fixture mode it refuses unless the rescue live medium is mounted; chroot binds only for read-write Linux targets; reverse-order unmount also on signals | `scripts/lib/target_mount.py` | Implemented; real mounts Hardware-required |
+
+## Malware quarantine
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Malicious file names, paths, or signature names become a command or a path | They are data only: `clamscan` and `rescue-malware-quarantine` run from fixed argv arrays without a shell; the catalog names files only through an opaque `detection_ref` (`d-N`) that the engine resolves from the local list; evidence, journal, analyzer request, and report carry counts and `d-N`, never names (tests assert this) | `scripts/rescue_modules/malware.py`, `scripts/lib/malware_detections.py`, `scripts/rescue-repair.py`, `rescue-ai/v1/catalog/malware.json` | Implemented |
+| Quarantine or delete acts on the wrong file (TOCTOU, symlink) | The engine and the helper require the path inside the target root, no symlink on the way, a regular file opened with `O_NOFOLLOW`, and the sha256 recorded at detection; a swapped file gives `invalid-param`; the helper copies, checks the original was not replaced, writes the manifest, and only then unlinks; restore never overwrites and refuses a corrupt copy; `mw.delete-*` are `destructive` (backup reference and typed approval); the residual window before `rm` is documented | `scripts/malware-quarantine.py`, `scripts/lib/quarantine_store.py`, `scripts/rescue-repair.py` | Implemented; real mounts Hardware-required |
+| Malware is executed by handling it | The scan never uses `--remove`, `--move`, or `--copy`; quarantined blobs are `0600` and never executable; the helper never runs anything from a file name | `scripts/rescue_modules/malware.py`, `scripts/malware-quarantine.py` | Implemented |
+| Detection list or quarantine leaks the customer's paths or malware | `malware-detections-<run>.json` and `<state-dir>/quarantine/` are `0600`, live only on the USB, and are never sent to the cloud, put into evidence, or written to the journal; the operator is told not to share them | `scripts/lib/malware_detections.py`, `scripts/lib/quarantine_store.py` | Implemented |
+| A clean scan is read as "no malware" | Stale or unknown signature age and incomplete scans give `warn`, never `pass`; macOS reports `malware-scan` `unknown`; rootkits and firmware implants are stated as out of scope; the analysis prompt and report repeat it ([malware](malware.md)) | `scripts/rescue_modules/malware.py`, `profiles/rescue-hermes/analysis-prompt.md`, `scripts/lib/run_report.py` | Implemented |
+| Signature updates fetch or run unexpected code | `mw.clamav-update-signatures` is a `safe` catalog action (`freshclam` into `<state-dir>/clamav`); the persistence image masks the `clamav` services and downloads nothing at build time | `rescue-ai/v1/catalog/malware.json`, `scripts/lib/persistence-container-build.sh` | Implemented; downloads Environment-blocked |
+
+## Skill submission (public repository)
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Case data leaks into the public repository through a skill submission | Sanitizes hostnames, usernames, paths, serials, MAC/IP/e-mail, and disk UUIDs, then secret-scans and refuses on any finding (no fix-and-send); front matter limited to `name` and `description`; the operator sees the full body and confirms by typing `kirim`/`submit`, or with `--confirm-sha256` bound to the previewed hash (there is no `--yes`) | `scripts/submit-skill.py`, `scripts/lib/skill_sanitize.py` | Implemented; GitHub call Environment-blocked |
+| Duplicate or unreviewed submissions | The sanitized content hash is embedded as `<!-- skill-sha256: HEX -->` and searched in open and closed issues; only an issue labelled `skill-candidate` is created; promotion needs tests, review, and a merged pull request | `scripts/submit-skill.py`, [skill-submission.md](skill-submission.md) | Implemented |
+| The model submits on its own | The `rescue-skill-submission` skill requires the operator's explicit confirmation in the conversation and forbids reading or printing the token | `profiles/rescue-hermes/skills/rescue-skill-submission/SKILL.md` | Implemented (instruction level) |
+
+## Run report privacy
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Run report leaks identifiers or is altered | `report.md`/`report.json` are generated from evidence, analysis, and the hash-chained journal with the same privacy rules as the evidence: parameters only as placeholders (`<package>`, `<device>`, `<detection d-N>`), no paths, names, signature names, or raw output, a closed JSON schema, and the model text as the only free field (marked, never executed). Identifier-shaped parts of the model text are redacted (`<path>`, `<mac>`, `<ip>`, `<redacted>`) and counted; a privacy self-check (home/user paths, MAC/IPv4/IPv6, the configured key value) on the structured parts refuses the full report and writes a minimal one; a broken journal chain is shown as INVALID; files are `0600` where allowed, written atomically, and only on the USB ([run report](run-report.md)) | `scripts/rescue-report.py`, `scripts/lib/run_report.py`, `rescue-ai/v1/run-report.schema.json`, `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command` | Implemented; real Windows/macOS runs Hardware-required |
+| The three generators disagree | Tests assert equal JSON, Markdown, and index from Python, PowerShell, and JXA | `tests/test_run_report.py` | Implemented |
+
+## Host launchers (running systems)
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| Autorun-style execution from the USB | There is no AutoRun: one double-click by the operator is the approval point. `RESCUE-WINDOWS.cmd` uses `-ExecutionPolicy Bypass` for its own process only and does not change machine policy | `host/RESCUE-WINDOWS.cmd`, [host-launchers.md](host-launchers.md) | Implemented |
+| The launcher changes or fills the host | Read-only checks; nothing is installed; no temporary files on the host (`TMPDIR` points to `reports/` on the USB); Windows and macOS never elevate; the host OS may still keep its own traces (Prefetch, unified log, shell history), which is stated in the docs | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`, `host/rescue-linux.sh` | Implemented; real Windows/macOS Hardware-required |
+| Host evidence contains identities | Only closed status codes and bounded numbers; `target_device_opaque_id` is a truncated hash of the machine ID | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`, `host/rescue-linux.sh` | Implemented |
+| Concurrent launchers corrupt the macOS journal | Documented: no `flock` on macOS; do not run two launchers on the same USB | `host/RESCUE-MACOS.command`, [host-repair.md](host-repair.md) | Residual risk |
 
 ## Residual risks
 
-- A credential-bearing USB exposes the API key to anyone with physical access; prefer `--no-provision-secrets` and enter the key in the live session.
+- A credential-bearing USB exposes the API key to anyone with physical access; prefer `--no-provision-secrets` and enter the key in the live session (then the persistence image holds it). exFAT does not enforce `0600`.
 - A USB that holds `RESCUE_GITHUB_ISSUES_TOKEN` is credential-bearing too. Anyone holding it can open issues as the token owner until the token is revoked.
 - The Linux Mint key must be obtained through a channel the operator trusts; the pinned fingerprint only helps if the operator confirms it against Linux Mint's own guide.
 - The Hermes installer is downloaded from `https://hermes-agent.nousresearch.com/install.sh`; pin its SHA-256 for high-assurance use.
-- Software checks cannot prove a physical boot or a hardware write blocker.
+- The detection list, quarantine, journal, and report of a run describe the customer's machine. Treat the USB as confidential data, do not share these files, and do not attach them to issues or skills.
+- A clean scan is not proof of health or of absence of malware; rootkits, firmware implants, and threats without signatures are out of scope.
+- There is a small window between verification and `rm` for `mw.delete-*`; that is why a backup reference and typed approval are mandatory.
+- Hibernated or dirty Windows volumes can make offline results stale; the mount provider refuses read-write access instead.
+- Software checks cannot prove a physical boot or a hardware write blocker; Windows and macOS launcher behavior on real machines is Hardware-required and untested here.
 
 Report vulnerabilities to **satpamsiber.com** through the governance process in [ownership-and-governance.md](ownership-and-governance.md).
