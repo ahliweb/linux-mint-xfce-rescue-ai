@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-30
+
+Documentation accuracy patch; no code or behavior change. The USB was updated to 0.4.0 (file-level, persistence image verified by read-back); the `rescue-boot-diagnosis` skill wording below reaches the USB with the next persistence rebuild.
+
 ### Fixed
 
 - Documentation accuracy audit (docs only, no behavior change): `docs/host-repair.md` examples now use the real catalog action `sw.winget-upgrade-package` (with its `-BackupRef`, since it is `destructive`) instead of the non-existent `sw.winget-upgrade` and `os-macos.verify-volume`, and state that the macOS catalog is empty; the `rescue-boot-diagnosis` skill no longer instructs Hermes to use approved-playbook retrieval, typed adapters, or feedback labels as if they existed (they are Planned in `docs/hermes-learning-loop.md`); `docs/ownership-and-governance.md` lists the CHANGELOG among the files that `scripts/check-docs.py` checks for the attribution line.
