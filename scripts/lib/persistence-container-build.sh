@@ -150,8 +150,11 @@ ln -sfn "$prefix/scripts/malware-quarantine.py" "$bin_dir/rescue-malware-quarant
 # 5. In-container assertions about what was produced.
 autostart=$live_home/.config/autostart/hermes-rescue.desktop
 [[ -f $autostart ]] || { echo "autostart entry missing: $autostart" >&2; exit 1; }
-grep -qxF "Exec=$bin_dir/launch-hermes-rescue.sh --state-dir $state_dir --hardware-mode auto" "$autostart" \
+grep -qxF "Exec=xfce4-terminal --maximize \"--title=Hermes Rescue AI\" -x $bin_dir/launch-hermes-rescue.sh --state-dir $state_dir --hardware-mode auto" "$autostart" \
   || { echo 'autostart Exec line is not the expected launcher command' >&2; cat "$autostart" >&2; exit 1; }
+menu_entry=$live_home/.local/share/applications/hermes-rescue.desktop
+[[ -f $menu_entry ]] || { echo "application menu entry missing: $menu_entry" >&2; exit 1; }
+if grep -q '^X-GNOME-Autostart-enabled' "$menu_entry"; then echo 'menu entry must not carry the autostart flag' >&2; exit 1; fi
 [[ -f $state_dir/hermes/env && $(stat -c %a "$state_dir/hermes/env") == 600 ]] \
   || { echo 'state hermes/env missing or not 0600' >&2; exit 1; }
 if grep -Eq "^OPENCODE_GO_API_KEY=[^']|^OPENCODE_GO_API_KEY='[^']" "$state_dir/hermes/env"; then

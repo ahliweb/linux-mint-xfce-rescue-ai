@@ -61,8 +61,10 @@ The companion is an operator-run external system, not an OMES ISO or a second ag
 flowchart TD
     B[Boot from the USB] --> AS[XFCE autostart: launch-hermes-rescue.sh]
     AS --> PF{Hardware preflight}
-    PF -- fail or unknown --> RF[Run report: preflight-failed]
-    PF -- pass --> SC["scan-target-os.py via sudo -n: mounts read-only"]
+    PF -- required fail --> RF[Run report: preflight-failed]
+    PF -- pass or warn --> NET{Default route and network check?}
+    NET -- offline --> OFF[Local scan and repairs; analysis and Hermes skipped; run report network-error]
+    NET -- online --> SC["scan-target-os.py via sudo -n: mounts read-only"]
     SC --> MOD[Detection modules: hardware, OS, software, malware]
     MOD --> EV["Evidence 1.2 on the USB: numbers only"]
     MOD -. paths, sha256, signature names .-> DL[("Local detection list 0600")]
@@ -221,9 +223,9 @@ flowchart LR
     D -- no --> R[Stop and write report]
 ```
 
-Before the scan and Hermes start, `scripts/check-hardware-readiness.py` validates that the live PC has the minimum resources needed for diagnosis: 2 logical CPUs, 4 GiB RAM, a display adapter, working internet access for OpenCode Go, and a detected USB live medium of at least 8 GiB. The launcher defaults to `--hardware-mode auto`; `--hardware-mode wizard` asks for confirmation at each step. Thresholds are configurable with `--min-cpu`, `--min-ram-gib`, and `--min-usb-gib`.
+Before the scan and Hermes start, `scripts/check-hardware-readiness.py` validates that the live PC has the minimum resources needed for diagnosis: 2 logical CPUs, 4 GiB RAM, a display adapter, a detected USB live medium of at least 8 GiB (resolved through dm and loop devices to the physical disk), and, as an advisory check only, internet access for OpenCode Go. The launcher defaults to `--hardware-mode auto`; `--hardware-mode wizard` asks for confirmation at each step. Thresholds are configurable with `--min-cpu`, `--min-ram-gib`, and `--min-usb-gib`.
 
-The result is a timestamped, permission-restricted JSON report under `<state-dir>/reports/`. A failed or unknown required check blocks the run and states the observed value and minimum; the run report is still written. Software cannot prove that a particular firmware boot menu selected the USB, so that physical acceptance test remains a separate warning and must be tested on real hardware.
+The result is a timestamped, permission-restricted JSON report under `<state-dir>/reports/`. A failed or unknown required check blocks the run and states the observed value and minimum; the run report is still written. `internet-connectivity` is not required and an unresolvable or non-USB live medium only warns (see [hardware](hardware.md#gerbang-kesiapan)); offline, the launcher still runs the local scan, the catalog repairs, and the report, then stops without Hermes. Software cannot prove that a particular firmware boot menu selected the USB, so that physical acceptance test remains a separate warning and must be tested on real hardware.
 
 ## OpenCode Go procedure
 

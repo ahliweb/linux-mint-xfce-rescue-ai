@@ -116,6 +116,21 @@ python3 scripts/rescue-repair.py --evidence /tmp/rescue-evidence.json --policy a
 
 Ganti `/dev/sdX` setelah memeriksa `lsblk` (model, ukuran, transport, status mount); jangan menganggap `/dev/sdX` adalah USB.
 
+<a id="gerbang-kesiapan"></a>
+## Gerbang kesiapan (preflight) live
+
+`scripts/check-hardware-readiness.py` dijalankan launcher live sebelum pemindaian. Hanya check **wajib** yang berstatus `fail` (atau `unknown`) yang menghentikan proses (exit `1`); `warn` tidak pernah memblokir dan menghasilkan `summary.overall: ready_with_warnings`.
+
+| Check | Wajib | `pass` | `warn` (tidak memblokir) | `fail` (memblokir) |
+|---|---|---|---|---|
+| `cpu`, `ram`, `vga-display` | ya | di atas minimum | dilewati operator (mode wizard) | di bawah minimum |
+| `usb-boot-media` | ya | sumber live ter-resolve ke disk fisik `TRAN=usb` dengan ukuran >= `--min-usb-gib` | sumber tidak dapat di-resolve, transport bukan USB, atau ukuran tidak terbaca | disk USB ter-resolve tetapi lebih kecil dari minimum |
+| `internet-connectivity` | **tidak** | default route + DNS + HTTPS | salah satunya gagal; catatan: dibutuhkan untuk analisis OpenCode Go dan Hermes, pemindaian lokal tetap berjalan offline | tidak pernah |
+
+Resolusi media live (hanya baca, argv tetap): sumber mount `/run/live/medium`, `/cdrom`, atau `/media` diikuti lewat `lsblk -b -s -n -r -o NAME,TYPE,TRAN,SIZE` dari perangkat dm (mis. `/dev/mapper/ventoy` yang dibuat Ventoy, ukurannya sebesar ISO, bukan USB) dan partisi ke disk fisiknya; perangkat loop diikuti lewat `/sys/block/loopN/loop/backing_file` lalu `findmnt -T` pada file itu, rekursif dengan kedalaman terbatas. `TRAN` dan ukuran diambil dari disk fisik. Format `observed` yang tidak ter-resolve tetap `transport=unknown, source=/dev/mapper/ventoy`.
+
+Launcher live memakai hasil jaringan untuk memutuskan: offline berarti pemindaian lokal read-only, `rescue-repair.py` (proposal dari katalog), dan laporan proses tetap berjalan, tanpa `opencode-go-analyze.py` (hasil `network-error`) dan tanpa Hermes. Lihat [persistence](persistence.md#autostart-offline-dan-log) dan [design](design.md#hardware-readiness-gate). Generator laporan (Python, PowerShell, JXA) hanya menyalin `check_id`, `status`, dan `required`, sehingga `required: false` dan `warn` tidak mengubah skema.
+
 ## Pengujian
 
 `tests/test_hardware.py` memakai pohon fixture (`hardware/proc`, `hardware/sys`, `hardware/cmd`) untuk laptop dengan baterai lemah, CPU terlalu panas, error EDAC, SMART gagal, NVMe aus, dan GPU tanpa driver. Fixture dibaca lewat `scan-target-os.py --fixture-root` atau variabel lingkungan `RESCUE_HARDWARE_FIXTURE_ROOT` (hanya untuk uji). Tidak ada perintah `smartctl` atau `nvme` yang dijalankan pada perangkat nyata dalam pengujian. Uji pwsh dan zsh berjalan bila `pwsh`/`zsh` terpasang. Pengujian pada mesin fisik (sensor nyata, SMART nyata, baterai nyata) dilaporkan terpisah sebagai Hardware-required.

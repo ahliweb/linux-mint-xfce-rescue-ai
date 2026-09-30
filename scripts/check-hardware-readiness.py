@@ -53,6 +53,60 @@ def read_mem_mib() -> float | None:
         return None
 
 
+SYSFS_BLOCK = pathlib.Path("/sys/block")
+MAX_RESOLVE_DEPTH = 4
+_DISK_TYPES = ("disk", "rom")
+
+
+def _lsblk_chain(device: str) -> list[tuple[str, str, str, int | None]]:
+    """(name, type, tran, size_bytes) for DEVICE and its parents (dm, partition -> disk), read-only."""
+    rows = []
+    for line in command("lsblk", "-b", "-s", "-n", "-r", "-o", "NAME,TYPE,TRAN,SIZE", device).splitlines():
+        cols = line.split(" ")
+        if len(cols) != 4 or not cols[0]:
+            continue
+        try:
+            size = int(cols[3])
+        except ValueError:
+            size = None
+        rows.append((cols[0], cols[1], cols[2], size))
+    return rows
+
+
+def _loop_backing_source(name: str) -> str:
+    """Device that holds the backing file of loop device NAME (partition suffix allowed); '' when unknown."""
+    base = re.sub(r"p\d+$", "", name) if re.fullmatch(r"loop\d+p\d+", name) else name
+    if not re.fullmatch(r"loop\d+", base):
+        return ""
+    try:
+        backing = (SYSFS_BLOCK / base / "loop" / "backing_file").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if not backing.startswith("/"):
+        return ""
+    found = command("findmnt", "-T", backing, "-no", "SOURCE")
+    if not found:
+        return ""
+    return re.sub(r"\[.*\]$", "", found.splitlines()[0].strip())
+
+
+def resolve_physical_disk(source: str, depth: int = 0) -> tuple[str, float | None, str] | None:
+    """Resolve a live-media source (partition, dm device such as /dev/mapper/ventoy, loop device)
+    to its physical disk. Returns (transport, size_gib, disk_name) or None when it cannot be resolved."""
+    if depth > MAX_RESOLVE_DEPTH or not source.startswith("/dev/"):
+        return None
+    rows = _lsblk_chain(source)
+    for name, kind, tran, size in rows:
+        if kind in _DISK_TYPES:
+            return (tran or "unknown", None if size is None else size / (1024 ** 3), name)
+    for name, kind, _tran, _size in rows:
+        if kind == "loop":
+            backing = _loop_backing_source(name)
+            if backing and backing != source:
+                return resolve_physical_disk(backing, depth + 1)
+    return None
+
+
 def storage_for_live_media() -> tuple[str, float | None, str]:
     candidates = ["/run/live/medium", "/cdrom", "/media"]
     source = ""
@@ -63,15 +117,12 @@ def storage_for_live_media() -> tuple[str, float | None, str]:
             break
     if not source:
         return "", None, "live-media mount was not detected"
-    device = source
-    if device.startswith("/dev/"):
-        size_text = command("lsblk", "-bndo", "SIZE", device)
-        tran = command("lsblk", "-ndo", "TRAN", device) or "unknown"
-        try:
-            return tran, int(size_text) / (1024 ** 3), device
-        except ValueError:
-            return tran, None, device
-    return "unknown", None, source
+    resolved = resolve_physical_disk(source)
+    if resolved is None:
+        return "unknown", None, source
+    tran, size, disk = resolved
+    label = source if disk == os.path.basename(source) else f"{source} -> {disk}"
+    return tran, size, label
 
 
 def check_cpu(min_cpus: int) -> dict:
@@ -126,26 +177,29 @@ def check_network(url: str) -> dict:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         http_status = type(exc).__name__
     ok = bool(route and dns and https)
-    return check_result("internet-connectivity", "pass" if ok else "fail",
+    # Not required: the local read-only scan works offline; the network is only needed for the
+    # OpenCode Go analysis and Hermes. An offline run degrades to a warning, never a blocker.
+    return check_result("internet-connectivity", "pass" if ok else "warn",
                         f"default-route={'yes' if route else 'no'}, dns={'yes' if dns else 'no'}, https={http_status}",
-                        f"IP/default route + DNS + HTTPS to {url}", note="network is required for OpenCode Go")
+                        f"IP/default route + DNS + HTTPS to {url}", required=False,
+                        note="needed for OpenCode Go analysis and Hermes; the local scan works offline")
 
 
 def check_usb(min_usb: float) -> dict:
+    """fail only for a resolved USB disk below the minimum; unresolvable or non-USB transports warn."""
     tran, size, source = storage_for_live_media()
-    if not source:
-        return check_result("usb-boot-media", "fail", "USB/live medium cannot be verified",
-                            f">= {min_usb:.1f} GiB removable boot media", note="physical firmware boot must still be tested")
-    if tran != "usb":
-        return check_result("usb-boot-media", "fail", f"transport={tran}, source={source}",
-                            f"USB transport and >= {min_usb:.1f} GiB", note="boot source is not identified as USB")
-    if size is None:
-        return check_result("usb-boot-media", "unknown", f"USB size unavailable ({source})",
-                            f">= {min_usb:.1f} GiB removable boot media")
-    status = "pass" if size >= min_usb else "fail"
-    return check_result("usb-boot-media", status, f"USB {size:.2f} GiB ({source})",
-                        f">= {min_usb:.1f} GiB removable boot media",
-                        note="USB transport and live mount detected")
+    minimum = f"USB transport and >= {min_usb:.1f} GiB"
+    if not source or not tran:
+        return check_result("usb-boot-media", "warn", "USB/live medium cannot be verified", minimum,
+                            note="live-media source not detected; physical firmware boot must still be tested")
+    if tran == "usb":
+        if size is None:
+            return check_result("usb-boot-media", "warn", f"USB size unavailable ({source})", minimum,
+                                note="USB detected but its size could not be read")
+        return check_result("usb-boot-media", "pass" if size >= min_usb else "fail", f"USB {size:.2f} GiB ({source})",
+                            minimum, note="USB transport and live mount detected")
+    return check_result("usb-boot-media", "warn", f"transport={tran or 'unknown'}, source={source}", minimum,
+                        note="boot source could not be resolved to a USB disk (virtual, bridged or mapped device); not blocking")
 
 
 def write_private(destination: pathlib.Path, text: str) -> None:

@@ -10,7 +10,7 @@ Dokumen ini menjelaskan cara membuat USB rescue yang boot ke Linux Mint 22.3 XFC
 |---|---|
 | `scripts/build-persistence.sh` membangun image `casper-rw` (ext4) dari ISO Mint 22.3 yang sudah diverifikasi | Implemented; membutuhkan docker dan jaringan (environment-dependent) |
 | `prepare-ventoy-usb.sh --persistence` menyalin image, verifikasi sha256 read-back, dan menggabungkan entri `persistence` ke `/ventoy/ventoy.json` | Implemented; penulisan ke USB nyata Hardware-required |
-| Autostart XFCE menjalankan `launch-hermes-rescue.sh --hardware-mode auto` | Implemented di image; perilaku saat boot Hardware-required |
+| Autostart XFCE membuka `xfce4-terminal` lalu menjalankan `launch-hermes-rescue.sh --hardware-mode auto`; entri menu aplikasi yang sama untuk menjalankan ulang | Implemented di image; perilaku saat boot Hardware-required |
 | Boot dengan persistence (Ventoy memilih image, casper me-mount `casper-rw`, overlay berfungsi, Hermes tetap ada setelah reboot) | **Hardware-required; belum diverifikasi di lingkungan ini** |
 | Login Hermes ke OpenCode Go dari sesi live | Environment-blocked (butuh API key dan jaringan) |
 | Pembaruan Hermes di dalam sesi live (`hermes update`) | Planned / tidak diuji |
@@ -35,6 +35,15 @@ flowchart TD
     XFCE --> STATE[(State Hermes di USB)]
 ```
 
+<a id="autostart-offline-dan-log"></a>
+## Autostart, offline, dan log launcher
+
+- **Terminal eksplisit.** Entri `~/.config/autostart/hermes-rescue.desktop` memakai `Terminal=false` dan `Exec=xfce4-terminal --maximize "--title=Hermes Rescue AI" -x /usr/local/bin/launch-hermes-rescue.sh --state-dir <state> --hardware-mode auto`, jadi jendela selalu terlihat. `scripts/verify-autostart.sh` dan pemeriksaan di `persistence-container-build.sh` memeriksa baris ini persis.
+- **Menu aplikasi.** Installer juga menulis entri yang sama (tanpa `X-GNOME-Autostart-enabled`) ke `~/.local/share/applications/hermes-rescue.desktop`, sehingga operator dapat menjalankan ulang "Hermes Rescue AI" dari menu setelah Wi-Fi tersambung. `--no-autostart` hanya melewati salinan autostart; entri menu tetap dipasang.
+- **Jaringan tidak memblokir.** Autostart berjalan saat login, sebelum Wi-Fi tersambung. Launcher menunggu default route hingga sekitar 60 detik; bila masih offline dan ada terminal, launcher menampilkan petunjuk dwibahasa: sambungkan Wi-Fi lewat ikon jaringan di panel lalu tekan Enter untuk memeriksa ulang, atau ketik `L` untuk lanjut offline (tanpa jawaban 180 detik, atau EOF, berarti offline). Offline: pemindaian read-only, perbaikan katalog sesuai kebijakan operator, dan laporan proses tetap berjalan; analisis OpenCode Go dilewati (outcome `network-error`) dan Hermes tidak dijalankan. Launcher mencetak lokasi laporan dan cara menjalankan ulang setelah online.
+- **Tidak pernah menutup diam-diam.** Pada keluar non-nol (dan saat selesai offline) di terminal, launcher mencetak ringkasan dwibahasa beserta lokasi laporan lalu menunggu Enter (EOF tidak membuatnya menggantung).
+- **Log lokal.** stdout/stderr launcher juga ditulis ke `<state-dir>/reports/launcher-<utc>.log` (`0600`, hanya lokal, tidak pernah dikirim; launcher tidak pernah mencetak API key). Langkah persetujuan perbaikan interaktif (`rescue-repair.py`) hanya tampil di terminal karena butuh tty; jurnalnya tetap menjadi catatan resminya.
+
 ## Membangun image
 
 Prasyarat di host: `docker` (user ada di grup `docker`), `7z` atau `xorriso`, `e2fsprogs`, `python3`; `unsquashfs` + `fakeroot` dipakai bila ada (kalau tidak, dipakai container `alpine`). Tidak perlu `sudo`, tidak menyentuh block device.
@@ -58,7 +67,7 @@ Yang dilakukan di dalam container build (jaringan aktif hanya untuk apt dan inst
 1. `apt-get install --no-install-recommends dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam` (dengan `policy-rc.d` yang menolak start layanan; unit `clamav-freshclam`/`clamav-daemon` di-mask; tidak ada unduhan tanda tangan saat build, lihat [malware](malware.md); pengguna sistem `clamav` diizinkan; semuanya ada di arsip Ubuntu 24.04 noble; bila salah satu tidak tersedia, dilaporkan dan build dilanjutkan tanpa paket itu).
 2. Membuat user build `mint` (uid/gid 1000, home `/home/mint`).
 3. Menjalankan installer resmi Hermes sebagai `mint` dengan `HERMES_HOME=/home/mint/.local/share/rescue-omes/hermes` (tanpa browser/computer-use, non-interaktif). Installer diverifikasi terhadap `--installer-sha256` bila diberikan; sha256 aktual selalu dicetak.
-4. Menjalankan `scripts/install-hermes-rescue.sh --state-dir /home/mint/.local/share/rescue-omes --skip-hermes-install` sebagai `mint`: profile (`SOUL.md`, `AGENTS.md`), `config.yaml`, `hermes/env` (`0600`), launcher di `/usr/local/bin`, dan entri autostart `~/.config/autostart/hermes-rescue.desktop`. Bundle runtime lengkap (allowlist yang sama dengan `copy_bundle`, termasuk `host/` bila ada) ditempatkan di `/usr/local/lib/rescue-omes`. Symlink `/usr/local/bin/hermes` ditambahkan supaya launcher menemukan `hermes`.
+4. Menjalankan `scripts/install-hermes-rescue.sh --state-dir /home/mint/.local/share/rescue-omes --skip-hermes-install` sebagai `mint`: profile (`SOUL.md`, `AGENTS.md`), `config.yaml`, `hermes/env` (`0600`), launcher di `/usr/local/bin`, dan entri autostart `~/.config/autostart/hermes-rescue.desktop` (beserta entri menu aplikasi `~/.local/share/applications/hermes-rescue.desktop`). Bundle runtime lengkap (allowlist yang sama dengan `copy_bundle`, termasuk `host/` bila ada) ditempatkan di `/usr/local/lib/rescue-omes`. Symlink `/usr/local/bin/hermes` ditambahkan supaya launcher menemukan `hermes`.
 5. Memastikan **semua** skill di `profiles/rescue-hermes/skills/` (`rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`) ada di `<state>/hermes/skills/`. `install-hermes-rescue.sh` sudah memasang semuanya, dan build menyalinnya ulang. Build gagal bila salah satu skill itu tidak terpasang.
 
 Isi image (di dalam `upper/`, yaitu file seperti terlihat di `/`): paket tambahan di `/usr`, `/var/lib/dpkg`, bundle di `/usr/local/lib/rescue-omes`, dan seluruh `/home/mint` (Hermes di `.local/share/rescue-omes/hermes/hermes-agent`, Python terkelola uv di `.local/share/uv`, autostart di `.config/autostart`).

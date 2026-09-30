@@ -636,7 +636,8 @@ class TestLauncherWiring(_ths.HermesScriptTestCase if _ths else unittest.TestCas
         self.marker = self.tmp / "scan-marker"
         self.write_shim("hermes", "printf 'HERMES-RAN %s\\n' \"$*\"\n")
         self.write_shim("sudo", '[ "$1" = -n ] && shift\nexec "$@"\n')
-        hw = self.src / "scripts" / "check-hardware-readiness.py"
+        self.write_shim("ip", 'echo "default via 10.0.0.1 dev wlan0"\n')
+        hw =self.src / "scripts" / "check-hardware-readiness.py"
         hw.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
         os.chmod(hw, 0o755)
         self._open(hw)
