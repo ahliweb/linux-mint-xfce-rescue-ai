@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- Documentation accuracy audit (docs only, no behavior change): `docs/host-repair.md` examples now use the real catalog action `sw.winget-upgrade-package` (with its `-BackupRef`, since it is `destructive`) instead of the non-existent `sw.winget-upgrade` and `os-macos.verify-volume`, and state that the macOS catalog is empty; the `rescue-boot-diagnosis` skill no longer instructs Hermes to use approved-playbook retrieval, typed adapters, or feedback labels as if they existed (they are Planned in `docs/hermes-learning-loop.md`); `docs/ownership-and-governance.md` lists the CHANGELOG among the files that `scripts/check-docs.py` checks for the attribution line.
+
 ## [0.4.0] - 2026-09-30
 
 Malware detection with reversible quarantine, a comprehensive run report on the USB for every run, a full documentation update with a docs checker in `make check`, and consistent exit codes for failed repairs on every launcher.

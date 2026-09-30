@@ -75,6 +75,6 @@ Use the following attribution in repository-facing and operator-facing materials
 
 > Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 
-`scripts/check-docs.py` (part of `make check`) verifies that every `docs/*.md` document and the README carry exactly this line.
+`scripts/check-docs.py` (part of `make check`) verifies that the README, the CHANGELOG, and every `docs/*.md` document carry exactly this line.
 
 The attribution does not imply that Linux Mint, Ventoy, Hermes Agent, or OpenCode Go are owned by ahliweb.com. Their respective trademarks, licenses, and provider terms remain authoritative.
