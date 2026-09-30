@@ -224,7 +224,7 @@ Run `make check`: syntax (`bash -n`, `py_compile`, the repair catalog validator,
 
 ## Governance and licensing
 
-This project is managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**. See [ownership and governance](docs/ownership-and-governance.md), [agent instructions](AGENTS.md), and the [MIT License](LICENSE). The current version is in `VERSION` (`0.4.1`); changes are in the [changelog](CHANGELOG.md).
+This project is managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**. See [ownership and governance](docs/ownership-and-governance.md), [agent instructions](AGENTS.md), and the [MIT License](LICENSE). The current version is in `VERSION` (`0.5.0`); changes are in the [changelog](CHANGELOG.md).
 
 ## Documentation map
 
