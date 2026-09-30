@@ -202,7 +202,7 @@ def main(argv=None):
         'scope': scope or None, 'repair_policy': args.repair_policy, 'key_present': key_present,
         'evidence': evidence, 'evidence_sha256': hashlib.sha256(evidence_raw).hexdigest() if evidence_raw else None,
         'evidence_after': after, 'analysis_text': analysis_text, 'ai_counts': counts,
-        'journal_lines': lines, 'readiness': readiness, 'action_info': info or {},
+        'journal_lines': lines, 'readiness': readiness, 'action_info': info or {}, 'secrets': secrets,
     }
     if lines is not None:
         inp['journal_extra_problems'] = schema_problems(args.journal, lines)

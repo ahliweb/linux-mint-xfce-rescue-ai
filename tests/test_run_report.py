@@ -352,7 +352,9 @@ class ReportModelTests(unittest.TestCase):
         grub = self.actions['os-linux.update-grub']
         self.assertTrue(grub['manual_rollback_required'])
         self.assertEqual(grub['manual_rollback_doc'], 'docs/os-repair.md#rollback-linux')
-        self.assertIn('[docs/os-repair.md#rollback-linux](../../docs/os-repair.md#rollback-linux)', self.md)
+        self.assertIn('manual rollback required: `docs/os-repair.md#rollback-linux`', self.md)
+        self.assertNotIn('../../', self.md)
+        self.assertIn('`/usr/local/lib/rescue-omes/docs/` di live USB, `rescue-omes/docs/` di USB pada mode host', self.md)
         kinds = [(i['kind'], i.get('ref')) for i in self.report['open_items']]
         self.assertIn(('action-failed', 'os-linux.update-grub'), kinds)
         self.assertIn(('manual-rollback', 'os-linux.update-grub'), kinds)
@@ -468,42 +470,63 @@ class ReportModelTests(unittest.TestCase):
 
 
 class PrivacySelfCheckTests(unittest.TestCase):
-    CASES = {
-        'unix-home-path': 'lihat /home/alice/rahasia.txt',
-        'macos-user-path': 'buka /Users/Bob/Documents',
-        'windows-user-path': r'file C:\Users\carol\x',
-        'mac-address': 'adapter aa:bb:cc:dd:ee:ff aktif',
-        'ipv4-address': 'router 192.168.1.10 lambat',
-        'ipv6-address': 'host 2001:0db8:0000:0000:0000:ff00:0042:8329',
+    STRUCTURAL = {
+        'unix-home-path': 'x/home/alice/z',
+        'macos-user-path': 'x/Users/Bob/z',
+        'windows-user-path': r'x-C:\Users\carol\z',
+        'mac-address': 'x aa:bb:cc:dd:ee:ff z',
+        'ipv4-address': 'run-192.168.1.10',
+        'ipv6-address': 'x-2001:0db8:0000:0000:0000:ff00:0042:8329-z',
     }
+    MODEL_TEXT = ('Analisis: kernel 5.15.0.91, router 192.168.1.10, lihat /home/alice/rahasia/x.txt dan /Users/Bob/Documents/a.pdf, '
+                  'C:\\Users\\carol\\Desktop\\b.doc, adapter aa:bb:cc:dd:ee:ff, host 2001:0db8:0000:0000:0000:ff00:0042:8329, versi 1.2.3.')
 
-    def test_each_rule_refuses_the_full_report_and_writes_a_minimal_one(self):
-        for rule, text in self.CASES.items():
+    def test_identifiers_in_the_model_text_are_redacted_and_the_report_is_not_refused(self):
+        report, json_text, markdown = rr.render_checked(make_inputs(analysis_text=self.MODEL_TEXT))
+        self.assertEqual(report['privacy_check'], {'status': 'passed', 'findings': []})
+        ai = report['analysis']
+        self.assertEqual(ai['redactions'], 7)
+        self.assertEqual(ai['text'], 'Analisis: kernel <ip>, router <ip>, lihat <path> dan <path>, <path>, adapter <mac>, host <ip>, versi 1.2.3.')
+        self.assertIn('7 bagian yang menyerupai pengenal', markdown)
+        for original in ('5.15.0.91', '192.168.1.10', 'alice', 'Bob', 'carol', 'aa:bb:cc', '2001:0db8'):
+            self.assertNotIn(original, json_text + markdown)
+        self.assertTrue(report['detection']['available'])
+        self.assertEqual(len(report['remediation']['actions']), 9)
+        validate(self, report)
+
+    def test_the_configured_key_value_in_the_model_text_is_redacted(self):
+        report, json_text, markdown = rr.render_checked(make_inputs(analysis_text='kunci ' + DUMMY_KEY + ' dan ' + DUMMY_KEY),
+                                                        secrets=[DUMMY_KEY])
+        self.assertEqual(report['privacy_check']['status'], 'passed')
+        self.assertEqual((report['analysis']['redactions'], report['analysis']['text']), (2, 'kunci <redacted> dan <redacted>'))
+        self.assertNotIn(DUMMY_KEY, json_text + markdown)
+        validate(self, report)
+
+    def test_a_structural_leak_still_refuses_the_full_report_and_writes_a_minimal_one(self):
+        for rule, text in self.STRUCTURAL.items():
             with self.subTest(rule=rule):
-                report, json_text, markdown = rr.render_checked(make_inputs(analysis_text='Analisis: ' + text))
+                report, json_text, markdown = rr.render_checked(make_inputs(run_id=text))
                 self.assertEqual(report['privacy_check'], {'status': 'refused', 'findings': [rule]})
                 self.assertFalse(report['detection']['available'])
                 self.assertEqual(report['remediation']['actions'], [])
                 self.assertEqual(report['header']['outcome'], 'report-privacy-refused')
                 self.assertIsNone(report['analysis']['text'])
+                self.assertEqual(report['analysis']['redactions'], 0)
                 self.assertNotIn(text, json_text + markdown)
                 self.assertIn('LAPORAN DITOLAK OLEH PEMERIKSAAN PRIVASI', markdown)
-                self.assertIn(rule, markdown)
                 validate(self, report)
                 self.assertEqual(rr.privacy_findings(json_text + markdown), [])
 
-    def test_the_configured_key_value_is_refused(self):
-        report, json_text, markdown = rr.render_checked(make_inputs(analysis_text='kunci ' + DUMMY_KEY), secrets=[DUMMY_KEY])
+    def test_the_key_value_in_a_structural_field_is_refused(self):
+        report, json_text, markdown = rr.render_checked(make_inputs(run_id='run-' + DUMMY_KEY), secrets=[DUMMY_KEY])
         self.assertEqual(report['privacy_check']['findings'], ['configured-key-value'])
         self.assertNotIn(DUMMY_KEY, json_text + markdown)
         validate(self, report)
 
-    def test_ordinary_numbers_and_versions_do_not_trigger_it(self):
+    def test_ordinary_numbers_and_versions_are_left_alone(self):
         clean = 'kernel 5.15.0, versi 1.2.3, 2026-09-30T08:00:00Z, sha 0123456789abcdef, dokumen docs/os-repair.md'
-        _, json_text, markdown = rr.render_checked(make_inputs(analysis_text=clean))
-        self.assertEqual(rr.privacy_findings(json_text + markdown), [])
-        report, _, _ = rr.render_checked(make_inputs(analysis_text=clean))
-        self.assertEqual(report['privacy_check']['status'], 'passed')
+        report, json_text, markdown = rr.render_checked(make_inputs(analysis_text=clean))
+        self.assertEqual((report['privacy_check']['status'], report['analysis']['redactions'], report['analysis']['text']), ('passed', 0, clean))
 
 
 class IndexTests(unittest.TestCase):
@@ -556,10 +579,10 @@ class CliTests(unittest.TestCase):
         (self.tmp / 'journal.jsonl').write_bytes(b'\n'.join(sample_journal()) + b'\n')
         (self.tmp / 'readiness.json').write_text(json.dumps(READINESS))
 
-    def run_cli(self, *args, env=None):
+    def run_cli(self, *args, env=None, run_id=RUN):
         base = {k: v for k, v in os.environ.items() if k != 'OPENCODE_GO_API_KEY'}
         base.update(env or {})
-        return subprocess.run([sys.executable, str(CLI), '--reports-dir', str(self.reports), '--run-id', RUN, *args],
+        return subprocess.run([sys.executable, str(CLI), '--reports-dir', str(self.reports), '--run-id', run_id, *args],
                               capture_output=True, text=True, env=base, cwd=self.tmp, timeout=120)
 
     def full_args(self):
@@ -619,24 +642,32 @@ class CliTests(unittest.TestCase):
         proc = self.run_cli(*self.full_args(), '--key-present', 'yes')
         self.assertTrue(json.loads((self.only_run() / 'report.json').read_text())['header']['provider_key_present'])
 
-    def test_key_value_in_the_analysis_is_refused_with_exit_1(self):
+    def test_key_value_in_the_analysis_is_redacted_not_refused(self):
         (self.tmp / 'analysis.md').write_text('Kunci saya ' + DUMMY_KEY, encoding='utf-8')
         proc = self.run_cli(*self.full_args(), env={'OPENCODE_GO_API_KEY': DUMMY_KEY})
-        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn('privacy self-check refused', proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         blob = ''.join(p.read_text(encoding='utf-8') for p in self.reports.rglob('*') if p.is_file())
         self.assertNotIn(DUMMY_KEY, blob)
         doc = json.loads((self.only_run() / 'report.json').read_text())
         validate(self, doc)
-        self.assertEqual((doc['privacy_check']['status'], doc['header']['outcome']), ('refused', 'report-privacy-refused'))
+        self.assertEqual((doc['privacy_check']['status'], doc['analysis']['redactions'], doc['analysis']['text']), ('passed', 1, 'Kunci saya <redacted>'))
 
-    def test_key_from_an_env_file_is_refused_too(self):
+    def test_key_from_an_env_file_is_redacted_too(self):
         env_file = self.tmp / 'rescue.env'
         env_file.write_text("OPENCODE_GO_API_KEY='%s'\n" % DUMMY_KEY)
         env_file.chmod(0o600)
         (self.tmp / 'analysis.md').write_text('echo ' + DUMMY_KEY, encoding='utf-8')
         proc = self.run_cli(*self.full_args(), '--env-file', str(env_file))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads((self.only_run() / 'report.json').read_text())['analysis']['text'], 'echo <redacted>')
+
+    def test_a_structural_leak_gives_exit_1_and_a_minimal_report(self):
+        proc = self.run_cli(*self.full_args(), env={'OPENCODE_GO_API_KEY': DUMMY_KEY}, run_id='run-10.20.30.40')
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn('privacy self-check refused', proc.stderr)
+        doc = json.loads((self.only_run() / 'report.json').read_text())
+        validate(self, doc)
+        self.assertEqual((doc['privacy_check']['status'], doc['header']['outcome']), ('refused', 'report-privacy-refused'))
 
     def test_exit_codes_2_and_3(self):
         proc = subprocess.run([sys.executable, str(CLI), '--reports-dir', str(self.reports), '--run-id', 'x', '--mode', 'live-linux'],
@@ -845,7 +876,7 @@ class Generators:
                    RESCUE_RR_KEY_PRESENT='yes' if c['key_present'] else 'no', RESCUE_RR_ACTION_INFO=action_info_lines(),
                    RESCUE_RR_EVIDENCE=str(paths.get('evidence', '')), RESCUE_RR_EVIDENCE_AFTER=str(paths.get('after', '')),
                    RESCUE_RR_ANALYSIS=str(paths.get('analysis', '')), RESCUE_RR_JOURNAL=str(paths.get('journal', '')),
-                   RESCUE_RR_READINESS=str(paths.get('readiness', '')), RESCUE_RR_FORCE_REFUSE=c.get('force_refuse', ''))
+                   RESCUE_RR_READINESS=str(paths.get('readiness', '')), RESCUE_RR_FORCE_REFUSE=c.get('force_refuse', ''), RESCUE_RR_KEY_REDACTIONS=str(c.get('key_redactions', 0)))
         counts = self.counts(paths)
         if counts and 'analysis' in paths:
             env['RESCUE_RR_AI_ACCEPTED'], env['RESCUE_RR_AI_REJECTED'] = str(counts[0]), str(counts[1])
@@ -931,14 +962,18 @@ class CrossCheckMixin:
         py, _ = self.assert_same(paths)
         self.assertTrue(py[0]['analysis']['text_truncated'])
 
-    def test_privacy_refusal_is_equal(self):
-        for text in ('lihat /home/alice/x', 'ip 10.20.30.40', r'C:\Users\bob\a', 'mac aa:bb:cc:dd:ee:ff'):
-            with self.subTest(text=text):
-                shutil.rmtree(self.tmp / 'py', ignore_errors=True)
-                shutil.rmtree(self.tmp / self.NAME, ignore_errors=True)
-                py, _ = self.assert_same(self.gen.files(analysis=text))
-                self.assertEqual(py[0]['privacy_check']['status'], 'refused')
-                self.assertEqual(py[0]['header']['outcome'], 'report-privacy-refused')
+    MODEL_TEXT = PrivacySelfCheckTests.MODEL_TEXT
+
+    def test_model_text_redaction_is_equal(self):
+        py, _ = self.assert_same(self.gen.files(analysis=self.MODEL_TEXT))
+        self.assertEqual(py[0]['privacy_check']['status'], 'passed')
+        self.assertEqual(py[0]['analysis']['redactions'], 7)
+        self.assertIn('kernel <ip>, router <ip>', py[0]['analysis']['text'])
+
+    def test_structural_privacy_refusal_is_equal(self):
+        py, _ = self.assert_same(self.gen.files(), run_id='run-10.20.30.40')
+        self.assertEqual(py[0]['privacy_check'], {'status': 'refused', 'findings': ['ipv4-address']})
+        self.assertEqual(py[0]['header']['outcome'], 'report-privacy-refused')
 
     def test_hostile_inputs_are_dropped_equally(self):
         evil = evidence_doc()
@@ -976,16 +1011,23 @@ class PowerShellCrossCheck(CrossCheckMixin, unittest.TestCase):
     def other(self, paths, **over):
         return self.gen.powershell(paths, name='ps', **over)
 
-    def test_key_value_is_refused_like_python(self):
+    def test_key_value_is_redacted_or_refused_like_python(self):
         paths = self.gen.files(analysis='mengulang ' + DUMMY_KEY)
         py_dir, proc = self.gen.python(paths, secret=DUMMY_KEY)
-        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         ps_dir, proc = self.gen.powershell(paths, secret=DUMMY_KEY)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         py, ps = read_report(py_dir), read_report(ps_dir)
-        self.assertEqual(py[0], ps[0])
-        self.assertEqual(ps[0]['privacy_check']['findings'], ['configured-key-value'])
+        self.assertEqual(py[:2], ps[:2])
+        self.assertEqual((ps[0]['analysis']['text'], ps[0]['analysis']['redactions']), ('mengulang <redacted>', 1))
         self.assertNotIn(DUMMY_KEY, json.dumps(ps[0]) + ps[1])
+        shutil.rmtree(py_dir)
+        shutil.rmtree(ps_dir)
+        paths = self.gen.files()
+        py_dir, _ = self.gen.python(paths, secret=DUMMY_KEY, run_id='run-' + DUMMY_KEY)
+        ps_dir, proc = self.gen.powershell(paths, secret=DUMMY_KEY, run_id='run-' + DUMMY_KEY)
+        self.assertEqual(read_report(py_dir)[0], read_report(ps_dir)[0])
+        self.assertEqual(read_report(ps_dir)[0]['privacy_check']['findings'], ['configured-key-value'])
 
     def test_ps_files_are_private_where_the_platform_allows(self):
         out, proc = self.gen.powershell(self.gen.files())
@@ -1003,11 +1045,20 @@ class JxaCrossCheck(CrossCheckMixin, unittest.TestCase):
     def other(self, paths, **over):
         return self.gen.jxa(paths, name='js', **over)
 
-    def test_key_value_refusal_through_the_forced_rule(self):
+    def test_key_value_redaction_by_the_shell_and_structural_refusal_match_python(self):
+        # The zsh glue redacts the key in a copy of the analysis and passes the count (the key never reaches osascript).
         paths = self.gen.files(analysis='mengulang ' + DUMMY_KEY)
         py_dir, proc = self.gen.python(paths, secret=DUMMY_KEY)
-        js_dir, proc = self.gen.jxa(paths, force_refuse='configured-key-value')
+        redacted = self.tmp / 'in' / 'analysis-redacted.md'
+        redacted.write_text('mengulang <redacted>', encoding='utf-8')
+        js_dir, proc = self.gen.jxa(dict(paths, analysis=redacted), key_redactions=1)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(read_report(py_dir)[:2], read_report(js_dir)[:2])
+        shutil.rmtree(py_dir)
+        shutil.rmtree(js_dir)
+        paths = self.gen.files()
+        py_dir, _ = self.gen.python(paths, secret=DUMMY_KEY, run_id='run-' + DUMMY_KEY)
+        js_dir, proc = self.gen.jxa(paths, force_refuse='configured-key-value', run_id='run-' + DUMMY_KEY)
         self.assertEqual(read_report(py_dir)[0], read_report(js_dir)[0])
 
     def test_jxa_source_avoids_lookbehind_and_shell_out(self):
@@ -1286,15 +1337,18 @@ class MacReportTests(HR.HostRepairCase):
         blob = ''.join(p.read_text(encoding='utf-8', errors='replace') for p in (self.bundle / 'reports').rglob('*') if p.is_file())
         self.assertNotIn(HL.DUMMY_KEY, blob)
 
-    def test_the_key_value_in_the_answer_is_refused(self):
+    def test_the_key_value_in_the_answer_is_redacted(self):
         self.with_key('Kunci: ' + HL.DUMMY_KEY)
         proc = self.run_args('--scope', 'os')
         doc, md = load_report(self.bundle / 'reports')
         validate(self, doc)
-        self.assertEqual(doc['privacy_check']['status'], 'refused')
+        self.assertEqual(doc['privacy_check']['status'], 'passed')
+        self.assertEqual(doc['analysis']['redactions'], 1)
+        self.assertTrue(doc['analysis']['text'].rstrip().endswith('Kunci: <redacted>'))
         blob = ''.join(p.read_text(encoding='utf-8', errors='replace') for p in (self.bundle / 'reports').rglob('*')
                        if p.is_file() and p.name != 'journal.jsonl' and not p.name.endswith('-analysis.md'))
         self.assertNotIn(HL.DUMMY_KEY, blob)
+        self.assertEqual([p.name for p in (self.bundle / 'reports').glob('.report-*')], [])
 
     def test_without_osascript_the_launcher_says_so_and_still_exits_normally(self):
         (self.shims / 'osascript').unlink()

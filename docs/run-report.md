@@ -59,7 +59,7 @@ Setiap bagian menyatakan apa yang **diverifikasi** dan apa yang **tidak**.
 2. **Preflight perangkat keras** (hanya live USB): hasil gerbang dan status tiap check (`cpu`, `ram`, `vga-display`, `internet-connectivity`, `usb-boot-media`). Teks `observed` (model CPU, perangkat) sengaja tidak dibawa.
 3. **Deteksi**: semua check dikelompokkan per domain (hardware, OS per sistem target, software, malware, lingkungan), status, dan nilai terbatas dengan satuan. Legenda: `unknown` berarti **tidak dapat ditentukan, bukan sehat**.
 4. **Analisis AI**: model, SHA-256 evidence, teks analisis apa adanya (hanya dibaca, karakter kontrol dibuang, ditandai sebagai keluaran model yang tidak pernah dijalankan; dipotong pada 32768 karakter), jumlah usulan diterima dan ditolak.
-5. **Remediasi**: per usulan dari journal (difilter `run_id`): asal (`catalog-trigger`, `ai-proposal`, `operator`), keputusan persetujuan dan siapa/bagaimana, sidik backup (ukuran dan 12 hex awal, tanpa path), semua tahap (prasyarat, execute, verify, rollback) dengan kode keluar, hasil akhir (`verified`, `rolled-back`, `failed`, `skipped`, `declined`, `proposed`), dan tautan dokumen rollback manual bila perlu. Hasil verifikasi rantai hash journal ditampilkan; bila tidak valid, **INVALID** ditampilkan mencolok.
+5. **Remediasi**: per usulan dari journal (difilter `run_id`): asal (`catalog-trigger`, `ai-proposal`, `operator`), keputusan persetujuan dan siapa/bagaimana, sidik backup (ukuran dan 12 hex awal, tanpa path), semua tahap (prasyarat, execute, verify, rollback) dengan kode keluar, hasil akhir (`verified`, `rolled-back`, `failed`, `skipped`, `declined`, `proposed`), dan rujukan dokumen rollback manual bila perlu (teks bundel-relatif seperti `docs/malware.md#rollback-delete`, bukan tautan relatif; laporan menyebut lokasi bundel: `/usr/local/lib/rescue-omes/` di live USB, `rescue-omes/` di USB pada mode host). Hasil verifikasi rantai hash journal ditampilkan; bila tidak valid, **INVALID** ditampilkan mencolok.
 6. **Sebelum/sesudah**: bila minimal satu aksi dieksekusi, launcher memindai ulang dengan scope yang sama dan laporan mendaftar check yang statusnya berubah (sebelum, sesudah). Bila tidak ada aksi yang jalan, laporan menyatakannya.
 7. **Butir terbuka**: aksi gagal, ditolak, atau dilewati; rollback manual; eskalasi (disk terenkripsi, indikasi kerusakan perangkat keras, signature antivirus kedaluwarsa, temuan malware yang perlu ditinjau, check `unknown`, regresi setelah perbaikan).
 8. **Kejujuran**: yang **Hardware-required** dan **Environment-blocked** pada run ini (misalnya tanpa kunci tidak ada analisis), scope yang dibatasi, dan pernyataan bahwa hasil bersih bukan bukti kesehatan.
@@ -72,7 +72,8 @@ Laporan bisa dibaca Hermes (model di cloud) dan mungkin ditunjukkan ke orang lai
 - Daftar deteksi malware dan manifest karantina tetap berkas lokal terpisah (`malware-detections-<run>.json`, `quarantine/`); laporan hanya menyebut hitungannya.
 - Input yang tidak sesuai kontrol (check dengan ID aneh, catatan journal di luar enum) dibuang, bukan dipercaya setengah; evidence yang rusak diperlakukan sebagai tidak ada.
 - Satu-satunya teks bebas adalah teks analisis model (sudah berasal dari cloud), diberi tanda jelas. Skema (`additionalProperties: false`, enum, pola) menolak field lain; `make check` memeriksanya.
-- **Privacy self-check**: sebelum menulis, generator memindai `report.md` dan `report.json` untuk `/home/<x>`, `/Users/<x>`, `C:\Users\`, alamat MAC, IPv4, IPv6, dan nilai kunci API yang dikonfigurasi (Python: dari lingkungan dan `--env-file`; PowerShell: kunci proses; macOS: pemeriksaan di zsh). Bila ada temuan, laporan lengkap **tidak ditulis**; yang ditulis adalah laporan minimal (`outcome: report-privacy-refused`, hanya header, aturan yang terpicu, dan penjelasan). Pemeriksaan ini konservatif: nomor versi berpola IPv4 (misalnya `5.15.0.91`) di teks analisis juga menolak laporan; artefak sumber tetap ada di USB.
+- **Redaksi teks analisis**: teks model dimasukkan apa adanya kecuali potongan yang menyerupai pengenal, yang diganti placeholder sebelum dirender: path `/home/<x>`, `/Users/<x>`, `C:\Users\<x>` menjadi `<path>` (seluruh rangkaian komponen path), alamat MAC menjadi `<mac>`, IPv4 dan IPv6 menjadi `<ip>` (nomor versi berpola IPv4 seperti `5.15.0.91` juga), dan nilai kunci API yang dikonfigurasi menjadi `<redacted>`. Pola dan urutannya sama di ketiga generator (kunci, path Windows, `/home`, `/Users`, MAC, IPv6, IPv4); jumlah penggantian dicatat di `analysis.redactions` dan disebut di laporan. Laporan **tidak** ditolak karena ini. Di macOS kunci diganti oleh zsh pada salinan analisis sebelum sampai ke generator (kunci tidak pernah diberikan ke `osascript`).
+- **Privacy self-check** (bagian terstruktur): sebelum menulis, generator memindai `report.md` dan `report.json` untuk `/home/<x>`, `/Users/<x>`, `C:\Users\`, alamat MAC, IPv4, IPv6, dan nilai kunci API yang dikonfigurasi. Karena teks analisis sudah diredaksi, temuan di sini berarti bug nyata di bagian terstruktur: laporan lengkap **tidak ditulis**; yang ditulis adalah laporan minimal (`outcome: report-privacy-refused`, `run_id` `privacy-refused`, hanya header, aturan yang terpicu, dan penjelasan). Artefak sumber tetap ada di USB.
 
 ## Kapan laporan ditulis
 
@@ -112,7 +113,7 @@ Kode keluar: `0` laporan ditulis (atau `--validate`: semua valid) | `1` privacy 
 | `header` | waktu, `mode`, `toolkit_version`, `catalog_sha256`, `scope`, `repair_policy`, `provider_key_present`, `outcome`, `evidence_run_id`, `evidence_sha256` |
 | `readiness` | `performed`, `gate`, `overall`, `checks[]` (`check_id`, `status`, `required`) |
 | `detection` | `available`, `totals`, `targets[]`, `domains{hardware,os,software,malware,environment}` |
-| `analysis` | `status`, `model_id`, `evidence_sha256`, `text`, `text_truncated`, `proposals{accepted,rejected}` |
+| `analysis` | `status`, `model_id`, `evidence_sha256`, `text`, `text_truncated`, `redactions`, `proposals{accepted,rejected}` |
 | `remediation` | `journal{chain: valid/INVALID/absent, records_total, records_run}`, `actions[]` |
 | `comparison` | `performed`, `reason`, `compared`, `unchanged`, `only_before`, `only_after`, `changed[]` |
 | `open_items[]`, `honesty`, `summary`, `privacy_check` | butir terbuka (enum), penanda Hardware-required/Environment-blocked, ringkasan untuk indeks, hasil pemeriksaan privasi |
@@ -140,7 +141,7 @@ Rantai hash journal: valid (32 catatan total, 31 untuk run ini). ...
 ### os-linux.update-grub (os-0)
 | Origin | ai-proposal |   | Persetujuan / Approval | operator (interaktif) [operator-approved] |
 | Backup | 123456 B, fingerprint abababababab |   | Hasil akhir / Final outcome | **failed** |
-Rollback MANUAL diperlukan: [docs/os-repair.md#rollback-linux](../../docs/os-repair.md#rollback-linux)
+Rollback MANUAL diperlukan: `docs/os-repair.md#rollback-linux`
 
 ## 6. Sebelum/sesudah / Before-after
 | linux-package-state | os-0 | fail | pass |
@@ -154,7 +155,7 @@ Rollback MANUAL diperlukan: [docs/os-repair.md#rollback-linux](../../docs/os-rep
 - Hasil bersih BUKAN bukti kesehatan. / A clean result is not proof of health.
 ```
 
-(Tabel di laporan asli lengkap dengan header dan baris pemisah; contoh di atas dipadatkan.) Tautan `../../docs/...` benar pada mode host, di mana `docs/` berada di `rescue-omes/`; pada live USB dokumen ada di repositori atau bundle.
+(Tabel di laporan asli lengkap dengan header dan baris pemisah; contoh di atas dipadatkan.) Dokumen dirujuk sebagai teks (`docs/os-repair.md#rollback-linux`); `install-hermes-rescue.sh` dan image persistence menaruh `docs/` di `/usr/local/lib/rescue-omes/docs/`, dan USB host membawa `rescue-omes/docs/`.
 
 ## Untuk operator
 

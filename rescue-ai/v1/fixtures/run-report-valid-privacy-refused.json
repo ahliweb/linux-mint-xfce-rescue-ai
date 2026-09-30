@@ -48,6 +48,7 @@
     "evidence_sha256": null,
     "text": null,
     "text_truncated": false,
+    "redactions": 0,
     "proposals": {
       "accepted": null,
       "rejected": null

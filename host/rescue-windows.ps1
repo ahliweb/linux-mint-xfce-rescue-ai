@@ -1837,6 +1837,40 @@ function Get-RrProp {
     return $v
 }
 
+# Identifier-shaped substrings inside the model text are redacted (same patterns and order as scripts/lib/run_report.py).
+# Each entry: pattern, keeps boundary group 1, placeholder, ignore case.
+$script:RrRedactions = @(
+    @('[A-Za-z]:\\Users\\[^\\\s,;)\]"''<>]+(?:\\[^\\\s,;)\]"''<>]+)*', $false, '<path>', $true),
+    @('/home/[^/\s,;)\]"''<>]+(?:/[^/\s,;)\]"''<>]+)*', $false, '<path>', $false),
+    @('/Users/[^/\s,;)\]"''<>]+(?:/[^/\s,;)\]"''<>]+)*', $false, '<path>', $false),
+    @('(^|[^0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])', $true, '<mac>', $false),
+    @('(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])', $true, '<ip>', $false),
+    @('(^|[^\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])', $true, '<ip>', $false)
+)
+
+function Invoke-RrRedact {
+    # Returns @(text, count). The configured key value first, then the patterns.
+    param([string]$Text, [string[]]$Secrets = @())
+    $count = 0
+    foreach ($s in $Secrets) {
+        if ($s -and $s.Length -ge 8 -and $Text.Contains($s)) {
+            $count += $Text.Split([string[]]@($s), [System.StringSplitOptions]::None).Count - 1
+            $Text = $Text.Replace($s, '<redacted>')
+        }
+    }
+    foreach ($r in $script:RrRedactions) {
+        $opt = [System.Text.RegularExpressions.RegexOptions]::None
+        if ($r[3]) { $opt = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase }
+        $keep = $r[1]
+        $ph = $r[2]
+        $counter = @{ n = 0 }
+        $ev = { param($m) $counter.n++; if ($keep) { return $m.Groups[1].Value + $ph }; return $ph }.GetNewClosure()
+        $Text = [regex]::Replace($Text, $r[0], [System.Text.RegularExpressions.MatchEvaluator]$ev, $opt)
+        $count += $counter.n
+    }
+    return @($Text, $count)
+}
+
 function Test-RrStr { param($V, [string]$Pattern); return (($V -is [string]) -and [regex]::IsMatch($V, $Pattern)) }
 function Test-RrInt { param($V); return (($V -is [int]) -or ($V -is [long]) -or ($V -is [int16]) -or ($V -is [byte])) }
 function Test-RrNum { param($V); return ((Test-RrInt $V) -or ($V -is [double]) -or ($V -is [decimal]) -or ($V -is [single])) }
@@ -2314,8 +2348,11 @@ function New-RunReportModel {
     $comparison = Get-RrComparison -Evidence $evidence -After $after -Actions $actions
     $text = $In['analysis_text']
     $truncated = $false
+    $redactions = 0
     if ($null -ne $text) {
-        $text = Get-RrCleanText -Text $text
+        $red = Invoke-RrRedact -Text (Get-RrCleanText -Text $text) -Secrets @($In['secrets'])
+        $text = $red[0]
+        $redactions = [int]$red[1] + [int]$In['key_redactions']
         if ($text.Length -gt $script:RrMaxAnalysis) { $text = $text.Substring(0, $script:RrMaxAnalysis); $truncated = $true }
         if ($text.Trim().Length -eq 0) { $text = $null }
     }
@@ -2351,7 +2388,7 @@ function New-RunReportModel {
         readiness = (Get-RrReadiness -Readiness $In['readiness'])
         detection = $detection
         analysis = [ordered]@{ status = $analysisStatus; model_id = $modelId; evidence_sha256 = $evidenceSha; text = $text
-            text_truncated = $truncated; proposals = [ordered]@{ accepted = $accepted; rejected = $rejected } }
+            text_truncated = $truncated; redactions = $(if ($null -ne $text) { $redactions } else { 0 }); proposals = [ordered]@{ accepted = $accepted; rejected = $rejected } }
         remediation = [ordered]@{ journal = [ordered]@{ chain = $chain; records_total = @($records).Count; records_run = $runRecords }
             actions = @($actions) }
         comparison = $comparison
@@ -2373,6 +2410,7 @@ function New-RunReportMinimal {
     $stripped = @{}
     foreach ($k in @('run_id', 'mode', 'started_at', 'ended_at', 'version', 'key_present', 'scope', 'repair_policy')) { if ($In.ContainsKey($k)) { $stripped[$k] = $In[$k] } }
     $stripped['outcome'] = 'report-privacy-refused'
+    $stripped['run_id'] = 'privacy-refused'
     $report = New-RunReportModel -In $stripped
     $sorted = [string[]]@($Findings | Select-Object -Unique)
     [Array]::Sort($sorted, [System.StringComparer]::Ordinal)
@@ -2510,6 +2548,7 @@ function ConvertTo-RunReportMarkdown {
     } else {
         $out.AddRange([string[]]@('KELUARAN MODEL, hanya untuk dibaca; TIDAK PERNAH dijalankan sebagai perintah. / MODEL OUTPUT, read-only; never executed. Karakter kontrol dihapus. Kebenarannya tidak diverifikasi.', ''))
         if ($ai['text_truncated']) { $out.AddRange([string[]]@(('(dipotong pada {0} karakter / truncated at {0} characters)' -f $script:RrMaxAnalysis), '')) }
+        if ($ai['redactions'] -gt 0) { $out.AddRange([string[]]@(('({0} bagian yang menyerupai pengenal (path, MAC, IP, kunci) diganti placeholder / {0} identifier-shaped parts replaced by placeholders)' -f $ai['redactions']), '')) }
         foreach ($line in $ai['text'].Split("`n")) { $out.Add(('> ' + $line).TrimEnd()) }
     }
     $out.AddRange([string[]]@('', '## 5. Remediasi / Remediation', ''))
@@ -2545,7 +2584,7 @@ function ConvertTo-RunReportMarkdown {
         }
         if ($a['manual_rollback_required']) {
             $lnk = 'lihat katalog'
-            if ($a['manual_rollback_doc']) { $lnk = '[' + $a['manual_rollback_doc'] + '](../../' + $a['manual_rollback_doc'] + ')' }
+            if ($a['manual_rollback_doc']) { $lnk = '`' + $a['manual_rollback_doc'] + '`' }
             $out.AddRange([string[]]@('', ('Rollback MANUAL diperlukan / manual rollback required: ' + $lnk)))
         }
     }
@@ -2572,8 +2611,13 @@ function ConvertTo-RunReportMarkdown {
         $label = $item['kind']
         if ($item.Contains('ref')) { $label += ' ' + $item['ref']; if ($item.Contains('target_ref')) { $label += ' (' + $item['target_ref'] + ')' } }
         $doc = ''
-        if ($item.Contains('doc')) { $doc = ' Dokumen: [' + $item['doc'] + '](../../' + $item['doc'] + ').' }
+        if ($item.Contains('doc')) { $doc = ' Dokumen: `' + $item['doc'] + '`.' }
         $out.Add(('- **{0}**: {1}{2}' -f $label, $script:RrOpenText[$item['kind']], $doc))
+    }
+    $anyDoc = $false
+    foreach ($item in $Report['open_items']) { if ($item.Contains('doc')) { $anyDoc = $true } }
+    if ($anyDoc) {
+        $out.AddRange([string[]]@('', 'Dokumen ada di bundle rescue-omes: `/usr/local/lib/rescue-omes/docs/` di live USB, `rescue-omes/docs/` di USB pada mode host. / Documents live in the rescue-omes bundle: `/usr/local/lib/rescue-omes/docs/` on the live USB, `rescue-omes/docs/` on the USB in host mode.'))
     }
     $out.AddRange([string[]]@('', '## 8. Kejujuran / Honesty', ''))
     $hon = $Report['honesty']
@@ -2752,6 +2796,7 @@ function Invoke-RunReport {
             catalog_sha256 = $cs; scope = @($Scope | Where-Object { $_ }); repair_policy = $pol; key_present = $KeyPresent
             evidence = $ev[0]; evidence_sha256 = $ev[1]; evidence_after = $af[0]; analysis_text = $text; ai_counts = $counts
             journal_lines = (Get-RrFileLines -Path $JournalPath); readiness = $Readiness; action_info = $ActionInfo
+            secrets = @($Secrets); key_redactions = 0
         }
         $res = Write-RunReportFiles -Reports $Reports -In $inp -Secrets $Secrets
         Write-Host ('Laporan tersimpan / report saved: ' + (Join-Path (Join-Path $Reports $res.Name) 'report.md'))

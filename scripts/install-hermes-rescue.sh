@@ -108,7 +108,7 @@ if ! command -v hermes >/dev/null 2>&1; then
   fi
 fi
 
-# Runtime bundle: scripts, schema, profiles and config templates. Never rescue.env or .env.
+# Runtime bundle: scripts, schema, profiles, docs (the run report cites them) and config templates. Never rescue.env or .env.
 if [[ -e $prefix && ! -f $prefix/.rescue-omes-bundle ]] && [[ -n $(ls -A -- "$prefix" 2>/dev/null) || ! -d $prefix ]]; then
   printf 'Refusing to replace %s: it exists and is not a rescue-omes bundle.\n' "$prefix" >&2
   exit 1
@@ -116,7 +116,7 @@ fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"; [[ -z ${installer:-} ]] || rm -f "$installer"' EXIT
 install -d -m 0755 "$stage/config"
-cp -R -- "$root/scripts" "$root/rescue-ai" "$root/profiles" "$stage/"
+cp -R -- "$root/scripts" "$root/rescue-ai" "$root/profiles" "$root/docs" "$stage/"
 install -m 0644 "$root/config/hermes-rescue.config.yaml" "$root/config/rescue.env.example" "$stage/config/"
 find "$stage" -name __pycache__ -type d -prune -exec rm -rf {} +
 find "$stage" -type d -exec chmod 0755 {} +

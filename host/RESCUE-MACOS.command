@@ -1301,6 +1301,23 @@ var PRIVACY_RULES = [
   ['ipv6-address', /(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])/]
 ];
 
+// Identifier-shaped substrings inside the model text are redacted (same patterns and order as scripts/lib/run_report.py).
+// The configured key value is redacted by this shell before the analysis reaches the generator (RESCUE_RR_KEY_REDACTIONS).
+var REDACTIONS = [
+  [/[A-Za-z]:\\Users\\[^\\\s,;)\]"'<>]+(?:\\[^\\\s,;)\]"'<>]+)*/gi, false, '<path>'],
+  [/\/home\/[^\/\s,;)\]"'<>]+(?:\/[^\/\s,;)\]"'<>]+)*/g, false, '<path>'],
+  [/\/Users\/[^\/\s,;)\]"'<>]+(?:\/[^\/\s,;)\]"'<>]+)*/g, false, '<path>'],
+  [/(^|[^0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])/g, true, '<mac>'],
+  [/(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])/g, true, '<ip>'],
+  [/(^|[^\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])/g, true, '<ip>']
+];
+function redactText(t) {
+  var count = 0;
+  REDACTIONS.forEach(function (r) {
+    t = t.replace(r[0], function (m, p1) { count++; return (r[1] ? p1 : '') + r[2]; });
+  });
+  return [t, count];
+}
 function cleanText(t) { return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(CONTROL, ''); }
 function domainOf(id) {
   if (id.indexOf('hw-') === 0 || id === 'smart-health' || id === 'nvme-health') { return 'hardware'; }
@@ -1582,9 +1599,11 @@ function buildReport(inp) {
   var actions = buildActions(records, jrun, info);
   var det = buildDetection(ev);
   var cmp = buildComparison(ev, after, actions);
-  var text = inp.analysis_text, truncated = false;
+  var text = inp.analysis_text, truncated = false, redactions = 0;
   if (text !== null) {
-    text = cleanText(text);
+    var red = redactText(cleanText(text));
+    text = red[0];
+    redactions = red[1] + (inp.key_redactions || 0);
     if (text.length > MAX_ANALYSIS) { text = text.slice(0, MAX_ANALYSIS); truncated = true; }
     if (text.trim().length === 0) { text = null; }
   }
@@ -1601,7 +1620,7 @@ function buildReport(inp) {
     readiness: buildReadiness(inp.readiness),
     detection: det,
     analysis: { status: text ? 'completed' : 'not_run', model_id: ev && ev.ai_provider ? ev.ai_provider.model_id : null, evidence_sha256: evSha,
-      text: text, text_truncated: truncated, proposals: { accepted: counts ? counts[0] : null, rejected: counts ? counts[1] : null } },
+      text: text, text_truncated: truncated, redactions: text !== null ? redactions : 0, proposals: { accepted: counts ? counts[0] : null, rejected: counts ? counts[1] : null } },
     remediation: { journal: { chain: chain, records_total: records.length, records_run: runRecords }, actions: actions },
     comparison: cmp
   };
@@ -1620,6 +1639,7 @@ function minimalReport(inp, findings) {
   var s = {};
   ['run_id', 'mode', 'started_at', 'ended_at', 'version', 'key_present', 'scope', 'repair_policy'].forEach(function (k) { if (has(inp, k)) { s[k] = inp[k]; } });
   s.outcome = 'report-privacy-refused';
+  s.run_id = 'privacy-refused';
   s.evidence = null; s.evidence_after = null; s.analysis_text = null; s.ai_counts = null; s.journal_lines = null; s.readiness = null;
   s.evidence_sha256 = null; s.catalog_sha256 = null; s.action_info = {};
   var report = buildReport(s);
@@ -1725,6 +1745,9 @@ function renderMarkdown(rep) {
   } else {
     out.push('KELUARAN MODEL, hanya untuk dibaca; TIDAK PERNAH dijalankan sebagai perintah. / MODEL OUTPUT, read-only; never executed. Karakter kontrol dihapus. Kebenarannya tidak diverifikasi.', '');
     if (ai.text_truncated) { out.push('(dipotong pada ' + MAX_ANALYSIS + ' karakter / truncated at ' + MAX_ANALYSIS + ' characters)', ''); }
+    if (ai.redactions > 0) {
+      out.push('(' + ai.redactions + ' bagian yang menyerupai pengenal (path, MAC, IP, kunci) diganti placeholder / ' + ai.redactions + ' identifier-shaped parts replaced by placeholders)', '');
+    }
     ai.text.split('\n').forEach(function (l) { out.push(('> ' + l).replace(/\s+$/, '')); });
   }
   out.push('', '## 5. Remediasi / Remediation', '');
@@ -1752,7 +1775,7 @@ function renderMarkdown(rep) {
         a.stages.map(function (s) { return [s.stage, s.outcome, s.reason || '-', has(s, 'exit_code') ? s.exit_code : '-']; })));
     }
     if (a.manual_rollback_required) {
-      out.push('', 'Rollback MANUAL diperlukan / manual rollback required: ' + (a.manual_rollback_doc ? '[' + a.manual_rollback_doc + '](../../' + a.manual_rollback_doc + ')' : 'lihat katalog'));
+      out.push('', 'Rollback MANUAL diperlukan / manual rollback required: ' + (a.manual_rollback_doc ? '`' + a.manual_rollback_doc + '`' : 'lihat katalog'));
     }
   });
   out.push('', '## 6. Sebelum/sesudah / Before-after', '');
@@ -1772,9 +1795,12 @@ function renderMarkdown(rep) {
   if (!rep.open_items.length) { out.push('Tidak ada butir terbuka yang terdeteksi / No open items detected (bukan jaminan sistem sehat).'); }
   rep.open_items.forEach(function (item) {
     var label = item.kind + (item.ref ? ' ' + item.ref + (item.target_ref ? ' (' + item.target_ref + ')' : '') : '');
-    var doc = item.doc ? ' Dokumen: [' + item.doc + '](../../' + item.doc + ').' : '';
+    var doc = item.doc ? ' Dokumen: `' + item.doc + '`.' : '';
     out.push('- **' + label + '**: ' + OPEN_TEXT[item.kind] + doc);
   });
+  if (rep.open_items.some(function (i) { return !!i.doc; })) {
+    out.push('', 'Dokumen ada di bundle rescue-omes: `/usr/local/lib/rescue-omes/docs/` di live USB, `rescue-omes/docs/` di USB pada mode host. / Documents live in the rescue-omes bundle: `/usr/local/lib/rescue-omes/docs/` on the live USB, `rescue-omes/docs/` on the USB in host mode.');
+  }
   out.push('', '## 8. Kejujuran / Honesty', '');
   rep.honesty.hardware_required.concat(rep.honesty.environment_blocked).forEach(function (k) { out.push('- ' + HONESTY_TEXT[k]); });
   if (rep.honesty.scope_limited) { out.push('- Scope dibatasi (' + h.scope.join(', ') + '): area di luar scope tidak dipindai dan tidak boleh dianggap sehat.'); }
@@ -1841,7 +1867,7 @@ function collectInputs() {
     ended_at: envv('RESCUE_RR_ENDED'), version: /^[0-9]+\.[0-9]+\.[0-9]+$/.test(version) ? version : null,
     catalog_sha256: envv('RESCUE_RR_CATALOG_SHA') || null, scope: scope, repair_policy: envv('RESCUE_RR_POLICY') || null,
     key_present: envv('RESCUE_RR_KEY_PRESENT') === 'yes', evidence: ev.doc, evidence_sha256: ev.sha, evidence_after: after.doc,
-    analysis_text: analysis, ai_counts: counts, journal_lines: lines, readiness: rd.doc, action_info: info
+    analysis_text: analysis, key_redactions: /^[0-9]+$/.test(envv('RESCUE_RR_KEY_REDACTIONS')) ? parseInt(envv('RESCUE_RR_KEY_REDACTIONS'), 10) : 0, ai_counts: counts, journal_lines: lines, readiness: rd.doc, action_info: info
   };
 }
 function loadEntries() {
@@ -1914,21 +1940,34 @@ emit_report() {
   local -x RESCUE_RR_ACTION_INFO=$(rr_action_info)
   local -x RESCUE_RR_AI_ACCEPTED='' RESCUE_RR_AI_REJECTED=''
   if (( plan_ran )); then RESCUE_RR_AI_ACCEPTED=$ai_accepted; RESCUE_RR_AI_REJECTED=$ai_rejected; fi
-  out_json=$(rr_run json) && out_md=$(rr_run md) || { print -r -- 'PERINGATAN / WARNING: run report generator failed.' >&2; return 0; }
+  local -x RESCUE_RR_KEY_REDACTIONS=0
+  local rtxt tmp2=$reports/.report-analysis.$$.tmp
+  if [[ -n $rr_key && ${#rr_key} -ge 8 && -n $RESCUE_RR_ANALYSIS ]]; then  # the key value in the model text is redacted here
+    rtxt=$(cat -- "$RESCUE_RR_ANALYSIS"; printf x)
+    rtxt=${rtxt%x}
+    while [[ $rtxt == *"$rr_key"* ]] && (( RESCUE_RR_KEY_REDACTIONS < 1000 )); do
+      rtxt=${rtxt/"$rr_key"/'<redacted>'}
+      (( RESCUE_RR_KEY_REDACTIONS++ ))
+    done
+    if (( RESCUE_RR_KEY_REDACTIONS )); then
+      print -rn -- "$rtxt" > "$tmp2" && RESCUE_RR_ANALYSIS=$tmp2
+    fi
+  fi
+  out_json=$(rr_run json) && out_md=$(rr_run md) || { print -r -- 'PERINGATAN / WARNING: run report generator failed.' >&2; rm -f -- "$tmp2"; return 0; }
   if [[ -n $rr_key && $out_json$out_md == *"$rr_key"* ]]; then  # the key value must never appear in a report
     out_json=$(rr_run json configured-key-value) && out_md=$(rr_run md configured-key-value) || return 0
   fi
   base=run-${${rr_started//-/}//:/}
   name=$base
   while [[ -e $reports/$name ]]; do (( n++ )); name=$base-$n; done
-  mkdir -p -- "$reports/$name" 2>/dev/null || { print -r -- 'PERINGATAN / WARNING: cannot create the report folder.' >&2; return 0; }
+  mkdir -p -- "$reports/$name" 2>/dev/null || { print -r -- 'PERINGATAN / WARNING: cannot create the report folder.' >&2; rm -f -- "$tmp2"; return 0; }
   tmp=$reports/.report.$$.tmp
   print -r -- "$out_json" > "$tmp" && mv -f -- "$tmp" "$reports/$name/report.json"
   print -r -- "$out_md" > "$tmp" && mv -f -- "$tmp" "$reports/$name/report.md"
   local -x RESCUE_RR_RUNS=${(F)${(f)"$(print -rl -- $reports/run-*/report.json(N))"}}
   out_index=$(rr_run index)
   print -r -- "$out_index" > "$tmp" && mv -f -- "$tmp" "$reports/index.md"
-  rm -f -- "$tmp" 2>/dev/null
+  rm -f -- "$tmp" "$tmp2" 2>/dev/null
   print -r -- "Laporan tersimpan / report saved: $reports/$name/report.md"
   rr_key=''
 }

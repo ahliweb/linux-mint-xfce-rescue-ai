@@ -47,6 +47,35 @@ PRIVACY_RULES = (
 )
 
 
+# Identifier-shaped substrings inside the verbatim model text are REDACTED (the report stays whole); the same
+# patterns, in this order, run in the PowerShell and JXA generators (no look-behind: group 1 is the boundary).
+# Each entry: (regex, keeps boundary group 1, placeholder). The configured key value goes first.
+REDACTIONS = (
+    (re.compile(r'[A-Za-z]:\\Users\\[^\\\s,;)\]"\'<>]+(?:\\[^\\\s,;)\]"\'<>]+)*', re.I), False, '<path>'),
+    (re.compile(r'/home/[^/\s,;)\]"\'<>]+(?:/[^/\s,;)\]"\'<>]+)*'), False, '<path>'),
+    (re.compile(r'/Users/[^/\s,;)\]"\'<>]+(?:/[^/\s,;)\]"\'<>]+)*'), False, '<path>'),
+    (re.compile(r'(^|[^0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])'), True, '<mac>'),
+    (re.compile(r'(^|[^0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:])'), True, '<ip>'),
+    (re.compile(r'(^|[^\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])'), True, '<ip>'),
+)
+
+
+def redact_text(text, secrets=()):
+    """(text, count): key value -> <redacted>, then the REDACTIONS patterns. Count = replacements made."""
+    count = 0
+    for secret in secrets:
+        if len(secret) >= 8 and secret in text:
+            count += text.count(secret)
+            text = text.replace(secret, '<redacted>')
+    for pattern, keep, placeholder in REDACTIONS:
+        def replace(match, keep=keep, placeholder=placeholder):
+            nonlocal count
+            count += 1
+            return (match.group(1) if keep else '') + placeholder
+        text = pattern.sub(replace, text)
+    return text, count
+
+
 # ----------------------------------------------------------------------------- helpers
 
 def sha256_hex(data):
@@ -511,9 +540,10 @@ def build_report(inp):
     detection = build_detection(evidence)
     comparison = build_comparison(evidence, after, actions)
     text = inp.get('analysis_text')
-    truncated = False
+    truncated, redactions = False, 0
     if text is not None:
-        text = clean_text(text)
+        text, redactions = redact_text(clean_text(text), inp.get('secrets') or ())
+        redactions += int(inp.get('key_redactions') or 0)
         if len(text) > MAX_ANALYSIS_CHARS:
             text, truncated = text[:MAX_ANALYSIS_CHARS], True
     if text is not None and not text.strip():
@@ -540,7 +570,7 @@ def build_report(inp):
             'status': 'completed' if text else 'not_run',
             'model_id': ai.get('model_id') if isinstance(ai, dict) else None,
             'evidence_sha256': evidence_sha,
-            'text': text, 'text_truncated': truncated,
+            'text': text, 'text_truncated': truncated, 'redactions': redactions if text is not None else 0,
             'proposals': {'accepted': counts[0] if counts else None, 'rejected': counts[1] if counts else None},
         },
         'remediation': {
@@ -561,6 +591,7 @@ def minimal_report(inp, findings):
     stripped = {k: inp[k] for k in ('run_id', 'mode', 'started_at', 'ended_at', 'version', 'key_present', 'scope',
                                      'repair_policy') if k in inp}
     stripped['outcome'] = 'report-privacy-refused'
+    stripped['run_id'] = 'privacy-refused'  # the refused run id may itself be the leak
     report = build_report(stripped)
     report['privacy_check'] = {'status': 'refused', 'findings': sorted(set(findings))}
     return report
@@ -683,6 +714,9 @@ def render_markdown(report):
                 'Karakter kontrol dihapus. Kebenarannya tidak diverifikasi.', '']
         if ai['text_truncated']:
             out += ['(dipotong pada %d karakter / truncated at %d characters)' % (MAX_ANALYSIS_CHARS, MAX_ANALYSIS_CHARS), '']
+        if ai['redactions']:
+            out += ['(%d bagian yang menyerupai pengenal (path, MAC, IP, kunci) diganti placeholder / %d identifier-shaped parts replaced by placeholders)'
+                    % (ai['redactions'], ai['redactions']), '']
         out += [('> ' + line).rstrip() for line in ai['text'].split('\n')]
     out += ['', '## 5. Remediasi / Remediation', '']
     chain = rem['journal']['chain']
@@ -711,7 +745,7 @@ def render_markdown(report):
                           [[s['stage'], s['outcome'], s.get('reason', '-'), s.get('exit_code', '-')] for s in a['stages']])
         if a['manual_rollback_required']:
             out += ['', 'Rollback MANUAL diperlukan / manual rollback required: %s' % (
-                '[%s](../../%s)' % (a['manual_rollback_doc'], a['manual_rollback_doc']) if a['manual_rollback_doc'] else 'lihat katalog')]
+                '`%s`' % a['manual_rollback_doc'] if a['manual_rollback_doc'] else 'lihat katalog')]
     out += ['', '## 6. Sebelum/sesudah / Before-after', '']
     if not cmp_['performed']:
         if cmp_['reason'] == 'no-action-executed':
@@ -732,8 +766,11 @@ def render_markdown(report):
         out.append('Tidak ada butir terbuka yang terdeteksi / No open items detected (bukan jaminan sistem sehat).')
     for item in report['open_items']:
         label = item['kind'] + ('' if 'ref' not in item else ' ' + item['ref'] + ('' if 'target_ref' not in item else ' (' + item['target_ref'] + ')'))
-        doc = '' if 'doc' not in item else ' Dokumen: [%s](../../%s).' % (item['doc'], item['doc'])
+        doc = '' if 'doc' not in item else ' Dokumen: `%s`.' % item['doc']
         out.append('- **%s**: %s%s' % (label, OPEN_TEXT[item['kind']], doc))
+    if any('doc' in item for item in report['open_items']):
+        out += ['', 'Dokumen ada di bundle rescue-omes: `/usr/local/lib/rescue-omes/docs/` di live USB, `rescue-omes/docs/` di USB pada mode host. / '
+                'Documents live in the rescue-omes bundle: `/usr/local/lib/rescue-omes/docs/` on the live USB, `rescue-omes/docs/` on the USB in host mode.']
     out += ['', '## 8. Kejujuran / Honesty', '']
     hon = report['honesty']
     for key in hon['hardware_required'] + hon['environment_blocked']:
@@ -807,6 +844,7 @@ def write_private(path, text):
 
 def render_checked(inp, secrets=()):
     """(report, json_text, markdown). Refuses the full report (minimal one instead) on a privacy finding."""
+    inp = dict(inp, secrets=list(inp.get('secrets') or []) + list(secrets))
     report = build_report(inp)
     json_text = json.dumps(report, indent=2, sort_keys=False) + '\n'
     markdown = render_markdown(report)

@@ -206,6 +206,7 @@
     "evidence_sha256": "5fa1f647fc42591f223094136462399ff051c32c5fa3d6929faa9a3a336d7ebe",
     "text": "# Analisis rescue\n\n> Keluaran model.\n[31mFakta[0m: baterai lemah.\nHipotesis: paket rusak.\n```rescue-proposals\n{\"proposed_actions\":[{\"action_id\":\"hw.smart-short-selftest\"},{\"action_id\":\"os-linux.update-grub\",\"target_ref\":\"os-0\"},{\"action_id\":\"os-windows.sfc-verify\",\"target_ref\":\"os-0\"},{\"action_id\":\"bogus.action\"}]}\n```\n",
     "text_truncated": false,
+    "redactions": 0,
     "proposals": {
       "accepted": 2,
       "rejected": 2

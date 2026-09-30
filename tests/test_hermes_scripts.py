@@ -16,7 +16,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 DUMMY_KEY = "dummy-test-key-123"
 UNPRIV_ID = "65534"
-COPY_DIRS = ("scripts", "rescue-ai", "profiles", "config")
+COPY_DIRS = ("scripts", "rescue-ai", "profiles", "config", "docs")
 
 
 def _can_run_unprivileged():
@@ -193,6 +193,7 @@ class TestInstalledBundle(HermesScriptTestCase):
             "scripts/check-hardware-readiness.py", "scripts/lib/rescue-env.sh",
             "rescue-ai/v1/rescue-evidence.schema.json", "profiles/rescue-hermes/SOUL.md",
             "config/hermes-rescue.config.yaml", "config/rescue.env.example",
+            "docs/run-report.md", "docs/malware.md",  # the run report cites docs/ paths; they must exist in the runtime bundle
         ):
             self.assertTrue((self.prefix / rel).is_file(), rel)
         names = {p.name for p in self.prefix.rglob("*")}
