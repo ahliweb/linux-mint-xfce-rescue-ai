@@ -80,6 +80,13 @@ arbitrary command fields, and extra properties. Raw evidence belongs in an
 operator-controlled store and must not be sent to OpenCode Go when classified
 `restricted`.
 
+
+Field semantics that every collector follows (schema 1.2):
+
+- `classification`: `confidential` evidence may be sent to the configured provider (OpenCode Go). `restricted` evidence never leaves the machine: `opencode-go-analyze.py` and `analyze-opencode-go.sh` refuse it. All shipped collectors write `confidential`.
+- `ai_provider.authenticated` is `true` only when the producing launcher has a usable `OPENCODE_GO_API_KEY` and will send this evidence in this run. `destination_class` is then `cloud`; otherwise `false` and `unknown`. `cloud` without `authenticated` is invalid. The key itself never appears in evidence.
+- Value kinds are `percent`, `count`, `bytes`, `days`, `seconds`, and (1.2) `celsius` for temperatures.
+
 ## Hardware readiness gate
 
 ```mermaid

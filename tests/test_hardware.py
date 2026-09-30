@@ -359,7 +359,7 @@ class DetectionTests(unittest.TestCase):
             self.assertIn(c['check_id'], HW_IDS)
             if 'number' in c:
                 self.assertIsInstance(c['number'], int)
-                self.assertIn(c['kind'], ('percent', 'count', 'bytes', 'days', 'seconds'))
+                self.assertIn(c['kind'], ('percent', 'count', 'bytes', 'days', 'seconds', 'celsius'))
 
     def test_every_emitted_check_survives_the_contract_sanitizer(self):
         m = self.machine().healthy_desktop()
@@ -574,7 +574,7 @@ class PowerShellModuleTests(unittest.TestCase):
                            " PnpNetBad=0; WifiCount=1; WifiDisabled=0; BatteryPresent=$true; BatteryCharge=88;"
                            " BatteryDischarging=$false; BatteryHealth=91; UsbCount=3; PnpUsbBad=0 }")
         self.assertEqual(lines, [
-            'hw-cpu pass count 8', 'hw-cpu-thermal pass count 50', 'hw-memory pass bytes 17179869184',
+            'hw-cpu pass count 8', 'hw-cpu-thermal pass celsius 50', 'hw-memory pass bytes 17179869184',
             'hw-memory-errors pass count 0', 'hw-disk pass count 2', 'nvme-health pass percent 4',
             'hw-gpu pass count 1', 'hw-gpu-driver pass count 0', 'hw-display pass count 1',
             'hw-network-adapter pass count 2', 'hw-wifi pass count 0', 'hw-battery pass percent 88',
@@ -586,7 +586,7 @@ class PowerShellModuleTests(unittest.TestCase):
                            " AdapterCount=1; AdapterUp=0; PnpNetBad=0; WifiCount=1; WifiDisabled=1;"
                            " BatteryPresent=$true; BatteryCharge=7; BatteryDischarging=$true; UsbCount=1; PnpUsbBad=1 }")
         self.assertEqual(lines, [
-            'hw-cpu pass count 4', 'hw-cpu-thermal fail count 97', 'hw-memory warn bytes 1073741824',
+            'hw-cpu pass count 4', 'hw-cpu-thermal fail celsius 97', 'hw-memory warn bytes 1073741824',
             'hw-memory-errors fail count 5', 'hw-disk fail count 0', 'nvme-health not_applicable',
             'hw-gpu pass count 1', 'hw-gpu-driver fail count 1', 'hw-display warn count 0',
             'hw-network-adapter warn count 1', 'hw-wifi warn count 1', 'hw-battery fail percent 7',
@@ -683,7 +683,7 @@ esac
             'hw-usb pass count 2'])
         for line in lines:
             self.assertRegex(line, r'^[a-z0-9]+(-[a-z0-9]+)* (pass|fail|warn|not_applicable|unknown)'
-                                   r'( (percent|count|bytes|days|seconds) [0-9]+)?$')
+                                   r'( (percent|count|bytes|days|seconds|celsius) [0-9]+)?$')
             self.assertIn(line.split()[0], HW_IDS)
         self.assertNotIn('00:11:22', '\n'.join(lines))
 

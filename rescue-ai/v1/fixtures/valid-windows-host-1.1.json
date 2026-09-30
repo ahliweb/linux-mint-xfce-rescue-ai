@@ -19,7 +19,7 @@
     "read_back_verified": false,
     "status": "not_applicable"
   },
-  "classification": "restricted",
+  "classification": "confidential",
   "source_references": [
     "opencode-go:provider",
     "nist:sp-800-86"

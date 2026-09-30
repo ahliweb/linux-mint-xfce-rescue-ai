@@ -111,7 +111,8 @@ report = {
     'mutation_status': 'none',
     # Nothing is hashed against a trusted reference or read back by this collector.
     'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},
-    'classification': 'restricted',
+    # confidential: may go to the configured provider (OpenCode Go); restricted evidence is never sent.
+    'classification': 'confidential',
     'source_references': ['opencode-go:provider', 'opencode:cli', 'nist:sp-800-86'],
 }
 

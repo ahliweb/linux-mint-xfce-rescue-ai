@@ -706,5 +706,68 @@ class ScannerAndAnalyzerTests(unittest.TestCase):
         self.assertIn('Never write commands', text)
 
 
+
+class ReleaseAlignmentTests(unittest.TestCase):
+    """0.3.0 alignment: classification, provider fields, celsius, and scope of built-in disk checks."""
+
+    def setUp(self):
+        self.ev = json.loads(LIVE_12.read_text())
+
+    def test_restricted_evidence_is_never_sent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp, 'ev.json')
+            ev = dict(self.ev, classification='restricted')
+            self.assertEqual(problems(ev), [])          # restricted is valid evidence, just not for the cloud
+            path.write_text(json.dumps(ev))
+            r = subprocess.run([sys.executable, SCRIPTS / 'opencode-go-analyze.py', '--evidence', path,
+                                '--output', pathlib.Path(tmp, 'a.md'), '--dry-run'], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('restricted', r.stderr)
+            self.assertFalse(pathlib.Path(tmp, 'a.md').exists())
+
+    def test_shipped_fixtures_and_collectors_use_confidential(self):
+        for name in ('valid-live-multi-os-1.1.json', 'valid-windows-host-1.1.json', 'valid-live-scoped-1.2.json'):
+            self.assertEqual(json.loads((FIXTURES / name).read_text())['classification'], 'confidential', name)
+        self.assertIn("'classification': 'confidential'", (SCRIPTS / 'collect-evidence.sh').read_text())
+
+    def test_cloud_destination_requires_authenticated(self):
+        ev = copy.deepcopy(self.ev)
+        ev['ai_provider'].update(authenticated=False, destination_class='cloud')
+        self.assertTrue(any('requires authenticated' in p for p in problems(ev)))
+        ev['ai_provider']['authenticated'] = True
+        self.assertEqual(problems(ev), [])
+
+    def test_celsius_is_a_12_value_kind(self):
+        ev = copy.deepcopy(self.ev)
+        ev['checks'][2]['value'] = {'kind': 'celsius', 'number': 71}
+        self.assertEqual(problems(ev), [])
+        old = copy.deepcopy(ev)
+        for k in ('scope', 'repair_policy', 'repair_proposals'):
+            old.pop(k)
+        old['schema_version'] = '1.1'
+        old['checks'] = [dict(old['checks'][0], value={'kind': 'celsius', 'number': 1})]
+        old['evidence_manifest']['entry_count'] = 1
+        self.assertTrue(any('celsius' in p for p in problems(old)), problems(old))
+
+    def test_scanner_provider_ready_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = pathlib.Path(tmp, 'fx')
+            fx.mkdir()
+            out = pathlib.Path(tmp, 'ev.json')
+            for flag, expect in (([], (False, 'unknown')), (['--provider-ready'], (True, 'cloud'))):
+                r = subprocess.run([sys.executable, SCRIPTS / 'scan-target-os.py', '--output', out,
+                                    '--fixture-root', fx, *flag], capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                ai = json.loads(out.read_text())['ai_provider']
+                self.assertEqual((ai['authenticated'], ai['destination_class']), expect)
+                self.assertEqual(problems(json.loads(out.read_text())), [])
+
+    def test_launchers_gate_their_own_smart_check_on_disk_scope(self):
+        linux = (ROOT / 'host/rescue-linux.sh').read_text()
+        self.assertIn("[check_smart()] if ('all' in scope or 'hardware' in scope or 'hardware.disk' in scope)", linux)
+        windows = (ROOT / 'host/rescue-windows.ps1').read_text()
+        self.assertIn("$Scope -contains 'hardware.disk') { $checks += (Get-SmartCheck) }", windows)
+
+
 if __name__ == '__main__':
     unittest.main()

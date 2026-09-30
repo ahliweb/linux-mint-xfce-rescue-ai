@@ -1002,7 +1002,7 @@ def live_release():
 
 # ------------------------------------------------------------------------ evidence
 
-def build_evidence(targets, env_checks, now, boot_mode, scope=('all',), policy='approve-each'):
+def build_evidence(targets, env_checks, now, boot_mode, scope=('all',), policy='approve-each', provider_ready=False):
     stamp = iso(now)
 
     def emit(c, ref=None):
@@ -1040,8 +1040,10 @@ def build_evidence(targets, env_checks, now, boot_mode, scope=('all',), policy='
             'entry_count': len(checks),
             'manifest_sha256': digest(json.dumps(checks, sort_keys=True)),
             'storage_class': 'usb-rescue-state'},
+        # authenticated: the launcher has a usable OPENCODE_GO_API_KEY and will send this evidence.
         'ai_provider': {'provider_id': 'opencode-go', 'model_id': MODEL_ID,
-                        'authenticated': False, 'destination_class': 'unknown'},
+                        'authenticated': bool(provider_ready),
+                        'destination_class': 'cloud' if provider_ready else 'unknown'},
         'ai_analysis_status': 'not_run',
         'mutation_status': 'none',
         'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},
@@ -1102,6 +1104,8 @@ def main(argv=None):
     parser.add_argument('--packages', default='', help='comma list of packages for scope software.selected')
     parser.add_argument('--repair-policy', choices=('detect-only', 'approve-each', 'auto-safe'), default='approve-each')
     parser.add_argument('--catalog-dir', metavar='DIR', help=argparse.SUPPRESS)
+    parser.add_argument('--provider-ready', action='store_true',
+                        help='the launcher has a usable OPENCODE_GO_API_KEY and will send this evidence')
     args = parser.parse_args(argv)
     try:
         scope = repair_catalog.normalize_scope(args.scope)
@@ -1183,7 +1187,8 @@ def main(argv=None):
     env_checks += [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
                    for c in rescue_modules.collect_system(MODULE_CTX)]
     rescue_modules.flush_warnings(MODULE_CTX)
-    report = add_proposals(build_evidence(targets, env_checks, now, boot_mode, scope, args.repair_policy),
+    report = add_proposals(build_evidence(targets, env_checks, now, boot_mode, scope, args.repair_policy,
+                                          args.provider_ready),
                            scope, args.catalog_dir)
     write_atomic(report, args.output)
     print(args.output)

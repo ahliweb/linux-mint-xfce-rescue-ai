@@ -152,7 +152,7 @@ def check_cpu(src):
         thermal = _check('hw-cpu-thermal', 'unknown')
     else:
         status = 'fail' if temp >= CPU_FAIL_C else 'warn' if temp >= CPU_WARN_C or (throttle or 0) > 0 else 'pass'
-        thermal = _check('hw-cpu-thermal', status, 'count', temp)  # count = degrees Celsius
+        thermal = _check('hw-cpu-thermal', status, 'celsius', max(0, temp))
     return [cpu, thermal]
 
 

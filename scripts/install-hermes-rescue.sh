@@ -134,11 +134,15 @@ fi
 "${sudo_cmd[@]}" ln -sfn -- "$prefix/scripts/check-hermes-rescue.sh" "$bin_dir/check-hermes-rescue.sh"
 trap '[[ -z ${installer:-} ]] || rm -f "$installer"' EXIT
 
-install -d -m 0700 "$state_dir/hermes/skills/rescue-boot-diagnosis"
 install -m 0600 "$root/profiles/rescue-hermes/SOUL.md" "$state_dir/hermes/SOUL.md"
 install -m 0600 "$root/profiles/rescue-hermes/AGENTS.md" "$state_dir/hermes/AGENTS.md"
-install -m 0600 "$root/profiles/rescue-hermes/skills/rescue-boot-diagnosis/SKILL.md" \
-  "$state_dir/hermes/skills/rescue-boot-diagnosis/SKILL.md"
+# Every skill shipped in the profile (rescue-boot-diagnosis, rescue-target-os, rescue-skill-submission, ...).
+for skill_dir in "$root"/profiles/rescue-hermes/skills/*/; do
+  [[ -f ${skill_dir}SKILL.md ]] || continue
+  skill=$(basename -- "$skill_dir")
+  install -d -m 0700 "$state_dir/hermes/skills/$skill"
+  install -m 0600 "${skill_dir}SKILL.md" "$state_dir/hermes/skills/$skill/SKILL.md"
+done
 install -m 0600 "$root/config/hermes-rescue.config.yaml" "$state_dir/hermes/config.yaml"
 
 # Convenience template for the operator; only created in a writable source tree.

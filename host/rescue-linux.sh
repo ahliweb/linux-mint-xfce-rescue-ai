@@ -117,6 +117,25 @@ except ValueError as exc:
     print('invalid --scope: %s' % exc, file=sys.stderr)
     raise SystemExit(64)
 packages = tuple(x for x in packages_arg.split(',') if x)
+
+
+def provider_ready():
+    """A usable key exists (environment or rescue.env, parsed as data) and the network will be used."""
+    if skip_network:
+        return False
+    if os.environ.get('OPENCODE_GO_API_KEY'):
+        return True
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('rescue_analyzer', os.path.join(bundle, 'scripts', 'opencode-go-analyze.py'))
+        analyzer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(analyzer)
+        return bool(analyzer.find_api_key([os.path.join(bundle, 'config', 'rescue.env')]))
+    except Exception:
+        return False
+
+
+ready = provider_ready()
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 REF = 'os-0'
 
@@ -294,7 +313,8 @@ checks = [
     check_kernel_initrd(),
     check_package_state(),
     enc_check,
-    check_smart(),
+    # smart-health is a disk check: only within the operator's hardware.disk scope.
+    *([check_smart()] if ('all' in scope or 'hardware' in scope or 'hardware.disk' in scope) else []),
     check_network(),
 ]
 if rescue_modules is not None:
@@ -341,7 +361,8 @@ report = {
     }],
     'checks': checks,
     'evidence_manifest': {'entry_count': len(checks), 'manifest_sha256': digest(compact), 'storage_class': 'usb-rescue-state'},
-    'ai_provider': {'provider_id': 'opencode-go', 'model_id': 'mimo-v2.6-flash', 'authenticated': False, 'destination_class': 'unknown'},
+    'ai_provider': {'provider_id': 'opencode-go', 'model_id': 'mimo-v2.6-flash', 'authenticated': ready,
+                    'destination_class': 'cloud' if ready else 'unknown'},
     'ai_analysis_status': 'not_run',
     'mutation_status': 'none',
     'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},

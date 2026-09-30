@@ -30,6 +30,7 @@ V12_CHECK_IDS = {
     'windows-boot-config', 'windows-system-files', 'windows-restore-points', 'macos-disk-verify',
 }
 V12_MUTATION_STATUSES = {'failed', 'rolled_back'}
+V12_VALUE_KINDS = {'celsius'}
 PRE_V12_MAX_CHECKS = 64
 SCOPE_GROUPS = {'hardware': 'hardware.', 'software': 'software.'}
 
@@ -65,9 +66,10 @@ def semantic_errors(data):
             errors.append('schema_version 1.0 must not use 1.1 fields (target_systems, target_ref, value, host platforms)')
     if data['schema_version'] in ('1.0', '1.1'):
         if any(field in data for field in V12_FIELDS) or any(is_v12_check(c['check_id']) for c in data['checks']) \
-                or data['mutation_status'] in V12_MUTATION_STATUSES:
+                or data['mutation_status'] in V12_MUTATION_STATUSES \
+                or any((c.get('value') or {}).get('kind') in V12_VALUE_KINDS for c in data['checks']):
             errors.append('schema_version %s must not use 1.2 fields (scope, repair_policy, repair_proposals, '
-                          'hw-*/sw-* and new OS check IDs, failed/rolled_back)' % data['schema_version'])
+                          'hw-*/sw-* and new OS check IDs, failed/rolled_back, celsius)' % data['schema_version'])
         if len(data['checks']) > PRE_V12_MAX_CHECKS:
             errors.append('schema_version %s allows at most %d checks' % (data['schema_version'], PRE_V12_MAX_CHECKS))
     errors.extend(scope_errors(data.get('scope') or []))
@@ -83,6 +85,9 @@ def semantic_errors(data):
         if key in seen:
             errors.append(f'repair_proposals/{i} duplicates action {p["action_id"]!r} for the same target')
         seen.add(key)
+    ai = data['ai_provider']
+    if ai['destination_class'] == 'cloud' and not ai['authenticated']:
+        errors.append('ai_provider.destination_class "cloud" requires authenticated true')
     if data['evidence_manifest']['entry_count'] != len(data['checks']):
         errors.append('evidence_manifest.entry_count must equal the number of checks')
     return errors

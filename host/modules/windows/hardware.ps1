@@ -176,7 +176,7 @@ function ConvertTo-HwChecks {
         if ($null -ne $f['TempC']) {
             $st = 'pass'
             if ($f['TempC'] -ge $script:CpuFailC) { $st = 'fail' } elseif ($f['TempC'] -ge $script:CpuWarnC) { $st = 'warn' }
-            $out += New-HwCheck 'hw-cpu-thermal' $st 'count' $f['TempC']   # count = degrees Celsius
+            $out += New-HwCheck 'hw-cpu-thermal' $st 'celsius' $f['TempC']
         } else { $out += New-HwCheck 'hw-cpu-thermal' 'unknown' }
     }
     if (Test-HwWants $Scope 'memory') {
