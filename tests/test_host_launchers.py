@@ -522,7 +522,10 @@ fi
 
 class MacLauncherStaticTests(unittest.TestCase):
     def setUp(self):
-        self.text = MAC.read_text(encoding='utf-8')
+        # The repair engine's list of refused program names (a mirror of FORBIDDEN_PROGRAMS) names the
+        # very words this test forbids; it is fenced by markers and checked in tests/test_host_repair.py.
+        self.text = re.sub(r'# BEGIN forbidden-programs.*?# END forbidden-programs', '',
+                           MAC.read_text(encoding='utf-8'), flags=re.S)
 
     def test_forbidden_constructs_absent(self):
         for pattern in (r'\bpython3?\b', r'\bsource\s', r'^\s*\.\s+\S', r'\beval\b', r'\bsudo\b', r'\bosascript\b.*\bdo shell script\b',

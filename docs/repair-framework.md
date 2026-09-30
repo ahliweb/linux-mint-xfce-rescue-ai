@@ -15,7 +15,7 @@ Status labels: **Implemented** (source level, `make check`), **Hardware-required
 | Detection module hooks: `scripts/rescue_modules/` (scanner + Linux host), `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh` | Implemented (stubs; modules are filled by #15-#17) |
 | AI proposals (`rescue-proposals` block, validated against the catalog) | Implemented; the real model response is Environment-blocked |
 | Target mount provider for offline OS repairs (`scripts/lib/target_mount.py`) | Implemented ([OS repair](os-repair.md)); real mounts are Hardware-required |
-| Repair execution on Windows and macOS hosts | Planned; those launchers record scope and policy but only detect |
+| Repair execution on Windows and macOS hosts | Implemented natively in the launchers ([host repair](host-repair.md)); real Windows/macOS execution is Hardware-required |
 
 ```mermaid
 flowchart TD
@@ -96,7 +96,7 @@ python3 scripts/rescue-repair.py --evidence FILE [--analysis FILE] \
 python3 scripts/rescue-repair.py --verify-journal FILE
 ```
 
-Proposals come from catalog triggers (deterministic), the last `rescue-proposals` block of `--analysis` (at most 4 KiB and 16 items; exact catalog IDs that apply to this platform, scope, and target family; anything else is rejected and counted), and `--select`. The evidence is validated first. For each command the engine keeps only `exit_code`, duration, and the SHA-256 and byte count of the output: raw output is shown to the operator (last lines, control characters stripped) and never stored. `--list` plans only; it neither executes nor journals. The Python engine executes on `live-linux` and `linux-host`. Windows and macOS evidence can be planned (`--list`, `detect-only`).
+Proposals come from catalog triggers (deterministic), the last `rescue-proposals` block of `--analysis` (at most 4 KiB and 16 items; exact catalog IDs that apply to this platform, scope, and target family; anything else is rejected and counted), and `--select`. The evidence is validated first. For each command the engine keeps only `exit_code`, duration, and the SHA-256 and byte count of the output: raw output is shown to the operator (last lines, control characters stripped) and never stored. `--list` plans only; it neither executes nor journals. The Python engine executes on `live-linux` and `linux-host`. On Windows and macOS the host launchers implement the same engine natively ([host-repair.md](host-repair.md)); their journals verify with `rescue-repair.py --verify-journal`.
 
 Exit codes: `0` finished and nothing failed | `1` an action failed or was rolled back, or `--verify-journal` found a broken chain | `2` invalid arguments, evidence, catalog, or analysis | `3` journal not writable.
 

@@ -56,6 +56,7 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - Hardware detection and repair ([hardware](docs/hardware.md)): read-only `hw-*` checks per `--scope hardware.*`. Repairs are only safe or reversible catalog actions (SMART/NVMe self-test, network service restart, Wi-Fi unblock). **Implemented**; behavior on physical hardware is **Hardware-required**.
 - Installed software inventory, health, and repair ([software](docs/software.md)): numbers-only `sw-*` checks for all packages or `--scope software.selected --packages firefox,vlc`. Repairs are destructive catalog actions (dpkg/apt, winget) that need a backup reference and a typed approval. **Implemented**; real package managers are **Hardware-required**.
 - OS detection and repair for Linux Mint, Windows, and macOS ([OS repair](docs/os-repair.md)): scoped checks, per-action approval, and offline Linux repairs through an operator-approved read-write remount (`scripts/lib/target_mount.py`). **Implemented**; real mounts, chroot, and Windows execution are **Hardware-required**.
+- Repairs from the Windows and macOS host launchers ([host repair](docs/host-repair.md)): the same catalog, policy, approval, and journal as on Linux, run natively without a shell and without elevation. **Implemented** at source level; real Windows 10/11 and macOS execution is **Hardware-required**.
 - Candidate learning, feedback, and signed promotion — **Planned** ([learning loop](docs/hermes-learning-loop.md)).
 
 ## Important boot limitation
@@ -269,6 +270,7 @@ See:
 - [Hardware detection and repair](docs/hardware.md)
 - [Installed software: inventory, health, repair](docs/software.md)
 - [OS detection and repair](docs/os-repair.md)
+- [Repairs from the Windows and macOS launchers](docs/host-repair.md)
 - [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.1`)
 - [Hermes profile](profiles/rescue-hermes/)
 - [OpenCode Go documentation](https://opencode.ai/docs/go)
