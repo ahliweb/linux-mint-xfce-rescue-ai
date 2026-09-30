@@ -20,6 +20,8 @@ validate:
 	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-raw-ai-fields.json >/dev/null 2>&1
 	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-text-value-1.1.json >/dev/null 2>&1
 	! $(PYTHON) scripts/validate-evidence.py rescue-ai/v1/fixtures/invalid-1.2-fields-in-1.1.json >/dev/null 2>&1
+	$(PYTHON) scripts/rescue-report.py --validate rescue-ai/v1/fixtures/run-report-valid-*.json
+	for f in rescue-ai/v1/fixtures/run-report-invalid-*.json; do ! $(PYTHON) scripts/rescue-report.py --validate "$$f" >/dev/null 2>&1 || { echo "$$f was accepted"; exit 1; }; done
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v

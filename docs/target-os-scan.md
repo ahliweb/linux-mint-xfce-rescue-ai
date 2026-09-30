@@ -96,7 +96,7 @@ Evidence memakai `classification: confidential`, `storage_class: usb-rescue-stat
 - Keluaran model hanya ditampilkan dan disimpan (`analysis-<ts>.md`, 0600, karakter kontrol dibuang); tidak pernah dijalankan atau di-parse sebagai perintah.
 - `--dry-run` hanya memvalidasi dan mencetak endpoint, model, dan SHA-256 evidence.
 
-Hasil di `<state-dir>/reports/`: `target-evidence-<ts>.json`, `latest-evidence.json` (salinan), `analysis-<ts>.md`. Skill Hermes `rescue-target-os` membaca `latest-evidence.json` dan `analysis-*.md` lebih dulu.
+Hasil di `<state-dir>/reports/`: `target-evidence-<ts>.json`, `latest-evidence.json` (salinan), `analysis-<ts>.md`, `target-evidence-<ts>-after.json` (hanya bila sebuah aksi perbaikan dieksekusi: pemindaian ulang dengan scope yang sama), dan laporan proses `run-<utc>/report.md` + `report.json` dengan `index.md` ([run-report.md](run-report.md)), yang ditulis di setiap akhir run termasuk preflight atau pemindaian yang gagal. Skill Hermes `rescue-target-os` membaca `report.md` terbaru lebih dulu, lalu `latest-evidence.json` dan `analysis-*.md`.
 
 ## Batas dan risiko
 

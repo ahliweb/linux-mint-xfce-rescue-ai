@@ -7,6 +7,9 @@
 # Everything is read from and written to the rescue USB (<bundle>/reports/).
 # Nothing is installed and nothing is written to the host disk.
 #
+# Every exit after the reports folder is known also writes the comprehensive run report
+# (reports/run-<utc>/report.md + report.json, reports/index.md; docs/run-report.md) to the USB.
+#
 # Exit codes: 0 ok | 2 invalid evidence | 3 no API key | 4 network/HTTP error
 #             5 bundle/reports dir unusable | 6 analyzer script missing | 64 usage
 set -Eeuo pipefail
@@ -55,8 +58,33 @@ case $repair_policy in detect-only | approve-each | auto-safe) ;; *) usage ;; es
 [[ $scope =~ ^[a-z.,]+$ ]] || usage
 [[ -z $packages || $packages =~ ^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$ ]] || usage
 
+run_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+run_id="rescue-$(date -u +%Y%m%d-%H%M%S)-lh"
+run_outcome=scan-failed
+report_ready=0 report_done=0
+run_evidence='' run_evidence_after='' run_analysis='' repair_rc=0
+
+# Write the run report to the USB (never blocks or changes the exit code). Idempotent.
+emit_report() {
+  ((report_ready && !report_done)) || return 0
+  report_done=1
+  local -a rargs=(python3 "$bundle/scripts/rescue-report.py" --reports-dir "$reports" --run-id "$run_id" --mode linux-host
+    --outcome "$run_outcome" --scope "$scope" --repair-policy "$repair_policy" --started-at "$run_started"
+    --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --env-file "$bundle/config/rescue.env")
+  [[ -f $bundle/scripts/rescue-report.py ]] || return 0
+  [[ -z $run_evidence || ! -s $run_evidence ]] || rargs+=(--evidence "$run_evidence")
+  [[ -z $run_evidence_after || ! -s $run_evidence_after ]] || rargs+=(--evidence-after "$run_evidence_after")
+  [[ -z $run_analysis || ! -s $run_analysis ]] || rargs+=(--analysis "$run_analysis")
+  [[ ! -e $reports/repairs/journal.jsonl ]] || rargs+=(--journal "$reports/repairs/journal.jsonl")
+  "${rargs[@]}" ||
+    printf 'PERINGATAN: laporan proses tidak dapat ditulis penuh.\nWARNING: the run report could not be fully written.\n' >&2
+}
+trap 'emit_report' EXIT
+trap 'run_outcome=interrupted; pause=0; finish 130' INT TERM HUP
+
 finish() {
   local rc=$1
+  emit_report
   if ((pause)) && [[ -t 0 ]]; then
     printf '\nTekan Enter untuk menutup / Press Enter to close... '
     read -r _ || true
@@ -85,6 +113,7 @@ if ! mkdir -p -- "$reports" 2>/dev/null || [[ ! -w $reports ]]; then
   finish 5
 fi
 
+report_ready=1
 export TMPDIR="$reports"          # any tool that wants a temp file uses the USB, not this host
 ((malware_full)) && export RESCUE_MALWARE_FULL_DISK=1
 export PYTHONDONTWRITEBYTECODE=1  # no __pycache__ clutter on the USB bundle
@@ -101,13 +130,14 @@ if [[ ${RESCUE_TEST_BASE_URL:-} == http://127.0.0.1:* ]]; then skip_network=1; f
 printf 'Rescue host launcher (Linux) - read-only checks; output goes to the USB only.\n'
 
 # Collector: allowlisted read-only commands; only closed-set statuses, bounded numbers.
-rc=0
-python3 - "$evidence" "$skip_network" "$reports" "$bundle" "$scope" "$packages" "$repair_policy" <<'PY' || rc=$?
+# collect_evidence OUTPUT_FILE RUN_SUFFIX (also used for the post-repair re-scan).
+collect_evidence() {
+python3 - "$1" "$skip_network" "$reports" "$bundle" "$scope" "$packages" "$repair_policy" "$2" <<'PY'
 import hashlib, json, os, platform, re, shutil, socket, subprocess, sys, tempfile
 from datetime import datetime, timezone
 
 out, skip_network, reports = sys.argv[1], sys.argv[2] == '1', sys.argv[3]
-bundle, scope_arg, packages_arg, policy = sys.argv[4:8]
+bundle, scope_arg, packages_arg, policy, run_suffix = sys.argv[4:9]
 sys.path[:0] = [os.path.join(bundle, 'scripts'), os.path.join(bundle, 'scripts', 'lib')]
 try:
     import repair_catalog
@@ -142,7 +172,7 @@ def provider_ready():
 ready = provider_ready()
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 REF = 'os-0'
-run_id = 'rescue-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-lh'
+run_id = 'rescue-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + run_suffix
 
 
 def run(cmd, timeout=20):
@@ -432,9 +462,13 @@ except BaseException:
         pass
     raise
 PY
+}
+rc=0
+collect_evidence "$evidence" lh || rc=$?
 if ((rc == 64)); then usage; fi
 if ((rc != 0)); then
   printf 'ERROR: evidence gagal dibuat / evidence could not be created (exit %d).\n' "$rc" >&2
+  run_outcome=scan-failed
   finish 2
 fi
 printf 'Evidence tersimpan / saved: %s\n' "$evidence"
@@ -443,11 +477,14 @@ validator="$bundle/scripts/validate-evidence.py"
 if [[ -f $validator ]] && python3 -c 'import jsonschema' 2>/dev/null; then
   if ! python3 "$validator" "$evidence"; then
     printf 'ERROR: evidence tidak valid terhadap schema; tidak dikirim / evidence failed schema validation; nothing was sent.\n' >&2
+    run_outcome='evidence-invalid'
     finish 2
   fi
 else
   printf 'Catatan / note: python3-jsonschema atau validator tidak tersedia; hanya pemeriksaan struktur internal yang dilakukan.\n'
 fi
+run_evidence=$evidence
+run_outcome=completed
 
 # Catalog repairs (typed actions only; see docs/repair-framework.md). The journal and every
 # result stay on the USB. --list only plans; it never executes or journals.
@@ -460,11 +497,26 @@ run_repair() {
   [[ ! -s $analysis ]] || rargs+=(--analysis "$analysis")
   [[ ${1:-} != list ]] || rargs+=(--list)
   printf '\n'
-  "${rargs[@]}" || printf 'PERINGATAN / WARNING: repair step reported a failure; see %s\n' "$reports/repairs/journal.jsonl" >&2
+  repair_rc=0
+  "${rargs[@]}" || repair_rc=$?
+  ((repair_rc == 0)) || printf 'PERINGATAN / WARNING: repair step reported a failure; see %s\n' "$reports/repairs/journal.jsonl" >&2
+  case $repair_rc in 2) run_outcome=repair-invalid ;; 3) run_outcome=journal-unusable ;; *) ;; esac
+  # Before/after: when an action executed in this run, re-collect with the same scope for the report.
+  if [[ ${1:-} != list && -s $reports/repairs/journal.jsonl ]] &&
+    ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
+    grep -F -- "\"run_id\":\"$ev_run_id\"" "$reports/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
+    printf 'Mengumpulkan ulang setelah perbaikan (scope sama) / re-collecting after repairs (same scope)...\n'
+    if collect_evidence "$reports/linux-$stamp-evidence-after.json" lh-after; then
+      run_evidence_after="$reports/linux-$stamp-evidence-after.json"
+    else
+      printf 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.\n' >&2
+    fi
+  fi
 }
 
 if ((evidence_only && !dry_run)); then
   printf 'Mode --evidence-only: tidak ada panggilan jaringan / no network call was made.\n'
+  run_outcome='evidence-only'
   run_repair list
   finish 0
 fi
@@ -473,6 +525,7 @@ analyzer="$bundle/scripts/opencode-go-analyze.py"
 if [[ ! -f $analyzer ]]; then
   printf 'ERROR: scripts/opencode-go-analyze.py belum ada di bundle; evidence tetap tersimpan di %s\n' "$evidence" >&2
   printf 'ERROR: scripts/opencode-go-analyze.py is missing from the bundle; the evidence is kept at %s\n' "$evidence" >&2
+  run_outcome='analyzer-missing'
   finish 6
 fi
 
@@ -482,6 +535,12 @@ set +e
 "${args[@]}"
 rc=$?
 set -e
+case $rc in
+  0) if ((dry_run)); then run_outcome=dry-run; else run_outcome=completed; run_analysis=$analysis; fi ;;
+  3) run_outcome=no-key ;;
+  4) run_outcome=network-error ;;
+  *) run_outcome='analysis-failed' ;;
+esac
 if ((dry_run)); then run_repair list; else run_repair; fi
 
 case $rc in

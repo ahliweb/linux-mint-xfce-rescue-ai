@@ -15,6 +15,7 @@ Status labels: **Implemented** (source level, `make check`), **Hardware-required
 | Detection module hooks: `scripts/rescue_modules/` (scanner + Linux host), `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh` | Implemented (hardware, operating system, software, malware) |
 | AI proposals (`rescue-proposals` block, validated against the catalog) | Implemented; the real model response is Environment-blocked |
 | Target mount provider for offline OS repairs (`scripts/lib/target_mount.py`) | Implemented ([OS repair](os-repair.md)); real mounts are Hardware-required |
+| Run report from the journal, evidence, and analysis ([run report](run-report.md)) | Implemented (`scripts/rescue-report.py`, PowerShell, JXA); real Windows/macOS runs are Hardware-required |
 | Repair execution on Windows and macOS hosts | Implemented natively in the launchers ([host repair](host-repair.md)); real Windows/macOS execution is Hardware-required |
 
 ```mermaid
@@ -104,7 +105,7 @@ Test hook: `RESCUE_REPAIR_TEST_PATH` replaces the fixed `PATH` (absolute directo
 
 ## Journal
 
-`<state-dir>/repairs/journal.jsonl` on the live USB, `rescue-omes/reports/repairs/journal.jsonl` in Linux host mode. It is one JSON record per stage (`proposed`, `approval`, `backup`, `target-rw`, `precondition`, `execute`, `verify`, `rollback`), written append-only under `flock` with `fsync` and mode `0600`. Records carry `seq` and `prev_sha256` (the SHA-256 of the previous line), so editing or deleting a line is detected by `--verify-journal`. Records never contain raw output, prompts, model text, credentials, usernames, or filenames. The comprehensive run report (ahliweb/linux-mint-xfce-rescue-ai#22) is generated from this journal plus the evidence and analysis.
+`<state-dir>/repairs/journal.jsonl` on the live USB, `rescue-omes/reports/repairs/journal.jsonl` in Linux host mode. It is one JSON record per stage (`proposed`, `approval`, `backup`, `target-rw`, `precondition`, `execute`, `verify`, `rollback`), written append-only under `flock` with `fsync` and mode `0600`. Records carry `seq` and `prev_sha256` (the SHA-256 of the previous line), so editing or deleting a line is detected by `--verify-journal`. Records never contain raw output, prompts, model text, credentials, usernames, or filenames. The comprehensive run report ([run-report.md](run-report.md), ahliweb/linux-mint-xfce-rescue-ai#22) is generated from this journal plus the evidence and analysis: per proposal it lists the origin, the approval decision, the backup fingerprint, every stage, the final outcome, and whether the hash chain verifies, with parameters shown only as placeholders.
 
 ## Detection modules
 

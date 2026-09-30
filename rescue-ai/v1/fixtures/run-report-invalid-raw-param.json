@@ -1,0 +1,573 @@
+{
+  "report_version": "1.0",
+  "report_type": "rescue-run-report",
+  "run_id": "rescue-20260930-080000-live",
+  "classification": "confidential",
+  "header": {
+    "started_at": "2026-09-30T08:00:00Z",
+    "ended_at": "2026-09-30T08:05:30Z",
+    "mode": "live-linux",
+    "toolkit_version": "0.3.0",
+    "catalog_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "scope": [
+      "all"
+    ],
+    "repair_policy": "approve-each",
+    "provider_key_present": true,
+    "outcome": "completed-with-failures",
+    "evidence_run_id": "rescue-20260930-080000-live",
+    "evidence_sha256": "5fa1f647fc42591f223094136462399ff051c32c5fa3d6929faa9a3a336d7ebe"
+  },
+  "readiness": {
+    "performed": true,
+    "gate": "passed",
+    "overall": "ready_with_warnings",
+    "checks": [
+      {
+        "check_id": "cpu",
+        "status": "pass",
+        "required": true
+      },
+      {
+        "check_id": "ram",
+        "status": "pass",
+        "required": true
+      },
+      {
+        "check_id": "usb-boot-media",
+        "status": "warn",
+        "required": true
+      },
+      {
+        "check_id": "internet-connectivity",
+        "status": "pass",
+        "required": true
+      }
+    ]
+  },
+  "detection": {
+    "available": true,
+    "totals": {
+      "pass": 7,
+      "fail": 2,
+      "warn": 6,
+      "not_applicable": 0,
+      "unknown": 3
+    },
+    "targets": [
+      {
+        "ref": "os-0",
+        "family": "linuxmint",
+        "architecture": "x86_64",
+        "detection": "live-offline",
+        "encryption": "none",
+        "access": "read-only-mounted"
+      },
+      {
+        "ref": "os-1",
+        "family": "windows",
+        "architecture": "x86_64",
+        "detection": "live-offline",
+        "encryption": "bitlocker",
+        "access": "not-mounted-encrypted"
+      }
+    ],
+    "domains": {
+      "hardware": [
+        {
+          "check_id": "hw-cpu",
+          "status": "pass"
+        },
+        {
+          "check_id": "hw-memory",
+          "status": "pass",
+          "value": {
+            "kind": "bytes",
+            "number": 8589934592
+          }
+        },
+        {
+          "check_id": "hw-disk",
+          "status": "fail"
+        },
+        {
+          "check_id": "smart-health",
+          "status": "unknown"
+        },
+        {
+          "check_id": "hw-battery",
+          "status": "warn",
+          "value": {
+            "kind": "percent",
+            "number": 41
+          }
+        },
+        {
+          "check_id": "hw-cpu-thermal",
+          "status": "warn",
+          "value": {
+            "kind": "celsius",
+            "number": 82.5
+          }
+        }
+      ],
+      "os": [
+        {
+          "check_id": "os-detection",
+          "status": "pass",
+          "target_ref": "os-0"
+        },
+        {
+          "check_id": "linux-package-state",
+          "status": "fail",
+          "target_ref": "os-0"
+        },
+        {
+          "check_id": "linux-grub-config",
+          "status": "warn",
+          "target_ref": "os-0"
+        },
+        {
+          "check_id": "encryption-status",
+          "status": "unknown",
+          "target_ref": "os-1"
+        },
+        {
+          "check_id": "windows-system-files",
+          "status": "unknown",
+          "target_ref": "os-1"
+        }
+      ],
+      "software": [
+        {
+          "check_id": "sw-inventory",
+          "status": "pass",
+          "target_ref": "os-0",
+          "value": {
+            "kind": "count",
+            "number": 1874
+          }
+        },
+        {
+          "check_id": "sw-broken-dependencies",
+          "status": "warn",
+          "target_ref": "os-0",
+          "value": {
+            "kind": "count",
+            "number": 2
+          }
+        }
+      ],
+      "malware": [
+        {
+          "check_id": "malware-scan",
+          "status": "warn",
+          "target_ref": "os-0",
+          "value": {
+            "kind": "count",
+            "number": 1
+          }
+        },
+        {
+          "check_id": "malware-signatures",
+          "status": "warn",
+          "target_ref": "os-0",
+          "value": {
+            "kind": "days",
+            "number": 45
+          }
+        },
+        {
+          "check_id": "malware-quarantine",
+          "status": "pass",
+          "target_ref": "os-0",
+          "value": {
+            "kind": "count",
+            "number": 0
+          }
+        }
+      ],
+      "environment": [
+        {
+          "check_id": "block-device-discovery",
+          "status": "pass"
+        },
+        {
+          "check_id": "network-connectivity",
+          "status": "pass"
+        }
+      ]
+    }
+  },
+  "analysis": {
+    "status": "completed",
+    "model_id": "mimo-v2.6-flash",
+    "evidence_sha256": "5fa1f647fc42591f223094136462399ff051c32c5fa3d6929faa9a3a336d7ebe",
+    "text": "# Analisis rescue\n\n> Keluaran model.\n[31mFakta[0m: baterai lemah.\nHipotesis: paket rusak.\n```rescue-proposals\n{\"proposed_actions\":[{\"action_id\":\"hw.smart-short-selftest\"},{\"action_id\":\"os-linux.update-grub\",\"target_ref\":\"os-0\"},{\"action_id\":\"os-windows.sfc-verify\",\"target_ref\":\"os-0\"},{\"action_id\":\"bogus.action\"}]}\n```\n",
+    "text_truncated": false,
+    "proposals": {
+      "accepted": 2,
+      "rejected": 2
+    }
+  },
+  "remediation": {
+    "journal": {
+      "chain": "valid",
+      "records_total": 32,
+      "records_run": 31
+    },
+    "actions": [
+      {
+        "action_id": "hw.smart-short-selftest",
+        "origin": "catalog-trigger",
+        "risk": "safe",
+        "policy": "approve-each",
+        "params": {
+          "device": "/dev/sdb"
+        },
+        "approval": {
+          "decision": "auto-safe",
+          "reason": "auto-safe"
+        },
+        "backup": null,
+        "stages": [
+          {
+            "stage": "precondition",
+            "outcome": "ok",
+            "exit_code": 0,
+            "duration_seconds": 0.01
+          },
+          {
+            "stage": "execute",
+            "outcome": "ok",
+            "exit_code": 0,
+            "duration_seconds": 1.5
+          },
+          {
+            "stage": "verify",
+            "outcome": "ok",
+            "exit_code": 0,
+            "duration_seconds": 0.2
+          }
+        ],
+        "final_outcome": "verified",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "os-linux.update-grub",
+        "origin": "ai-proposal",
+        "risk": "destructive",
+        "target_ref": "os-0",
+        "policy": "approve-each",
+        "params": {},
+        "approval": {
+          "decision": "operator-interactive",
+          "reason": "operator-approved"
+        },
+        "backup": {
+          "size_bytes": 123456,
+          "fingerprint": "abababababab"
+        },
+        "stages": [
+          {
+            "stage": "backup",
+            "outcome": "ok"
+          },
+          {
+            "stage": "target-rw",
+            "outcome": "ok"
+          },
+          {
+            "stage": "execute",
+            "outcome": "fail",
+            "reason": "exit-code",
+            "exit_code": 1,
+            "duration_seconds": 3.25
+          },
+          {
+            "stage": "rollback",
+            "outcome": "skipped",
+            "reason": "manual-rollback-required"
+          }
+        ],
+        "final_outcome": "failed",
+        "manual_rollback_required": true,
+        "manual_rollback_doc": "docs/os-repair.md#rollback-linux"
+      },
+      {
+        "action_id": "sw.apt-reinstall-package",
+        "origin": "operator",
+        "risk": "destructive",
+        "target_ref": "os-0",
+        "policy": "approve-each",
+        "params": {
+          "package": "<package>"
+        },
+        "approval": {
+          "decision": "cli",
+          "reason": "cli-approved"
+        },
+        "backup": null,
+        "stages": [
+          {
+            "stage": "execute",
+            "outcome": "unavailable",
+            "reason": "program-not-found"
+          }
+        ],
+        "final_outcome": "skipped",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "hw.wifi-rfkill-unblock",
+        "origin": "catalog-trigger",
+        "risk": "reversible",
+        "policy": "approve-each",
+        "params": {},
+        "approval": {
+          "decision": "cli",
+          "reason": "cli-approved"
+        },
+        "backup": null,
+        "stages": [
+          {
+            "stage": "execute",
+            "outcome": "ok",
+            "exit_code": 0
+          },
+          {
+            "stage": "verify",
+            "outcome": "fail",
+            "reason": "exit-code",
+            "exit_code": 3
+          },
+          {
+            "stage": "rollback",
+            "outcome": "ok",
+            "exit_code": 0
+          }
+        ],
+        "final_outcome": "rolled-back",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "mw.quarantine-detection",
+        "origin": "operator",
+        "risk": "reversible",
+        "policy": "approve-each",
+        "params": {
+          "detection": "<detection d-3>"
+        },
+        "approval": {
+          "decision": "operator-interactive",
+          "reason": "operator-approved"
+        },
+        "backup": null,
+        "stages": [
+          {
+            "stage": "execute",
+            "outcome": "ok",
+            "exit_code": 0
+          },
+          {
+            "stage": "verify",
+            "outcome": "ok",
+            "exit_code": 0
+          }
+        ],
+        "final_outcome": "verified",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "sw.dpkg-configure-pending",
+        "origin": "catalog-trigger",
+        "risk": "destructive",
+        "policy": "approve-each",
+        "params": {},
+        "approval": {
+          "decision": "not-interactive",
+          "reason": "not-interactive"
+        },
+        "backup": null,
+        "stages": [],
+        "final_outcome": "declined",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "os-linux.apt-fix-broken",
+        "origin": "catalog-trigger",
+        "risk": "destructive",
+        "policy": "approve-each",
+        "params": {},
+        "approval": {
+          "decision": "declined",
+          "reason": "operator-declined"
+        },
+        "backup": null,
+        "stages": [],
+        "final_outcome": "declined",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "hw.nvme-short-selftest",
+        "origin": "catalog-trigger",
+        "risk": "safe",
+        "policy": "detect-only",
+        "params": {},
+        "approval": {
+          "decision": "policy-detect-only",
+          "reason": "policy-detect-only"
+        },
+        "backup": null,
+        "stages": [],
+        "final_outcome": "proposed",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      },
+      {
+        "action_id": "sw.apt-fix-broken",
+        "origin": "catalog-trigger",
+        "risk": "destructive",
+        "policy": "approve-each",
+        "params": {},
+        "approval": {
+          "decision": "not-reached"
+        },
+        "backup": null,
+        "stages": [
+          {
+            "stage": "backup",
+            "outcome": "unavailable",
+            "reason": "missing-backup"
+          }
+        ],
+        "final_outcome": "skipped",
+        "manual_rollback_required": false,
+        "manual_rollback_doc": null
+      }
+    ]
+  },
+  "comparison": {
+    "performed": true,
+    "reason": "executed",
+    "compared": 17,
+    "unchanged": 14,
+    "only_before": 1,
+    "only_after": 1,
+    "changed": [
+      {
+        "check_id": "linux-package-state",
+        "target_ref": "os-0",
+        "before": "fail",
+        "after": "pass"
+      },
+      {
+        "check_id": "sw-broken-dependencies",
+        "target_ref": "os-0",
+        "before": "warn",
+        "after": "fail"
+      },
+      {
+        "check_id": "malware-signatures",
+        "target_ref": "os-0",
+        "before": "warn",
+        "after": "pass"
+      }
+    ]
+  },
+  "open_items": [
+    {
+      "kind": "action-failed",
+      "ref": "os-linux.update-grub",
+      "target_ref": "os-0"
+    },
+    {
+      "kind": "manual-rollback",
+      "ref": "os-linux.update-grub",
+      "target_ref": "os-0",
+      "doc": "docs/os-repair.md#rollback-linux"
+    },
+    {
+      "kind": "action-skipped",
+      "ref": "sw.apt-reinstall-package",
+      "target_ref": "os-0"
+    },
+    {
+      "kind": "action-rolled-back",
+      "ref": "hw.wifi-rfkill-unblock"
+    },
+    {
+      "kind": "action-declined",
+      "ref": "sw.dpkg-configure-pending"
+    },
+    {
+      "kind": "action-declined",
+      "ref": "os-linux.apt-fix-broken"
+    },
+    {
+      "kind": "action-not-run",
+      "ref": "hw.nvme-short-selftest"
+    },
+    {
+      "kind": "action-skipped",
+      "ref": "sw.apt-fix-broken"
+    },
+    {
+      "kind": "escalate-encrypted-disk"
+    },
+    {
+      "kind": "escalate-hardware-fault"
+    },
+    {
+      "kind": "stale-signatures"
+    },
+    {
+      "kind": "review-malware-detections"
+    },
+    {
+      "kind": "unknown-checks"
+    },
+    {
+      "kind": "regression-after-repair",
+      "ref": "sw-broken-dependencies",
+      "target_ref": "os-0"
+    }
+  ],
+  "honesty": {
+    "hardware_required": [
+      "physical-boot-and-reboot",
+      "disk-repair-read-back"
+    ],
+    "environment_blocked": [],
+    "scope_limited": false
+  },
+  "summary": {
+    "checks": {
+      "pass": 7,
+      "fail": 2,
+      "warn": 6,
+      "not_applicable": 0,
+      "unknown": 3
+    },
+    "actions": {
+      "total": 9,
+      "verified": 2,
+      "rolled_back": 1,
+      "failed": 1,
+      "skipped": 2,
+      "declined": 2,
+      "proposed": 1
+    },
+    "status_changes": 3
+  },
+  "privacy_check": {
+    "status": "passed",
+    "findings": []
+  }
+}
