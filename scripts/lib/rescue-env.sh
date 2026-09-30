@@ -8,7 +8,9 @@
 #     [export ]KEY=VALUE
 #   * Only these keys are read; every other key is ignored:
 #       OPENCODE_GO_API_KEY RESCUE_STATE_DIR HERMES_HOME
-#       OPENCODE_ADAPTER_COMMAND OPENCODE_TIMEOUT_SECONDS
+#       OPENCODE_ADAPTER_COMMAND OPENCODE_TIMEOUT_SECONDS RESCUE_GITHUB_ISSUES_TOKEN
+#     (RESCUE_GITHUB_ISSUES_TOKEN: fine-grained GitHub token, Issues read/write on this
+#     repository only, used by scripts/submit-skill.py; never printed or put on argv.)
 #   * VALUE may be unquoted, 'single quoted', "double quoted", or a mix, exactly
 #     like the output of `printf %q` or KEY='it'\''s'. Backslash escapes are
 #     honored outside single quotes. `$` and backticks that the shell would
@@ -25,7 +27,7 @@
 # rescue_desktop_quote ARG    prints ARG quoted for a Desktop Entry Exec= line
 #                             (freedesktop spec); returns 1 for newline or `%`.
 
-_RESCUE_ENV_KEYS=" OPENCODE_GO_API_KEY RESCUE_STATE_DIR HERMES_HOME OPENCODE_ADAPTER_COMMAND OPENCODE_TIMEOUT_SECONDS "
+_RESCUE_ENV_KEYS=" OPENCODE_GO_API_KEY RESCUE_STATE_DIR HERMES_HOME OPENCODE_ADAPTER_COMMAND OPENCODE_TIMEOUT_SECONDS RESCUE_GITHUB_ISSUES_TOKEN "
 
 # Parse the right-hand side of an assignment into REPLY. Returns 1 if invalid.
 _rescue_env_parse_value() {
