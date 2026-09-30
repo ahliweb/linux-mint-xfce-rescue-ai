@@ -363,7 +363,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_every_emitted_check_survives_the_contract_sanitizer(self):
         m = self.machine().healthy_desktop()
-        ctx = rescue_modules.Context(mode='live', fixture_root=str(m.root))
+        ctx = rescue_modules.Context(mode='live', scope=('hardware',), fixture_root=str(m.root))
         self.assertEqual(len(rescue_modules.collect_system(ctx)), len(hardware.collect_system(ctx)))
         self.assertEqual(ctx.warnings, [])
 
