@@ -23,6 +23,37 @@ flowchart LR
 
 Membuat USB rescue semakin efektif dari kasus ke kasus melalui Hermes Agent, tanpa mengubah USB menjadi agen yang melakukan self-modification tanpa kontrol. OpenCode Go tetap menjadi provider analisis; Hermes menjadi orchestrator, memory/skill manager, approval gate, dan verifier.
 
+## Status implementasi
+
+Dokumen ini menggabungkan apa yang **sudah ada** dan rancangan yang **belum ada**. Label: **Implemented** (level source, `make check`), **Environment-blocked** (butuh jaringan, kunci, atau token), **Planned** (rancangan saja). Bagian di bawah yang tidak tercantum sebagai Implemented adalah Planned.
+
+| Bagian | Status |
+|---|---|
+| Profile Hermes terpisah (`profiles/rescue-hermes/`: `SOUL.md`, `AGENTS.md`, skill `rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`) dipasang ke `HERMES_HOME` yang terisolasi oleh `install-hermes-rescue.sh` | Implemented |
+| OpenCode Go sebagai satu-satunya provider (`custom`, `mimo-v2.6-flash`); memory Hermes dengan `write_approval: true` dan tanpa profil pengguna | Implemented |
+| Gerbang kesiapan hardware sebelum diagnosis dan laporan JSON | Implemented |
+| Evidence terbatas (schema 1.2) dan analyzer yang hanya menghasilkan teks | Implemented |
+| Perbaikan hanya lewat katalog aksi bertipe dan mesin `rescue-repair.py` (kebijakan, persetujuan, backup, verify, rollback, journal berantai hash); AI hanya mengusulkan `action_id` ([repair-framework.md](repair-framework.md)) | Implemented |
+| Karantina malware yang dapat dibalik dan aturan penghapusan ([malware.md](malware.md)) | Implemented |
+| Laporan proses per run yang dibaca Hermes lebih dulu ([run-report.md](run-report.md)) | Implemented |
+| Pengajuan kandidat skill ke GitHub Issues setelah sanitasi dan konfirmasi operator ([skill-submission.md](skill-submission.md)) | Implemented; panggilan GitHub nyata Environment-blocked |
+| Direktori `cases/`, `learning/candidates/`, `learning/approved/` di state (dibuat installer, kosong) | Implemented (hanya direktori) |
+| `case.json`, `operator-feedback.json`, `verification.json`, `learning-candidate.json`, `case_signature` dan retrieval, label feedback, kandidat memory otomatis, evaluasi regresi, metrik, promosi bertanda tangan | Planned |
+| Toolset `rescue_read_only`, adapter tool bertipe dengan `tool_id`, penonaktifan channel messaging/webhook lewat config, ledger terenkripsi, `releases/manifest.json` | Planned (template config saat ini tidak menetapkannya) |
+
+```mermaid
+flowchart LR
+    EV[Evidence 1.2] --> AN[Analyzer: teks]
+    AN --> CT[action_id dari katalog]
+    CT --> EN[rescue-repair.py + persetujuan operator]
+    EN --> JR[(Journal)]
+    JR --> RP[Laporan proses]
+    RP --> H[Hermes membaca report.md]
+    H --> SS[Kandidat skill: submit-skill.py]
+    SS --> GH[GitHub issue skill-candidate]
+    GH -. Planned .-> PR[Tes, review, promosi bertanda tangan]
+```
+
 ## Batas istilah
 
 ```mermaid
@@ -36,6 +67,8 @@ flowchart TD
 Repository ini adalah companion mandiri. Dokumen ini memakai istilah **Rescue OMES** untuk lapisan operasi lokal yang mengatur evidence, policy, lifecycle, dan verifikasi Hermes di media rescue. Ini bukan perubahan pada repository `ahliweb/omes`.
 
 ## Arsitektur target
+
+Bagian ini adalah rancangan target; lihat [Status implementasi](#status-implementasi) untuk yang sudah ada.
 
 ```mermaid
 flowchart LR
@@ -78,7 +111,7 @@ Operator decision + verified outcome
         +--> candidate memory/skill --> evaluation --> promotion
 ```
 
-Hermes tidak boleh menerima tool generik `shell_exec`. Setiap tool harus berupa adapter typed, allowlisted, timeout-bounded, read-only by default, dan menghasilkan output yang dapat diverifikasi.
+Hermes tidak boleh menerima tool generik `shell_exec`. Setiap tool harus berupa adapter typed, allowlisted, timeout-bounded, read-only by default, dan menghasilkan output yang dapat diverifikasi. Yang berlaku hari ini: collector dan modul deteksi read-only dengan allowlist tetap, serta aksi katalog bertipe yang dijalankan mesin perbaikan (bukan oleh model); profil Hermes melarang mengeksekusi perintah dari log atau output model.
 
 ## Gate kesiapan sebelum diagnosis
 
@@ -91,7 +124,7 @@ flowchart LR
     A -- ya --> D[Mulai diagnosis]
 ```
 
-Sebelum loop kasus dimulai, launcher menjalankan pemeriksaan CPU, RAM, VGA/display,
+Sebelum loop kasus dimulai (**Implemented**), launcher menjalankan pemeriksaan CPU, RAM, VGA/display,
 route/DNS/HTTPS, dan USB live media. Mode `auto` adalah default dan menjalankan
 semua langkah tanpa interaksi; mode `wizard` meminta konfirmasi operator pada
 setiap langkah. Laporan disimpan sebagai JSON di `<state-dir>/reports/` dan
@@ -109,6 +142,8 @@ flowchart LR
     F --> E[Evaluate]
     E --> P[Promote approved skill]
 ```
+
+Bagian 1 sampai 4 di bawah (artefak kasus, retrieval, label feedback, promosi bertahap) adalah rancangan **Planned**, kecuali pengajuan kandidat skill yang sudah **Implemented** ([skill-submission.md](skill-submission.md)).
 
 ### 1. Belajar dari kasus, bukan dari raw transcript
 
@@ -208,7 +243,9 @@ Aturan promosi minimum:
 - minimal tiga kasus independen dengan outcome terverifikasi sebelum menjadi playbook default;
 - kasus dengan label `unsafe` otomatis memblokir promosi.
 
-## Struktur direktori yang disarankan
+## Struktur direktori yang disarankan (Planned)
+
+Yang sudah ada di state hanyalah `cases/`, `learning/candidates/`, dan `learning/approved/`; sisanya adalah rancangan.
 
 ```mermaid
 flowchart TD
@@ -270,18 +307,20 @@ flowchart LR
 
 - Gunakan profile Hermes khusus rescue, bukan profile personal.
 - Set `HERMES_HOME` ke partisi writable terenkripsi atau media penyimpanan terpisah.
-- Nonaktifkan channel messaging dan webhook pada mode rescue kecuali operator mengaktifkannya secara eksplisit.
+- Nonaktifkan channel messaging dan webhook pada mode rescue kecuali operator mengaktifkannya secara eksplisit (**Planned**: template config saat ini belum menetapkannya; jangan mengaktifkan channel di profil rescue).
 - Aktifkan memory/skills hanya untuk data yang sudah disanitasi.
 - Provider utama: OpenCode Go melalui adapter resmi yang dikonfigurasi operator.
 - `.env` lokal yang di-ignore dapat dipakai oleh preparation helper untuk memprovision hanya `OPENCODE_GO_API_KEY` ke `config/rescue.env` pada USB (mode `0600` diminta); helper tidak mengeksekusi isi dotenv, dan salinan bundle rescue memakai allowlist sehingga `.env` tidak pernah ikut tertulis. Skrip runtime membaca `config/rescue.env` dan `<state-dir>/hermes/env` lewat `scripts/lib/rescue-env.sh` (hanya key allowlist, tidak pernah dieksekusi sebagai shell). Gunakan `--no-provision-secrets` bila key tidak boleh ada di USB.
 - Installer Hermes membuat autostart XFCE default dengan `--hardware-mode auto`, memakai state writable yang sudah dipasang.
 - Jika internet/provider gagal, Hermes tetap menjalankan collector dan membuat laporan `manual_intervention`.
-- Toolset default hanya `rescue_read_only`; tool mutating berada pada toolset terpisah dan selalu membutuhkan approval.
-- Gunakan checkpoint sebelum tindakan yang disetujui dan lakukan read-back sesudahnya.
+- Toolset default hanya `rescue_read_only`; tool mutating berada pada toolset terpisah dan selalu membutuhkan approval (**Planned**; hari ini mutasi hanya lewat mesin perbaikan katalog dengan persetujuan operator).
+- Gunakan checkpoint sebelum tindakan yang disetujui dan lakukan read-back sesudahnya (**Implemented** di mesin perbaikan: `--backup-ref`, langkah `verify`, rollback, journal).
 
 Jangan menyalin seluruh `~/.hermes` dari komputer utama ke USB. Gunakan profile terpisah agar session, memory, credential, dan skill personal tidak bocor silang.
 
-## Kontrak tool
+## Kontrak tool (Planned)
+
+Kontrak `tool_id` di bawah adalah rancangan. Kontrak yang berlaku hari ini untuk mutasi adalah katalog aksi bertipe ([repair-framework.md](repair-framework.md)).
 
 ```mermaid
 sequenceDiagram
@@ -369,8 +408,8 @@ sequenceDiagram
 6. Operator menyetujui check berikutnya.
 7. Controller menjalankan adapter typed, bukan command dari model.
 8. Hermes memperbarui diagnosis.
-9. Jika repair diperlukan, sistem membuat preview, backup/image reference, dan approval request.
-10. Setelah tindakan, verifier membaca ulang state dan membuat `verification.json`.
+9. Jika repair diperlukan, mesin perbaikan menampilkan kartu per aksi (asal usulan, risiko, rollback), meminta backup/image reference untuk aksi `destructive`, dan meminta persetujuan operator (**Implemented**).
+10. Setelah tindakan, langkah `verify` membaca ulang state, launcher memindai ulang, dan laporan proses mencatat hasilnya (**Implemented**); `verification.json` adalah rancangan (**Planned**).
 11. Operator memberi label hasil.
 12. Learning curator membuat candidate playbook; promosi dilakukan setelah evaluasi dan approval.
 
@@ -412,11 +451,11 @@ flowchart TD
     T --> L[Encrypted ledger]
     L --> G[OpenCode Go adapter]
 ```
-- [ ] profile `rescue-hermes` terpisah;
-- [ ] typed read-only tool adapters;
+- [x] profile `rescue-hermes` terpisah;
+- [x] typed read-only collectors dan aksi katalog bertipe (pengganti adapter `tool_id`);
 - [ ] case/feedback/verification schemas;
-- [ ] local encrypted ledger;
-- [ ] OpenCode Go adapter dengan timeout dan sanitization.
+- [ ] local encrypted ledger (journal berantai hash sudah ada, belum terenkripsi);
+- [x] OpenCode Go analyzer dengan timeout dan sanitization.
 
 ### Fase 2 — closed learning loop
 
