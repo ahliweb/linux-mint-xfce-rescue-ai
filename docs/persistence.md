@@ -98,7 +98,7 @@ Catatan: `hermes/.env` di dalam state adalah template milik installer Hermes (ta
 scripts/prepare-ventoy-usb.sh \
   --ventoy-mount /mnt/ventoy \
   --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
-  --sha256sums sha256sum.txt --signature sha256sum.txt.gpg \
+  --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
   --no-provision-secrets \
   --persistence /path/rescue-omes-casper-rw.dat
 ```
@@ -172,7 +172,7 @@ cd bundle/rescue-omes
 scripts/prepare-ventoy-usb.sh \
   --ventoy-mount /mnt/ventoy \
   --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
-  --sha256sums sha256sum.txt --signature sha256sum.txt.gpg \
+  --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
   --no-provision-secrets \
   --persistence ../../rescue-omes-casper-rw-$V.dat
 # USB sudah punya persistence lama (state Hermes akan HILANG): tambahkan --replace-persistence
