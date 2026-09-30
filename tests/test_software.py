@@ -221,14 +221,14 @@ class DpkgChecksTests(unittest.TestCase):
 
     def test_live_collect_system_is_empty_and_host_uses_fixture_root(self):
         make_dpkg_root(self.tmp, [stanza('zebra-tool', 'install ok half-configured')])
-        self.assertEqual(rescue_modules.collect_system(rescue_modules.Context(mode='live')), [])
-        ctx = rescue_modules.Context(mode='host', fixture_root=str(self.tmp))
+        self.assertEqual(rescue_modules.collect_system(rescue_modules.Context(mode='live', scope=('software',))), [])
+        ctx = rescue_modules.Context(mode='host', scope=('software',), fixture_root=str(self.tmp))
         got = {c['check_id']: c for c in rescue_modules.collect_system(ctx)}
         self.assertEqual(got['sw-pending-config']['status'], 'fail')
         self.assertEqual(got['sw-pending-config']['target_ref'], 'os-0')
         empty = tempfile.mkdtemp(prefix='sw-empty-')
         self.addCleanup(shutil.rmtree, empty, True)
-        got = rescue_modules.collect_system(rescue_modules.Context(mode='host', fixture_root=empty))
+        got = rescue_modules.collect_system(rescue_modules.Context(mode='host', scope=('software',), fixture_root=empty))
         self.assertEqual([(c['check_id'], c['status']) for c in got], [('sw-inventory', 'unknown')])
 
 

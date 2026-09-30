@@ -319,6 +319,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(rc.validate_param({'type': 'integer', 'minimum': 1, 'maximum': 9}, '7'), 7)
         for p, v in (({'type': 'enum', 'values': ['a']}, 'c'), ({'type': 'integer', 'minimum': 1, 'maximum': 9}, '10'),
                      ({'type': 'package_name'}, '-rf'), ({'type': 'package_name'}, 'a b'),
+                     ({'type': 'package_name'}, 'vim-'),
                      ({'type': 'service_name'}, '--now'), ({'type': 'block_device'}, '/dev/../etc/passwd'),
                      ({'type': 'block_device'}, 'sda'), ({'type': 'target_root'}, '/')):
             with self.subTest(param=p, value=v):
