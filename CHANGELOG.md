@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-01
+
+Credential-free packages on GitHub Packages, built only in CI. v0.5.0 was the first to be published (via `workflow_dispatch`) and was verified anonymously: checksums match and no key is present. The runtime behavior is unchanged from 0.5.0.
+
 ### Added
 
 - `.github/workflows/package.yml` (ahliweb/linux-mint-xfce-rescue-ai#42): on `v*` tags and `workflow_dispatch` (tag input), publishes credential-free packages to ghcr.io (`bundle:<version>` and `persistence:<version>`, with OCI annotations) and attaches the deterministic bundle tarball and its sha256 to the GitHub Release. The persistence image is built in CI from a GPG+SHA-256 verified Linux Mint 22.3 ISO with `--no-provision-secrets`, asserted credential-free with `debugfs`, and zstd compressed. Only `GITHUB_TOKEN` is used, third-party actions are pinned to full SHAs, and write permissions are limited to publish jobs that never run on pull requests (which run a dry build). Documented in `docs/persistence.md` ("Paket GitHub (tanpa kredensial)"), with a new control row in `docs/security-model.md`, an `AGENTS.md` invariant, and `tests/test_package_workflow.py`.
