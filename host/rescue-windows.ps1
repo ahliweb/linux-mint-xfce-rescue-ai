@@ -32,7 +32,7 @@
 
 .PARAMETER Scope
   Detection scope, comma separated: all (default), hardware, hardware.cpu, ..., os, software,
-  software.selected. Selects the optional detection modules in host\modules\windows\.
+  software.selected, malware. Selects the optional detection modules in host\modules\windows\.
 
 .PARAMETER Packages
   Comma separated package IDs for -Scope software.selected.
@@ -279,10 +279,11 @@ $script:CheckIds = @(
     'hw-cpu', 'hw-cpu-thermal', 'hw-memory', 'hw-memory-errors', 'hw-disk', 'hw-gpu',
     'hw-gpu-driver', 'hw-display', 'hw-network-adapter', 'hw-wifi', 'hw-battery', 'hw-usb',
     'sw-inventory', 'sw-package-health', 'sw-broken-dependencies', 'sw-pending-config',
-    'sw-held-packages', 'sw-package-integrity', 'sw-app-health', 'sw-startup-items')
+    'sw-held-packages', 'sw-package-integrity', 'sw-app-health', 'sw-startup-items',
+    'malware-scan', 'malware-signatures', 'malware-realtime-protection', 'malware-quarantine')
 $script:ScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu',
-    'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected')
-$script:ModuleDomains = @('hardware', 'os', 'software')
+    'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware')
+$script:ModuleDomains = @('hardware', 'os', 'software', 'malware')
 $script:MaxChecks = 160
 # Environment variables a repair child process may inherit (system/profile locations only).
 $script:ChildEnvAllowlist = @('SystemDrive', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
@@ -816,7 +817,7 @@ function ConvertTo-CatalogAction {
     # in make check. Any problem makes the whole catalog unusable (nothing is half-trusted).
     param($Raw, [string]$Domain, $Problems)
     $id = [string](Get-JsonProp $Raw 'action_id')
-    if ($id -cnotmatch '^(hw|os-linux|os-windows|os-macos|sw)\.[a-z0-9]+(-[a-z0-9]+)*\z' -or $id.Length -gt 64) {
+    if ($id -cnotmatch '^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*\z' -or $id.Length -gt 64) {
         $Problems.Add('bad action_id'); return $null
     }
     foreach ($k in @('title', 'title_id', 'scope', 'platforms', 'risk', 'triggers', 'execute', 'verify', 'rollback', 'backup', 'doc')) {
@@ -844,11 +845,11 @@ function ConvertTo-CatalogAction {
     foreach ($p in @(Get-JsonProp $Raw 'params')) {
         if ($null -eq $p) { continue }
         $pt = [string]$p.type
-        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
+        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
             $Problems.Add("$id param"); continue
         }
         $entry = @{ name = [string]$p.name; type = $pt; values = @(); minimum = 0; maximum = 0; has_default = $false; default = $null }
-        if ($pt -ceq 'enum') { $entry.values = @(@($p.values) | ForEach-Object { [string]$_ }) }
+        if ($pt -ceq 'enum' -or $pt -ceq 'state_dir') { $entry.values = @(@($p.values) | ForEach-Object { [string]$_ }) }
         if ($pt -ceq 'integer') { $entry.minimum = [long]$p.minimum; $entry.maximum = [long]$p.maximum }
         if (Test-JsonHas $p 'default') { $entry.has_default = $true; $entry.default = $p.default }
         $params += , $entry
@@ -898,7 +899,7 @@ function Read-RescueCatalog {
         $ms.Write($nb, 0, $nb.Length); $ms.WriteByte(0); $ms.Write($raw, 0, $raw.Length); $ms.WriteByte(0)
         try { $doc = $utf8.GetString($raw) | ConvertFrom-Json } catch { $problems.Add("$name invalid JSON"); continue }
         $domain = [string](Get-JsonProp $doc 'domain')
-        if ((Get-JsonProp $doc 'catalog_version') -ne '1' -or @('hardware', 'os-linux', 'os-windows', 'os-macos', 'software') -cnotcontains $domain -or -not (Test-JsonHas $doc 'actions')) {
+        if ((Get-JsonProp $doc 'catalog_version') -ne '1' -or @('hardware', 'os-linux', 'os-windows', 'os-macos', 'software', 'malware') -cnotcontains $domain -or -not (Test-JsonHas $doc 'actions')) {
             $problems.Add("$name header"); continue
         }
         if ($domains.ContainsKey($domain)) { $problems.Add("$name duplicate domain") }
@@ -1214,6 +1215,13 @@ function Test-RepairParam {
             if ($Raw -cnotmatch '^[A-Za-z0-9][A-Za-z0-9@._:-]{0,127}\z') { return @{ Ok = $false; Value = $null; Error = 'is not a valid service name' } }
             return @{ Ok = $true; Value = $Raw; Error = '' }
         }
+        'detection_ref' {
+            if ($Raw -cnotmatch '^d-[0-9]{1,4}\z') { return @{ Ok = $false; Value = $null; Error = 'is not a detection reference (d-N)' } }
+            $list = Get-DetectionList
+            if ($null -eq $list -or -not $list.ContainsKey($Raw)) { return @{ Ok = $false; Value = $null; Error = 'is not in the local detection list' } }
+            return @{ Ok = $true; Value = $Raw; Error = '' }
+        }
+        'state_dir' { return @{ Ok = $false; Value = $null; Error = 'is provided by the engine, never by the operator' } }
     }
     return @{ Ok = $false; Value = $null; Error = 'parameter type is not supported on hosts' }
 }
@@ -1266,6 +1274,7 @@ function Resolve-RepairProgram {
         $cand = Join-Path (Join-Path $env:SystemRoot 'System32') $file
         if (Test-Path -LiteralPath $cand -PathType Leaf) { return $cand }
     }
+    if ($file -ieq 'MpCmdRun.exe') { return (Get-DefenderProgram) }
     $cmd = @(Get-Command -Name $file -CommandType Application -ErrorAction SilentlyContinue)
     foreach ($c in $cmd) {
         $p = [string]$c.Source
@@ -1377,11 +1386,129 @@ function Test-RepairInteractive {
     try { return (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) } catch { return $false }
 }
 
+function Test-DetectionRel {
+    param([string]$Rel)
+    if ([string]::IsNullOrEmpty($Rel) -or $Rel.Length -gt 1024 -or $Rel.StartsWith('/') -or $Rel -cmatch '[\x00-\x1f\x7f:\\]') { return $false }
+    foreach ($part in $Rel.Split('/')) { if ($part -ceq '' -or $part -ceq '.' -or $part -ceq '..') { return $false } }
+    return $true
+}
+
+function Get-DetectionList {
+    # The LOCAL malware detection list of this run: <reports>\malware-detections-<run_id>.json (0600 on the USB;
+    # paths inside, never sent to the cloud, never journaled). Returns id -> entry, or $null when absent/invalid.
+    if ($script:DetectionListLoaded) { return $script:DetectionList }
+    $script:DetectionListLoaded = $true
+    $script:DetectionList = $null
+    $run = [string]$script:RepairRunId
+    if ($run -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}\z' -or -not $script:RepairReports) { return $null }
+    $name = 'malware-detections-' + $run + '.json'
+    foreach ($cand in @((Join-Path (Join-Path $script:RepairReports 'reports') $name), (Join-Path $script:RepairReports $name))) {
+        if (-not (Test-Path -LiteralPath $cand -PathType Leaf)) { continue }
+        $fi = New-Object System.IO.FileInfo($cand)
+        if ($fi.Length -gt 8388608 -or ($fi.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $null }
+        try { $doc = [System.IO.File]::ReadAllText($cand, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { return $null }
+        if ($null -eq $doc -or [string]$doc.list_version -ne '1' -or [string]$doc.run_id -cne $run) { return $null }
+        $by = @{}
+        foreach ($d in @($doc.detections)) {
+            if ($null -eq $d) { return $null }
+            $id = [string]$d.id
+            if ($id -cnotmatch '^d-[0-9]{1,4}\z' -or ([string]$d.sha256) -cnotmatch '^[a-f0-9]{64}\z' -or ([string]$d.target_ref) -cnotmatch '^os-[0-7]\z' -or
+                -not (Test-DetectionRel ([string]$d.rel)) -or $by.ContainsKey($id)) { return $null }
+            $by[$id] = @{ id = $id; target_ref = [string]$d.target_ref; rel = [string]$d.rel; sha256 = [string]$d.sha256; signature = [string]$d.signature }
+        }
+        $script:DetectionList = $by
+        return $by
+    }
+    return $null
+}
+
+function Get-DetectionLine {
+    param($Entry)
+    $rel = [regex]::Replace([string]$Entry.rel, '[\x00-\x1f\x7f]', '?')
+    if ($rel.Length -gt 160) { $rel = $rel.Substring(0, 160) }
+    return ('{0}  {1}  {2}  {3}' -f $Entry.id, $Entry.target_ref, $Entry.signature, $rel)
+}
+
+function Show-Detections {
+    param($Proposal)
+    $list = Get-DetectionList
+    if ($null -eq $list) { return }
+    Write-Host '  Deteksi lokal / local detections (paths stay on this screen and the USB):'
+    foreach ($k in @($list.Keys | Sort-Object)) {
+        if (-not $Proposal -or -not $Proposal.target_ref -or $list[$k].target_ref -ceq $Proposal.target_ref) { Write-Host ('    ' + (Get-DetectionLine $list[$k])) }
+    }
+}
+
+function Test-DetectionTarget {
+    param($Action, $Proposal, [string]$Ref)
+    $list = Get-DetectionList
+    if ($null -eq $list -or -not $list.ContainsKey($Ref)) { return $false }
+    if (@($Action.families).Count -gt 0 -and $Proposal -and $Proposal.target_ref -and $list[$Ref].target_ref -cne $Proposal.target_ref) { return $false }
+    return $true
+}
+
+function Resolve-DetectionPath {
+    # <system drive>\ + the recorded relative path; no reparse point (symlink/junction) on the way, a regular
+    # file, and the recorded SHA-256 must still match. Returns @{ Path; Error }.
+    param($Entry)
+    $cur = '/'
+    if ($env:SystemDrive) { $cur = $env:SystemDrive + '\' }
+    foreach ($part in ([string]$Entry.rel).Split('/')) {
+        $cur = Join-Path $cur $part
+        try { $attr = [System.IO.File]::GetAttributes($cur) } catch { return @{ Path = $null; Error = 'path does not exist' } }
+        if ($attr -band [System.IO.FileAttributes]::ReparsePoint) { return @{ Path = $null; Error = 'a symbolic link or reparse point is on the path' } }
+    }
+    if (-not (Test-Path -LiteralPath $cur -PathType Leaf)) { return @{ Path = $null; Error = 'not a regular file' } }
+    try { $h = (Get-FileHash -LiteralPath $cur -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch { return @{ Path = $null; Error = 'cannot read the file' } }
+    if ($h -cne [string]$Entry.sha256) { return @{ Path = $null; Error = 'the file changed since it was detected (sha256 mismatch)' } }
+    return @{ Path = $cur; Error = '' }
+}
+
+function Get-EngineValues {
+    # Render values = the operator values + the engine-provided ones: state_dir (<reports>\<name>) and each
+    # detection_ref replaced by its verified path. $null (journaled precondition fail) when a detection is refused.
+    param($Action, $Proposal, $Values)
+    $out = @{}
+    foreach ($k in $Values.Keys) { $out[$k] = $Values[$k] }
+    foreach ($p in $Action.params) {
+        if ($p.type -ceq 'state_dir') { $out[$p.name] = Join-Path $script:RepairReports ([string]@($p.values)[0]) }
+        elseif ($p.type -ceq 'detection_ref') {
+            $list = Get-DetectionList
+            $entry = $null
+            if ($null -ne $list) { $entry = $list[[string]$Values[$p.name]] }
+            $r = @{ Path = $null; Error = 'missing entry' }
+            if ($null -ne $entry) { $r = Resolve-DetectionPath -Entry $entry }
+            if ($r.Error) {
+                Write-Host ('  ' + $Action.id + ' ' + $p.name + ': ' + $r.Error) -ForegroundColor Yellow
+                Write-RepairLog -Action $Action -Proposal $Proposal -Stage 'precondition' -Outcome 'fail' -Extra @{ reason = 'invalid-param' }
+                return $null
+            }
+            $out[$p.name] = $r.Path
+        }
+    }
+    return $out
+}
+
+function Get-DefenderProgram {
+    # MpCmdRun.exe is not on PATH: the two documented Defender locations only.
+    $c = @()
+    if ($env:ProgramFiles) { $c += (Join-Path (Join-Path $env:ProgramFiles 'Windows Defender') 'MpCmdRun.exe') }
+    if ($env:ProgramData) {
+        $plat = Join-Path (Join-Path (Join-Path $env:ProgramData 'Microsoft') 'Windows Defender') 'Platform'
+        if (Test-Path -LiteralPath $plat -PathType Container) {
+            foreach ($d in @(Get-ChildItem -LiteralPath $plat -Directory | Sort-Object Name -Descending)) { $c += (Join-Path $d.FullName 'MpCmdRun.exe') }
+        }
+    }
+    foreach ($x in $c) { if (Test-Path -LiteralPath $x -PathType Leaf) { return $x } }
+    return $null
+}
+
 function Get-RepairValues {
     # Returns @{ Values; Problem } where Problem is $null, 'missing-param' or 'invalid-param'.
-    param($Action, [bool]$AllowPrompt)
+    param($Action, [bool]$AllowPrompt, $Proposal = $null)
     $values = @{}
     foreach ($p in $Action.params) {
+        if ($p.type -ceq 'state_dir') { continue }  # provided by the engine
         $key = $Action.id + '|' + $p.name
         $raw = $null
         if ($script:RepairParams.ContainsKey($key)) { $raw = [string]$script:RepairParams[$key] }
@@ -1389,6 +1516,7 @@ function Get-RepairValues {
         if ($null -eq $raw -and $AllowPrompt) {
             $hint = $p.type
             if ($p.type -ceq 'enum') { $hint = (@($p.values) -join ', ') }
+            if ($p.type -ceq 'detection_ref') { Show-Detections -Proposal $Proposal }
             Write-Host -NoNewline ('  Nilai untuk / value for ' + $p.name + ' (' + $hint + '): ')
             $ans = Read-RescueLine
             if ($ans.Length -gt 0) { $raw = $ans }
@@ -1397,6 +1525,10 @@ function Get-RepairValues {
         $r = Test-RepairParam -Param $p -Raw $raw -Packages $script:RepairPackages
         if (-not $r.Ok) {
             Write-Host ('  ' + $Action.id + ' ' + $p.name + ' ' + $r.Error) -ForegroundColor Yellow
+            return @{ Values = $null; Problem = 'invalid-param' }
+        }
+        if ($p.type -ceq 'detection_ref' -and -not (Test-DetectionTarget -Action $Action -Proposal $Proposal -Ref $r.Value)) {
+            Write-Host ('  ' + $Action.id + ' ' + $p.name + ' belongs to another target') -ForegroundColor Yellow
             return @{ Values = $null; Problem = 'invalid-param' }
         }
         $values[$p.name] = $r.Value
@@ -1411,8 +1543,17 @@ function Write-RepairCard {
     Write-Host ('   ID: ' + $Action.title_id)
     Write-Host ('   EN: ' + $Action.title)
     if ($Proposal.target_ref) { Write-Host ('   target: ' + $Proposal.target_ref) }
-    Write-Host ('   execute: ' + ((Get-RenderedArgv -Argv $Action.execute.argv -Values $Values) -join ' '))
-    Write-Host ('   verify:  ' + ((Get-RenderedArgv -Argv $Action.verify.argv -Values $Values) -join ' '))
+    $shown = @{}
+    foreach ($k in $Values.Keys) { $shown[$k] = $Values[$k] }
+    foreach ($p in $Action.params) {
+        if ($p.type -ceq 'state_dir') { $shown[$p.name] = '<USB state>/' + $p.values[0] }
+        if ($p.type -ceq 'detection_ref') {
+            $list = Get-DetectionList
+            if ($null -ne $list -and $list.ContainsKey([string]$Values[$p.name])) { Write-Host ('   detection: ' + (Get-DetectionLine $list[[string]$Values[$p.name]])) }
+        }
+    }
+    Write-Host ('   execute: ' + ((Get-RenderedArgv -Argv $Action.execute.argv -Values $shown) -join ' '))
+    Write-Host ('   verify:  ' + ((Get-RenderedArgv -Argv $Action.verify.argv -Values $shown) -join ' '))
     $rb = $Action.rollback
     if ($rb.kind -ceq 'manual' -or $rb.kind -ceq 'restore-backup') { Write-Host ('   rollback: ' + $rb.kind + ' (' + $rb.doc + ')') }
     else { Write-Host ('   rollback: ' + $rb.kind) }
@@ -1427,7 +1568,7 @@ function Get-RepairApproval {
     $auto = ($script:RepairPolicy -ceq 'auto-safe' -and $Action.risk -ceq 'safe' -and $Proposal.origin -ceq 'catalog-trigger' -and -not $Action.requires_target_rw)
     $cli = ($script:RepairApprove -ccontains $aid)
     if ($auto -or $cli) {
-        $r = Get-RepairValues -Action $Action -AllowPrompt $false
+        $r = Get-RepairValues -Action $Action -AllowPrompt $false -Proposal $Proposal
         if ($null -eq $r.Problem) {
             $why = 'cli-approved'
             if ($auto) { $why = 'auto-safe' }
@@ -1442,7 +1583,7 @@ function Get-RepairApproval {
         Write-RepairLog -Action $Action -Proposal $Proposal -Stage 'approval' -Outcome 'declined' -Extra @{ reason = 'not-interactive' }
         return @{ Values = $null; Reason = 'not-interactive' }
     }
-    $r = Get-RepairValues -Action $Action -AllowPrompt $true
+    $r = Get-RepairValues -Action $Action -AllowPrompt $true -Proposal $Proposal
     if ($r.Problem) {
         Write-RepairLog -Action $Action -Proposal $Proposal -Stage 'approval' -Outcome 'skipped' -Extra @{ reason = $r.Problem }
         return @{ Values = $null; Reason = $r.Problem }
@@ -1531,7 +1672,9 @@ function Invoke-RepairProposal {
     $extra = @{ reason = $appr.Reason }
     if ($appr.Values.Count -gt 0) { $extra['params'] = $appr.Values }
     Write-RepairLog -Action $action -Proposal $Proposal -Stage 'approval' -Outcome 'ok' -Extra $extra
-    return (Invoke-RepairAction -Action $action -Proposal $Proposal -Values $appr.Values)
+    $render = Get-EngineValues -Action $action -Proposal $Proposal -Values $appr.Values
+    if ($null -eq $render) { return 'skipped' }
+    return (Invoke-RepairAction -Action $action -Proposal $Proposal -Values $render)
 }
 
 function ConvertTo-RepairParamMap {
@@ -1570,6 +1713,10 @@ function Invoke-RepairPhase {
         return 2
     }
     $script:RepairPolicy = $Policy
+    $script:RepairReports = $Reports
+    $script:RepairRunId = [string]$Evidence['run_id']
+    $script:DetectionListLoaded = $false
+    $script:DetectionList = $null
     $script:RepairApprove = @($ApproveList)
     $script:RepairParams = $ParamMap
     $script:RepairPackages = @($PackageList)

@@ -49,7 +49,7 @@ usage() {
   print -r -- '  --dry-run        like --evidence-only, and show what would be sent' >&2
   print -r -- '  --bundle DIR     rescue-omes bundle folder (default: auto-detect next to this script)' >&2
   print -r -- '  --no-pause       do not wait for Return before exiting' >&2
-  print -r -- '  --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected' >&2
+  print -r -- '  --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected | malware' >&2
   print -r -- '  --packages LIST  comma list of packages for --scope software.selected' >&2
   print -r -- '  --repair-policy  detect-only | approve-each (default) | auto-safe' >&2
   print -r -- '  --approve ID     pre-approve a catalog action (repeatable, or comma list)' >&2
@@ -87,7 +87,7 @@ scope_items=(${(s:,:)scope})
 typeset -U scope_items
 for s in $scope_items; do
   case $s in
-    all|hardware|hardware.cpu|hardware.memory|hardware.disk|hardware.gpu|hardware.display|hardware.network|hardware.battery|hardware.usb|os|software|software.selected) ;;
+    all|hardware|hardware.cpu|hardware.memory|hardware.disk|hardware.gpu|hardware.display|hardware.network|hardware.battery|hardware.usb|os|software|software.selected|malware) ;;
     *) usage ;;
   esac
 done
@@ -109,7 +109,7 @@ interactive=0
 [[ -t 0 && -t 1 ]] && interactive=1
 
 scope_wants() {
-  # scope_wants DOMAIN  (hardware | os | software)
+  # scope_wants DOMAIN  (hardware | os | software | malware)
   (( ${scope_items[(Ie)all]} || ${scope_items[(Ie)$1]} )) && return 0
   [[ $1 == hardware && -n ${(M)scope_items:#hardware.*} ]] && return 0
   [[ $1 == software && -n ${(M)scope_items:#software.selected} ]] && return 0
@@ -332,6 +332,7 @@ evidence_sha=''
 cur_id='' cur_origin='' cur_target='' cur_risk=''
 r_outcome='' r_reason='' r_code='' r_dur='' r_bytes='' r_sha=''
 vp_value='' vp_error='' rv_problem=''
+det_target='' det_sha='' det_sig='' det_rel=''
 zmodload zsh/datetime 2>/dev/null
 
 file_sha256() {
@@ -450,6 +451,60 @@ backup_fingerprint() {
   return 0
 }
 
+# --- malware detection list (LOCAL: paths inside; never sent, never journaled) ---------------
+lookup_detection() {
+  # lookup_detection REF -> det_target det_sha det_sig det_rel (the entry must be valid)
+  local f='' c out
+  local -a p
+  det_target=''; det_sha=''; det_sig=''; det_rel=''
+  [[ $run_id =~ '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$' ]] || return 1
+  for c in $reports/reports/malware-detections-$run_id.json $reports/malware-detections-$run_id.json; do
+    if [[ -f $c && ! -L $c ]]; then f=$c; break; fi
+  done
+  [[ -n $f ]] || return 1
+  (( $+commands[osascript] )) || return 1
+  out=$(RESCUE_DETECTION_FILE=$f RESCUE_DETECTION_REF=$1 RESCUE_RUN_ID=$run_id osascript -l JavaScript -e "$JXA_DETECTION" 2>/dev/null) || return 1
+  [[ $out == DET$'\t'* ]] || return 1
+  p=("${(@ps:\t:)out}")
+  det_target=${p[2]}; det_sha=${p[3]}; det_sig=${p[4]}; det_rel=${p[5]}
+  [[ -n $det_rel ]]
+}
+
+# Engine-provided values, after approval: state_dir -> <reports>/<name>; detection_ref d-N -> the verified
+# absolute path (no symlink on the way, a regular file, the recorded sha256 still matches).
+bind_engine_values() {
+  local name key cur='' part sha problem=''
+  for name in ${=A_params[$cur_id]}; do
+    key=$cur_id'|'$name
+    case ${P_type[$key]} in
+      state_dir) vals[$name]=$reports/${P_vals[$key]} ;;
+      detection_ref)
+        cur=''
+        if ! lookup_detection "${vals[$name]}"; then
+          problem='missing entry'
+        else
+          for part in ${(s:/:)det_rel}; do
+            cur+=/$part
+            if [[ -L $cur ]]; then problem='a symbolic link is on the path'; break; fi
+            if [[ ! -e $cur ]]; then problem='path does not exist'; break; fi
+          done
+          if [[ -z $problem && ! -f $cur ]]; then problem='not a regular file'; fi
+          if [[ -z $problem ]]; then
+            sha=$(file_sha256 "$cur")
+            [[ $sha == "$det_sha" ]] || problem='the file changed since it was detected (sha256 mismatch)'
+          fi
+        fi
+        if [[ -n $problem ]]; then
+          print -r -- "  $cur_id $name: $problem" >&2
+          ex[reason]='"invalid-param"'; jlog precondition fail
+          return 1
+        fi
+        vals[$name]=$cur ;;
+    esac
+  done
+  return 0
+}
+
 # --- parameters ---------------------------------------------------------------------------
 validate_param() {
   local key=$1 raw=$2 v d sgn n
@@ -481,6 +536,15 @@ validate_param() {
       if [[ ! $raw =~ '^[A-Za-z0-9][A-Za-z0-9@._:-]{0,127}$' ]]; then vp_error='is not a valid service name'; return 1; fi
       vp_value=$raw
       return 0 ;;
+    detection_ref)
+      if [[ ! $raw =~ '^d-[0-9]{1,4}$' ]]; then vp_error='is not a detection reference (d-N)'; return 1; fi
+      if ! lookup_detection "$raw"; then vp_error='is not in the local detection list'; return 1; fi
+      if [[ -n $cur_target && $det_target != "$cur_target" ]]; then vp_error='belongs to another target'; return 1; fi
+      vp_value=$raw
+      return 0 ;;
+    state_dir)
+      vp_error='is provided by the engine, never by the operator'
+      return 1 ;;
   esac
   vp_error='parameter type is not supported on hosts'
   return 1
@@ -492,6 +556,7 @@ resolve_values() {
   vals=(); rv_problem=''
   for name in ${=A_params[$aid]}; do
     key=$aid'|'$name
+    [[ ${P_type[$key]} == state_dir ]] && continue  # provided by the engine
     raw=''; have=0
     if (( ${+param_map[$key]} )); then
       raw=${param_map[$key]}; have=1
@@ -501,6 +566,7 @@ resolve_values() {
     if (( ! have && allow )); then
       hint=${P_type[$key]}
       [[ $hint == enum ]] && hint=${P_vals[$key]//,/, }
+      if [[ $hint == detection_ref ]]; then print -r -- '  Deteksi lokal / local detections: see the list in the reports folder (d-N)'; fi
       print -rn -- "  Nilai untuk / value for $name ($hint): "
       read -r ans || ans=''
       if [[ -n $ans ]]; then raw=$ans; have=1; fi
@@ -626,8 +692,20 @@ repair_card() {
   print -r -- "   ID: ${A_titleid[$aid]}"
   print -r -- "   EN: ${A_title[$aid]}"
   [[ -n $cur_target ]] && print -r -- "   target: $cur_target"
+  local -A saved_vals
+  local pname
+  saved_vals=("${(@kv)vals}")
+  for pname in ${=A_params[$aid]}; do
+    key=$aid'|'$pname
+    if [[ ${P_type[$key]} == state_dir ]]; then
+      vals[$pname]='<USB state>/'${P_vals[$key]}
+    elif [[ ${P_type[$key]} == detection_ref ]] && lookup_detection "${vals[$pname]}"; then
+      print -r -- "   detection: ${vals[$pname]}  $det_target  $det_sig  ${det_rel//[[:cntrl:]]/?}"
+    fi
+  done
   render_argv "$aid|execute"; print -r -- "   execute: ${rendered[*]}"
   render_argv "$aid|verify"; print -r -- "   verify:  ${rendered[*]}"
+  vals=("${(@kv)saved_vals}")
   if [[ ${A_rbkind[$aid]} == manual || ${A_rbkind[$aid]} == restore-backup ]]; then
     print -r -- "   rollback: ${A_rbkind[$aid]} (${A_rbdoc[$aid]})"
   else
@@ -763,6 +841,7 @@ process_proposal() {
   ex[reason]=$(json_str "$approved_reason")
   (( ${#vals} )) && ex[params]=$(approval_params_json)
   jlog approval ok || return 1
+  if ! bind_engine_values; then outcome=skipped; return 0; fi
   run_action || return 1
   return 0
 }
@@ -864,7 +943,7 @@ function toStep(raw, where) {
 
 function toAction(raw) {
   var id = has(raw, 'action_id') ? raw.action_id : '';
-  if (typeof id !== 'string' || id.length > 64 || !/^(hw|os-linux|os-windows|os-macos|sw)\.[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
+  if (typeof id !== 'string' || id.length > 64 || !/^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
     problems.push('bad action_id'); return null;
   }
   var need = ['title', 'title_id', 'scope', 'platforms', 'risk', 'triggers', 'execute', 'verify', 'rollback', 'backup', 'doc'];
@@ -883,7 +962,7 @@ function toAction(raw) {
   if (rb.kind === 'step' && rbStep === null) { problems.push(id + ' rollback step'); }
   var params = [];
   (raw.params || []).forEach(function (p) {
-    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name'].indexOf(p.type) < 0 ||
+    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir'].indexOf(p.type) < 0 ||
         typeof p.name !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(p.name)) { problems.push(id + ' param'); return; }
     params.push({ name: p.name, type: p.type, values: has(p, 'values') ? p.values.map(String) : [],
       minimum: has(p, 'minimum') ? Number(p.minimum) : 0, maximum: has(p, 'maximum') ? Number(p.maximum) : 0,
@@ -910,7 +989,7 @@ files.forEach(function (f) {
   var doc;
   try { doc = JSON.parse(readText(f)); } catch (e) { problems.push(name + ' invalid JSON'); return; }
   if (!isPlain(doc) || doc.catalog_version !== '1' ||
-      ['hardware', 'os-linux', 'os-windows', 'os-macos', 'software'].indexOf(doc.domain) < 0 || !Array.isArray(doc.actions)) {
+      ['hardware', 'os-linux', 'os-windows', 'os-macos', 'software', 'malware'].indexOf(doc.domain) < 0 || !Array.isArray(doc.actions)) {
     problems.push(name + ' header'); return;
   }
   if (domains[doc.domain]) { problems.push(name + ' duplicate domain'); }
@@ -1069,6 +1148,36 @@ if (problems.length > 0) {
 }
 JXA_PLANNER_END
 
+# Looks up ONE entry of the local malware detection list (osascript -l JavaScript). It only PARSES and
+# prints "DET<TAB>target<TAB>sha256<TAB>signature<TAB>relative path", or ERR when the entry is unusable.
+read -r -d '' JXA_DETECTION <<'JXA_DETECTION_END'
+ObjC.import('Foundation');
+function envv(n) {
+  var v = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey(n));
+  return (v === undefined || v === null) ? '' : String(v);
+}
+function readText(p) {
+  return ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(p, $.NSUTF8StringEncoding, $()));
+}
+var ref = envv('RESCUE_DETECTION_REF');
+var out = 'ERR';
+var doc = null;
+try { doc = JSON.parse(readText(envv('RESCUE_DETECTION_FILE'))); } catch (e) { doc = null; }
+if (doc !== null && typeof doc === 'object' && doc.list_version === '1' && doc.run_id === envv('RESCUE_RUN_ID') && Array.isArray(doc.detections)) {
+  doc.detections.forEach(function (d) {
+    if (d === null || typeof d !== 'object' || d.id !== ref || typeof d.rel !== 'string') { return; }
+    var rel = d.rel;
+    var parts = rel.split('/');
+    var bad = rel.length < 1 || rel.length > 1024 || rel.charAt(0) === '/' || /[\u0000-\u001f\u007f:\\]/.test(rel) ||
+      parts.some(function (x) { return x === '' || x === '.' || x === '..'; });
+    if (!bad && /^os-[0-7]$/.test(String(d.target_ref)) && /^[a-f0-9]{64}$/.test(String(d.sha256))) {
+      out = ['DET', d.target_ref, d.sha256, d.signature ? String(d.signature).replace(/[^A-Za-z0-9._+\/-]/g, '') : '-', rel].join('\t');
+    }
+  });
+}
+out;
+JXA_DETECTION_END
+
 # --- evidence assembly ---------------------------------------------------------------------
 check_items=()
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1201,10 +1310,10 @@ else
   add_check network-connectivity fail '' '' noref
 fi
 
-# Optional detection modules host/modules/macos/{hardware,os,software}.zsh run as child
+# Optional detection modules host/modules/macos/{hardware,os,software,malware}.zsh run as child
 # processes (zsh -f, never sourced). Each prints lines "CHECK_ID STATUS [KIND NUMBER]"; the
 # lines are data and are validated here; anything else is dropped.
-for domain in hardware os software; do
+for domain in hardware os software malware; do
   scope_wants $domain || continue
   mod=$bundle/host/modules/macos/$domain.zsh
   [[ -f $mod ]] || continue
@@ -1214,7 +1323,7 @@ for domain in hardware os software; do
   fi
   for line in ${(f)mod_out}; do
     if [[ $line =~ '^([a-z0-9]+(-[a-z0-9]+)*) (pass|fail|warn|not_applicable|unknown)( (percent|count|bytes|days|seconds|celsius) ([0-9]+(\.[0-9]+)?))?$' ]] \
-        && [[ $match[1] == (hw-*|sw-*|macos-*|smart-health|nvme-health|disk-free-space|encryption-status) ]] \
+        && [[ $match[1] == (hw-*|sw-*|malware-*|macos-*|smart-health|nvme-health|disk-free-space|encryption-status) ]] \
         && (( ${#check_items} < 160 )); then
       if [[ $domain == hardware ]]; then
         add_check $match[1] $match[3] "$match[5]" "$match[6]" noref

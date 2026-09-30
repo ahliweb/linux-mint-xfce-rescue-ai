@@ -49,6 +49,7 @@ def clean_env(**extra):
            if k not in ('OPENCODE_GO_API_KEY', 'RESCUE_TEST_BASE_URL', 'RESCUE_PS_LIBRARY_ONLY')}
     # hardware detection reads a (nonexistent) fixture root, never the machine running the tests
     env.setdefault('RESCUE_HARDWARE_FIXTURE_ROOT', '/nonexistent-hardware-fixture')
+    env.setdefault('RESCUE_MALWARE_FIXTURE_ROOT', '/nonexistent-malware-fixture')
     env.update(extra)
     return env
 
@@ -604,7 +605,7 @@ class MacLauncherTests(unittest.TestCase):
                          ('macos', 'macOS 14.5', 'arm64', 'filevault'))
         checks = {c['check_id']: c for c in data['checks']}
         # Detection modules (hw-*, sw-*) add their own checks; they are tested in their own test files.
-        self.assertEqual([c for c in checks if not c.startswith(('hw-', 'sw-'))], ['os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status',
+        self.assertEqual([c for c in checks if not c.startswith(('hw-', 'sw-', 'malware-'))], ['os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status',
                                         'macos-crash-reports', 'macos-startup-disk', 'disk-free-space',
                                         'network-connectivity', 'macos-disk-verify'])
         for name in ('os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status', 'macos-startup-disk'):

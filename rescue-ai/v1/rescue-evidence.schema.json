@@ -153,7 +153,11 @@
               "sw-held-packages",
               "sw-package-integrity",
               "sw-app-health",
-              "sw-startup-items"
+              "sw-startup-items",
+              "malware-scan",
+              "malware-signatures",
+              "malware-realtime-protection",
+              "malware-quarantine"
             ]
           },
           "status": {
@@ -424,7 +428,7 @@
     "scope": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 13,
+      "maxItems": 14,
       "uniqueItems": true,
       "description": "Detection scope the operator selected (1.2). \"all\" alone means everything; \"software.selected\" means only operator-listed packages.",
       "items": {
@@ -442,7 +446,8 @@
           "hardware.usb",
           "os",
           "software",
-          "software.selected"
+          "software.selected",
+          "malware"
         ]
       }
     },
@@ -470,7 +475,7 @@
           "action_id": {
             "type": "string",
             "maxLength": 64,
-            "pattern": "^(hw|os-linux|os-windows|os-macos|sw)\\.[a-z0-9]+(-[a-z0-9]+)*$"
+            "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw)\\.[a-z0-9]+(-[a-z0-9]+)*$"
           },
           "origin": {
             "type": "string",

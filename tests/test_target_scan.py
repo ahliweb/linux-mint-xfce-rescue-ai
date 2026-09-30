@@ -198,7 +198,8 @@ class TestScanFixtures(ScanFixtureCase):
     def test_environment_checks_have_no_target_ref(self):
         data = json.loads(self.scan()[0].read_text())
         env = [c for c in data["checks"] if "target_ref" not in c]
-        self.assertEqual({c["check_id"] for c in env}, {"block-device-discovery", "network-connectivity"})
+        self.assertEqual({c["check_id"] for c in env}, {"block-device-discovery", "network-connectivity",
+                                                    "malware-signatures", "malware-quarantine"})
 
 
 class TestScanVariants(ScanFixtureCase):

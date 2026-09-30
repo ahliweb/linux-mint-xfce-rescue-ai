@@ -19,6 +19,9 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / 'scripts'
+# Host-mode module tests below run the shipped detection modules without a fixture root: the malware
+# module must never scan the machine that runs the tests (a developer machine may have ClamAV).
+os.environ.setdefault('RESCUE_MALWARE_FIXTURE_ROOT', '/nonexistent-malware-fixture')
 FIXTURES = ROOT / 'rescue-ai/v1/fixtures'
 LIVE_12 = FIXTURES / 'valid-live-scoped-1.2.json'
 sys.path.insert(0, str(SCRIPTS / 'lib'))
@@ -158,7 +161,7 @@ class CatalogInvariantTests(unittest.TestCase):
     def test_shipped_catalogs_are_valid(self):
         catalog = rc.load()
         self.assertEqual(sorted(catalog.files),
-                         ['hardware.json', 'os-linux.json', 'os-macos.json', 'os-windows.json', 'software.json'])
+                         ['hardware.json', 'malware.json', 'os-linux.json', 'os-macos.json', 'os-windows.json', 'software.json'])
         self.assertRegex(catalog.sha256, '^[a-f0-9]{64}$')
 
     def test_valid_examples_of_each_risk_class(self):

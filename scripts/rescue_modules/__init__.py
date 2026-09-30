@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOMAINS = ('hardware', 'operating_system', 'software')
-DOMAIN_SCOPE = {'hardware': 'hardware', 'operating_system': 'os', 'software': 'software'}
+DOMAINS = ('hardware', 'operating_system', 'software', 'malware')
+DOMAIN_SCOPE = {'hardware': 'hardware', 'operating_system': 'os', 'software': 'software', 'malware': 'malware'}
 HARDWARE_ITEMS = ('cpu', 'memory', 'disk', 'gpu', 'display', 'network', 'battery', 'usb')
 STATUSES = {'pass', 'fail', 'warn', 'not_applicable', 'unknown'}
 KINDS = {'percent', 'count', 'bytes', 'days', 'seconds', 'celsius'}
@@ -52,6 +52,12 @@ class Context:
     packages: tuple = ()            # operator-selected packages for scope software.selected
     fixture_root: str | None = None  # test hook: modules read fixture files instead of the system
     warnings: list = field(default_factory=list)
+    # Malware module (docs/malware.md). state_dir: USB state (signature DB at state_dir/clamav, quarantine at
+    # state_dir/quarantine); detections: LOCAL findings (paths, never evidence) collected during the run.
+    state_dir: str | None = None
+    malware_full_disk: bool = False
+    detections: list = field(default_factory=list)
+    cache: dict = field(default_factory=dict)
 
     def wants(self, domain, item=None):
         """Is *domain* (hardware/os/software), or hardware *item*, in the operator's scope?"""
@@ -63,7 +69,7 @@ class Context:
                 item is None and any(x.startswith('hardware.') for x in s))
         if domain == 'software':
             return 'software' in s or 'software.selected' in s
-        return domain in s
+        return domain in s  # os, malware
 
 
 def sanitize(checks, where, ctx, allow_target_ref):

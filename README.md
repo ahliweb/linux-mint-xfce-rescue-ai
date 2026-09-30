@@ -40,7 +40,7 @@ flowchart LR
 |---|---|---|
 | Boot from the USB (Linux Mint 22.3 XFCE live) | Hardware preflight, read-only scan of the operating systems on the internal disks, OpenCode Go analysis, catalog repairs under `--repair-policy` (default `approve-each`), then Hermes. With the persistence image, Hermes and all its state live on the USB | [target OS scan](docs/target-os-scan.md), [persistence](docs/persistence.md) |
 | Running Windows 10/11, macOS 12+, or Linux | Double-click `RESCUE-WINDOWS.cmd` / `RESCUE-MACOS.command`, or run `rescue-omes/host/rescue-linux.sh`. Nothing is installed on the host; evidence, analysis, and the repair journal are written to the USB | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
-| Scope and repair policy (all modes) | `--scope all` or selected areas (`hardware.disk`, `os`, `software.selected --packages ...`); repairs are typed catalog actions only | [repair framework](docs/repair-framework.md) |
+| Scope and repair policy (all modes) | `--scope all` or selected areas (`hardware.disk`, `os`, `malware`, `software.selected --packages ...`); repairs are typed catalog actions only | [repair framework](docs/repair-framework.md) |
 
 ## What is implemented
 
@@ -75,6 +75,7 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - Installed software inventory, health, and repair ([software](docs/software.md)): numbers-only `sw-*` checks for all packages or `--scope software.selected --packages firefox,vlc`. Repairs are destructive catalog actions (dpkg/apt, winget) that need a backup reference and a typed approval. **Implemented**; real package managers are **Hardware-required**.
 - OS detection and repair for Linux Mint, Windows, and macOS ([OS repair](docs/os-repair.md)): scoped checks, per-action approval, and offline Linux repairs through an operator-approved read-write remount (`scripts/lib/target_mount.py`). **Implemented**; real mounts, chroot, and Windows execution are **Hardware-required**.
 - Repairs from the Windows and macOS host launchers ([host repair](docs/host-repair.md)): the same catalog, policy, approval, and journal as on Linux, run natively without a shell and without elevation. **Implemented** at source level; real Windows 10/11 and macOS execution is **Hardware-required**.
+- Malware detection and quarantine ([malware](docs/malware.md)): `--scope malware`, detection only or detection plus repair. ClamAV on the read-only mounted OS (live USB) and on Linux hosts, Microsoft Defender status on Windows, XProtect age on macOS; evidence carries counts only and the paths stay in a local `0600` list. Quarantine is reversible and always asks; deletion is destructive; a clean result is not proof of absence. **Implemented**; ClamAV/Defender on real machines are **Hardware-required**, signature downloads are **Environment-blocked**.
 - Candidate learning, feedback, and signed promotion — **Planned** ([learning loop](docs/hermes-learning-loop.md)).
 
 ## Important boot limitation
@@ -288,6 +289,7 @@ See:
 - [Hardware detection and repair](docs/hardware.md)
 - [Installed software: inventory, health, repair](docs/software.md)
 - [OS detection and repair](docs/os-repair.md)
+- [Malware detection and quarantine](docs/malware.md)
 - [Repairs from the Windows and macOS launchers](docs/host-repair.md)
 - [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.3.0`)
 - [Hermes profile](profiles/rescue-hermes/)

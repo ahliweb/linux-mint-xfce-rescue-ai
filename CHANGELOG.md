@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Malware detection and quarantine (`--scope malware`; detection only, or detection plus repair): `scripts/rescue_modules/malware.py` runs ClamAV `clamscan` read-only (bounded sizes and time, never `--remove`/`--move`) on each read-only mounted target's default areas (or the whole partition with `--malware-full-disk`) and on Linux hosts; `host/modules/windows/malware.ps1` reads Microsoft Defender status and threat counts; `host/modules/macos/malware.zsh` reports XProtect age and Gatekeeper (`malware-scan` is honestly `unknown` on macOS). New evidence check IDs `malware-scan`, `malware-signatures`, `malware-realtime-protection`, `malware-quarantine` (counts and days only, `fail` on detections, `warn` when signatures are older than 7 days or of unknown age, never a clean `pass` then) and scope value `malware`. Paths, sha256 and signature names go only to a local `0600` list `malware-detections-<run>.json` that never reaches evidence, the journal, or the cloud. ahliweb/linux-mint-xfce-rescue-ai#20
+- Catalog domain `malware` (`rescue-ai/v1/catalog/malware.json`, prefix `mw`): `mw.clamav-update-signatures` (freshclam into `<state-dir>/clamav`, safe), `mw.quarantine-target-detection` / `mw.quarantine-detection` (reversible, always ask even under `auto-safe`, automatic restore rollback), `mw.delete-target-detection` / `mw.delete-detection` (destructive: backup reference, typed approval, manual rollback), `mw.defender-update-signatures` and `mw.defender-quick-scan` (Windows, safe). ahliweb/linux-mint-xfce-rescue-ai#20
+- Contract: parameter types `detection_ref` (opaque `d-N` reference resolved by the engine, refused when the file changed, is a symlink, or is outside the target root) and `state_dir` (engine-provided `clamav`/`quarantine` directory of the USB state), implemented in the Python engine and in the Windows and macOS host engines. ahliweb/linux-mint-xfce-rescue-ai#20
+- `scripts/malware-quarantine.py` (installed as `/usr/local/bin/rescue-malware-quarantine`): moves one detected file to `<state-dir>/quarantine/` with a manifest (path, sha256, mode, uid/gid, mtime) and restores it byte for byte, refusing symlinks, swapped files, and overwrites. The persistence image adds `clamav` and `clamav-freshclam` (no signature download at build time; services masked). See `docs/malware.md`. ahliweb/linux-mint-xfce-rescue-ai#20
+
 ## [0.3.0] - 2026-09-30
 
 Multi-OS rescue USB: evidence schema 1.2, scoped hardware/OS/software detection, the typed repair catalog with a policy-gated engine and journal (Linux, Windows, macOS), a persistence image with Hermes pre-installed, host launchers, and candidate skill submission.

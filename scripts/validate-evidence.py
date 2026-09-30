@@ -36,7 +36,7 @@ SCOPE_GROUPS = {'hardware': 'hardware.', 'software': 'software.'}
 
 
 def is_v12_check(check_id):
-    return check_id in V12_CHECK_IDS or check_id.startswith(('hw-', 'sw-'))
+    return check_id in V12_CHECK_IDS or check_id.startswith(('hw-', 'sw-', 'malware-'))
 
 
 def scope_errors(scope):
@@ -69,7 +69,7 @@ def semantic_errors(data):
                 or data['mutation_status'] in V12_MUTATION_STATUSES \
                 or any((c.get('value') or {}).get('kind') in V12_VALUE_KINDS for c in data['checks']):
             errors.append('schema_version %s must not use 1.2 fields (scope, repair_policy, repair_proposals, '
-                          'hw-*/sw-* and new OS check IDs, failed/rolled_back, celsius)' % data['schema_version'])
+                          'hw-*/sw-*/malware-* and new OS check IDs, failed/rolled_back, celsius)' % data['schema_version'])
         if len(data['checks']) > PRE_V12_MAX_CHECKS:
             errors.append('schema_version %s allows at most %d checks' % (data['schema_version'], PRE_V12_MAX_CHECKS))
     errors.extend(scope_errors(data.get('scope') or []))

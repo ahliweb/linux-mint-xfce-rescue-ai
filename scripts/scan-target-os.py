@@ -20,9 +20,11 @@ Safety properties (see docs/target-os-scan.md and docs/security-model.md):
 Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 
 Usage: scan-target-os.py --output FILE [--scope LIST] [--packages LIST] [--repair-policy P]
-                         [--fixture-root DIR]
+                         [--state-dir DIR] [--malware-full-disk] [--fixture-root DIR]
   --scope / --packages select the detection modules in scripts/rescue_modules/
-  (hardware, operating_system, software); --repair-policy is recorded in the
+  (hardware, operating_system, software, malware); --state-dir is the USB state
+  (signature DB, quarantine, and the LOCAL malware detection list written to
+  DIR/reports/, never part of the evidence); --repair-policy is recorded in the
   evidence. Catalog-trigger repair proposals (action IDs only) are added from
   rescue-ai/v1/catalog/; nothing is repaired here (see scripts/rescue-repair.py).
   --fixture-root is a TEST hook: every subdirectory NAME of DIR is treated as an
@@ -898,13 +900,18 @@ def encrypted_target(kind, part):
 
 
 MODULE_CTX = None  # rescue_modules.Context set by main(); None disables the module hooks
+MODULE_SEQ = 0
 
 
 def module_checks(root, info):
     """Checks from the domain modules for one target mounted read-only at *root*."""
     if MODULE_CTX is None:
         return []
+    global MODULE_SEQ
+    MODULE_SEQ += 1
+    info['module_key'] = 'k%d' % MODULE_SEQ  # maps the local malware detection list to os-N once refs exist
     target = {k: info.get(k) for k in ('family', 'release')}
+    target['target_ref'] = info['module_key']
     return [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
             for c in rescue_modules.collect_offline_target(MODULE_CTX, root, target)]
 
@@ -1054,6 +1061,22 @@ def build_evidence(targets, env_checks, now, boot_mode, scope=('all',), policy='
     }
 
 
+def write_malware_list(report, targets):
+    """LOCAL detection list (0600, paths inside; never evidence, never sent to the cloud)."""
+    if MODULE_CTX is None or not MODULE_CTX.detections:
+        return
+    refs = {t['module_key']: 'os-%d' % i for i, t in enumerate(targets[:len(report['target_systems'])])
+            if t.get('module_key')}
+    try:
+        path = rescue_modules.malware.write_detection_list(MODULE_CTX, report['run_id'], refs.get)
+    except (OSError, ValueError) as exc:
+        print('warning: could not write the local malware detection list: %s' % exc, file=sys.stderr)
+        return
+    if path:
+        print('malware: %d detection(s) recorded in the local list (never sent to the cloud)' % len(MODULE_CTX.detections),
+              file=sys.stderr)
+
+
 def add_proposals(report, scope, catalog_dir=None):
     """Attach catalog-trigger proposals (IDs only). A broken catalog never breaks the scan."""
     try:
@@ -1102,6 +1125,10 @@ def main(argv=None):
     parser.add_argument('--fixture-root', metavar='DIR', help='test hook: directories treated as mounted partitions')
     parser.add_argument('--scope', default='all', help='comma list: %s' % ', '.join(repair_catalog.SCOPE_VALUES))
     parser.add_argument('--packages', default='', help='comma list of packages for scope software.selected')
+    parser.add_argument('--state-dir', metavar='DIR',
+                        help='USB state directory: signature DB (DIR/clamav), quarantine, local detection list')
+    parser.add_argument('--malware-full-disk', action='store_true',
+                        help='scan whole partitions for malware instead of the default areas (slow)')
     parser.add_argument('--repair-policy', choices=('detect-only', 'approve-each', 'auto-safe'), default='approve-each')
     parser.add_argument('--catalog-dir', metavar='DIR', help=argparse.SUPPRESS)
     parser.add_argument('--provider-ready', action='store_true',
@@ -1115,7 +1142,8 @@ def main(argv=None):
     if any(not repair_catalog.PACKAGE_RE.match(p) for p in packages):
         parser.error('invalid package name in --packages')
     global MODULE_CTX
-    MODULE_CTX = rescue_modules.Context(mode='live', scope=scope, packages=packages, fixture_root=args.fixture_root)
+    MODULE_CTX = rescue_modules.Context(mode='live', scope=scope, packages=packages, fixture_root=args.fixture_root,
+                                        state_dir=args.state_dir, malware_full_disk=args.malware_full_disk)
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, _on_signal)
@@ -1191,6 +1219,7 @@ def main(argv=None):
                                           args.provider_ready),
                            scope, args.catalog_dir)
     write_atomic(report, args.output)
+    write_malware_list(report, targets)
     print(args.output)
     print('scan-target-os: %d operating system(s) examined, %d checks / sistem operasi diperiksa: %d'
           % (len(report['target_systems']), len(report['checks']), len(report['target_systems'])))

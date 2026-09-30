@@ -55,7 +55,7 @@ Opsi: `--size-mib N` (default 8192, minimum 4096), `--skip-hermes-install`, `--k
 
 Yang dilakukan di dalam container build (jaringan aktif hanya untuk apt dan installer Hermes):
 
-1. `apt-get install --no-install-recommends dislocker libfsapfs-utils smartmontools nvme-cli` (semuanya ada di arsip Ubuntu 24.04 noble; bila salah satu tidak tersedia, dilaporkan dan build dilanjutkan tanpa paket itu).
+1. `apt-get install --no-install-recommends dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam` (dengan `policy-rc.d` yang menolak start layanan; unit `clamav-freshclam`/`clamav-daemon` di-mask; tidak ada unduhan tanda tangan saat build, lihat [malware](malware.md); pengguna sistem `clamav` diizinkan; semuanya ada di arsip Ubuntu 24.04 noble; bila salah satu tidak tersedia, dilaporkan dan build dilanjutkan tanpa paket itu).
 2. Membuat user build `mint` (uid/gid 1000, home `/home/mint`).
 3. Menjalankan installer resmi Hermes sebagai `mint` dengan `HERMES_HOME=/home/mint/.local/share/rescue-omes/hermes` (tanpa browser/computer-use, non-interaktif). Installer diverifikasi terhadap `--installer-sha256` bila diberikan; sha256 aktual selalu dicetak.
 4. Menjalankan `scripts/install-hermes-rescue.sh --state-dir /home/mint/.local/share/rescue-omes --skip-hermes-install` sebagai `mint`: profile (`SOUL.md`, `AGENTS.md`), `config.yaml`, `hermes/env` (`0600`), launcher di `/usr/local/bin`, dan entri autostart `~/.config/autostart/hermes-rescue.desktop`. Bundle runtime lengkap (allowlist yang sama dengan `copy_bundle`, termasuk `host/` bila ada) ditempatkan di `/usr/local/lib/rescue-omes`. Symlink `/usr/local/bin/hermes` ditambahkan supaya launcher menemukan `hermes`.
@@ -76,7 +76,7 @@ Build nyata di host pengembangan (Docker 29, Linux 6.8) dengan ISO `linuxmint-22
 | Layer | 94 ribu entri dipertahankan, 1212 dikecualikan, 118 whiteout (char 0:0), 48 direktori opaque |
 | `e2fsck -fn` | bersih |
 | Hermes | `Hermes Agent 2026.9.24`, Python 3.14.7 (uv), tanpa browser/computer-use |
-| Paket tambahan | `dislocker`, `libfsapfs-utils`, `smartmontools`, `nvme-cli` (semua tersedia di noble) |
+| Paket tambahan | `dislocker`, `libfsapfs-utils`, `smartmontools`, `nvme-cli`, `clamav`, `clamav-freshclam` (semua tersedia di noble); helper `/usr/local/bin/rescue-malware-quarantine` |
 
 Checksum image bergantung pada waktu build dan versi Hermes terbaru; catat sha256 yang dicetak script pada build Anda sendiri. Nilai ini bukan bukti boot.
 

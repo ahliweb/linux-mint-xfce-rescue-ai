@@ -14,6 +14,11 @@ Placeholders inside argv elements take exactly one of three forms:
   ``{name}``                 the whole element is the parameter value
   ``--opt={name}``           a literal option prefix, then the value
   ``{target_root}/lit/path`` only for target_root parameters, a literal path suffix
+
+Engine-provided parameter types (never operator input): ``target_root`` (mount point of the target
+OS) and ``state_dir`` (one fixed subdirectory, ``clamav`` or ``quarantine``, of the USB state).
+``detection_ref`` (``d-N``) is an operator-chosen opaque reference to one entry of the local
+malware detection list; the engine resolves it to a verified regular-file path.
 """
 from __future__ import annotations
 
@@ -28,16 +33,17 @@ CATALOG_SCHEMA = ROOT / 'rescue-ai/v1/repair-catalog.schema.json'
 EVIDENCE_SCHEMA = ROOT / 'rescue-ai/v1/rescue-evidence.schema.json'
 
 DOMAIN_PREFIX = {'hardware': 'hw', 'os-linux': 'os-linux', 'os-windows': 'os-windows',
-                 'os-macos': 'os-macos', 'software': 'sw'}
+                 'os-macos': 'os-macos', 'software': 'sw', 'malware': 'mw'}
 DOMAIN_FAMILIES = {'os-linux': {'linuxmint', 'linux-other'}, 'os-windows': {'windows'}, 'os-macos': {'macos'}}
 DOMAIN_PLATFORMS = {'os-linux': {'live-linux', 'linux-host'}, 'os-windows': {'live-linux', 'windows-host'},
                     'os-macos': {'live-linux', 'macos-host'}}
+DETECTION_RE = re.compile(r'^d-[0-9]{1,4}$')
 LIVE_PLATFORMS = {'linux-mint-xfce-live': 'live-linux', 'systemrescue-live': 'live-linux',
                   'other-live-linux': 'live-linux', 'linux-host': 'linux-host',
                   'windows-host': 'windows-host', 'macos-host': 'macos-host'}
 SCOPE_ITEMS = ('hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display',
-               'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software')
-SCOPE_VALUES = ('all', 'hardware') + SCOPE_ITEMS + ('software.selected',)
+               'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'malware')
+SCOPE_VALUES = ('all', 'hardware') + SCOPE_ITEMS[:-1] + ('software.selected', 'malware')
 
 # Programs that would turn a fixed argv back into "run anything": shells,
 # interpreters, privilege wrappers (the engine adds `sudo -n` itself), command
@@ -145,8 +151,11 @@ def action_errors(action, domain, check_ids):
                 say('%s: enum parameter %s needs values' % (aid, p['name']))
             elif 'default' in p and p['default'] not in p['values']:
                 say('%s: default of %s is not one of its values' % (aid, p['name']))
+        elif kind == 'state_dir':
+            if p.get('values') not in (['clamav'], ['quarantine']):
+                say('%s: state_dir parameter %s needs exactly one value: clamav or quarantine' % (aid, p['name']))
         elif 'values' in p:
-            say('%s: only enum parameters take values (%s)' % (aid, p['name']))
+            say('%s: only enum and state_dir parameters take values (%s)' % (aid, p['name']))
         if kind == 'integer':
             lo, hi = p.get('minimum'), p.get('maximum')
             if lo is None or hi is None or lo > hi:
@@ -155,7 +164,7 @@ def action_errors(action, domain, check_ids):
                 say('%s: default of %s is outside minimum..maximum' % (aid, p['name']))
         elif 'minimum' in p or 'maximum' in p:
             say('%s: only integer parameters take minimum/maximum (%s)' % (aid, p['name']))
-        if kind in ('block_device', 'target_root') and 'default' in p:
+        if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir') and 'default' in p:
             say('%s: %s parameters cannot have a default (%s)' % (aid, kind, p['name']))
         if kind == 'target_root' and set(action['platforms']) != {'live-linux'}:
             say('%s: target_root parameters exist only on the live-linux platform' % aid)
@@ -210,9 +219,9 @@ def action_errors(action, domain, check_ids):
         if not action['scope'].startswith('hardware.'):
             say('%s: hardware actions need a hardware.* scope' % aid)
     else:
-        if not families:
+        if not families and domain != 'malware':  # malware actions may be about the scanner, not one OS
             say('%s: %s actions need target_families' % (aid, domain))
-        expected_scope = 'software' if domain == 'software' else 'os'
+        expected_scope = {'software': 'software', 'malware': 'malware'}.get(domain, 'os')
         if action['scope'] != expected_scope:
             say('%s: %s actions use scope %r' % (aid, domain, expected_scope))
     if domain in DOMAIN_FAMILIES and families and not set(families) <= DOMAIN_FAMILIES[domain]:
@@ -440,12 +449,18 @@ def validate_param(param, value, packages=None):
         if not SERVICE_RE.match(text):
             raise ValueError('is not a valid service name')
         return text
+    if kind == 'detection_ref':
+        if not DETECTION_RE.match(text):
+            raise ValueError('is not a detection reference (d-N)')
+        return text
     if kind == 'block_device':
         if not BLOCK_RE.match(text) or '..' in text.split('/'):
             raise ValueError('is not a /dev/ block device path')
         return text
     if kind == 'target_root':
         raise ValueError('is provided by the target mount provider, never by the operator')
+    if kind == 'state_dir':
+        raise ValueError('is provided by the engine (the USB state directory), never by the operator')
     raise ValueError('unknown parameter type %s' % kind)
 
 
