@@ -82,8 +82,10 @@ if ((scan_targets)); then
   printf 'Memindai sistem operasi di disk internal (read-only) ...\n'
   printf 'Scanning installed operating systems on internal disks (read-only) ...\n'
   scan_args=(--output "$evidence_file" --scope "$scope" --repair-policy "$repair_policy" --state-dir "$state_dir")
-  scan_timeout=900
-  if ((malware_full)); then scan_args+=(--malware-full-disk); scan_timeout=3900; fi
+  # The malware scan has its own budget (780 s default areas, 3300 s full disk, for all targets);
+  # the rest of the scan (mounts, OS/hardware/software checks) gets the remaining margin.
+  scan_timeout=1500
+  if ((malware_full)); then scan_args+=(--malware-full-disk); scan_timeout=4200; fi
   [[ -z $packages ]] || scan_args+=(--packages "$packages")
   [[ -z $OPENCODE_GO_API_KEY ]] || scan_args+=(--provider-ready)  # presence only; the key is never passed
   if timeout "$scan_timeout" sudo -n python3 "$root/scripts/scan-target-os.py" "${scan_args[@]}" && [[ -s $evidence_file ]]; then
