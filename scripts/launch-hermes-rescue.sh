@@ -94,4 +94,8 @@ if ((scan_targets)); then
   fi
 fi
 
+# Hermes only needs the provider key. The GitHub Issues token stays out of its
+# environment (and every tool it spawns); scripts/submit-skill.py reads it from
+# the allowlisted config files itself.
+unset RESCUE_GITHUB_ISSUES_TOKEN
 exec hermes --tui --provider custom --model mimo-v2.6-flash

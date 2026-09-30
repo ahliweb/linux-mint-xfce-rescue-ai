@@ -484,6 +484,13 @@ class StaticTests(unittest.TestCase):
         self.assertIn("API_BASE = 'https://api.github.com'", text)
         self.assertNotIn('argv', re.sub(r'#.*', '', text).split('def api')[1].split('def issue_url')[0])
 
+    def test_launcher_keeps_the_issues_token_out_of_the_hermes_environment(self):
+        # rescue_load_env exports allowlisted keys; Hermes must not inherit the GitHub token.
+        text = (REPO / 'scripts' / 'launch-hermes-rescue.sh').read_text(encoding='utf-8')
+        unset_at = text.index('unset RESCUE_GITHUB_ISSUES_TOKEN')
+        self.assertLess(unset_at, text.index('exec hermes'))
+        self.assertLess(text.rindex('rescue_load_env'), unset_at)
+
 
 class RescueEnvTests(unittest.TestCase):
     def test_rescue_env_accepts_the_new_key_and_still_ignores_others(self):

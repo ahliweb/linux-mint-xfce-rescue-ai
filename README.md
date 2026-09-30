@@ -51,6 +51,7 @@ Status legend used in the docs: **Implemented** (source-level, covered by `make 
 - `scripts/test-hermes-conversation.sh` — dry-run by default; `--live` performs one bounded cloud smoke test. **Environment-blocked** (`--live`).
 - `scripts/verify-autostart.sh` — validates the XFCE autostart entry. The reboot itself is **Hardware-required**.
 - `scripts/check-hardware-readiness.py` — read-only preflight for CPU, RAM, VGA/display, internet, and USB live-media minimums; writes a `0600` JSON report and blocks Hermes when required checks fail. **Implemented**; results are only meaningful on the target PC.
+- `scripts/submit-skill.py` — after an approved, verified case, prepares a sanitized, secret-scanned candidate skill and, only after the operator confirms, files it as a `skill-candidate` issue (de-duplicated by content hash); without a token it prints a pre-filled issue link ([skill submission](docs/skill-submission.md)). **Implemented**; real GitHub calls are **Environment-blocked**.
 - Candidate learning, feedback, and signed promotion — **Planned** ([learning loop](docs/hermes-learning-loop.md)).
 
 ## Important boot limitation
@@ -258,6 +259,7 @@ See:
 - [Security model](docs/security-model.md)
 - [Testing and verification](docs/testing.md)
 - [Persistence image with Hermes pre-installed](docs/persistence.md)
+- [Candidate skill submission](docs/skill-submission.md)
 - [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.1`)
 - [Hermes profile](profiles/rescue-hermes/)
 - [OpenCode Go documentation](https://opencode.ai/docs/go)

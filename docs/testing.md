@@ -17,7 +17,7 @@ flowchart LR
 
 | Level | Meaning | Examples | Where it runs |
 |---|---|---|---|
-| Implemented / source-level | Deterministic, no real USB, no cloud | Syntax, `shellcheck -x`, schema fixtures, 52 unit tests | `make check`, CI |
+| Implemented / source-level | Deterministic, no real USB, no cloud | Syntax, `shellcheck -x`, schema fixtures, unit tests | `make check`, CI |
 | Hardware-required | Needs a physical PC and USB | Ventoy write, firmware boot menu, live XFCE session, reboot autostart | Lab |
 | Environment-blocked | Needs network, a real key, or provider spend | `test-hermes-conversation.sh --live`, `check-hermes-rescue.sh` provider probe | Operator-approved run |
 | Planned | Design only | Learning promotion pipeline | Not testable yet |
@@ -45,7 +45,7 @@ flowchart LR
 
 ## What the tests cover
 
-There are 52 tests in `tests/`, all standard-library `unittest`.
+The tests in `tests/` are all standard-library `unittest` (run `make test` for the current count).
 
 | File | Covers |
 |---|---|

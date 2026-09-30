@@ -178,6 +178,8 @@ Feedback harus dikaitkan dengan evidence hash dan case ID. Tanpa feedback dan ve
 
 ### 4. Promosi bertahap
 
+Pengajuan kandidat skill ke issue GitHub (setelah sanitasi dan konfirmasi operator) dijelaskan di [skill-submission.md](skill-submission.md).
+
 ```mermaid
 flowchart LR
     S[Session-only] --> M[Candidate memory]

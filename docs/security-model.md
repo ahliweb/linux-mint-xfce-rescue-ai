@@ -24,12 +24,14 @@ flowchart TD
 | Corrupt ISO copy on USB | `prepare-ventoy-usb.sh` re-hashes the copied ISO against the verified source | Implemented |
 | Secrets written to USB by the bundle copy | Allowlisted copy: no `.env`, `config/rescue.env`, `.git`, ISOs, images, archives; `assert_bundle_clean` re-checks; `--bundle-only DEST` allows inspection | Implemented |
 | API key on a USB the operator did not intend | Provisioning is a separate step that writes only `OPENCODE_GO_API_KEY` to `config/rescue.env` (mode `0600` requested; FAT/exFAT may not enforce it); `--no-provision-secrets` skips it. A provisioned USB is credential-bearing and needs physical access control | Implemented; residual risk documented |
-| Config file executes code | `scripts/lib/rescue-env.sh` parses `KEY=VALUE` as data with an allowlist of five keys; `$` and backticks in unquoted or double-quoted values invalidate the line; never `source`d | Implemented |
+| Config file executes code | `scripts/lib/rescue-env.sh` parses `KEY=VALUE` as data with an allowlist of six keys; `$` and backticks in unquoted or double-quoted values invalidate the line; never `source`d | Implemented |
 | Config file tampering | World-writable config is refused; a file owned by another non-root user is skipped with a warning; existing environment variables are not overridden | Implemented |
 | Key visible in process list | `check-hermes-rescue.sh` passes the `Authorization` header to `curl --config -` on stdin; control characters in the key are rejected | Implemented |
 | Key stored insecurely in state | `<state-dir>/hermes/env` is written as `KEY='value'` under `umask 077` and `0600`; newlines in the key are refused | Implemented |
 | Unpinned Hermes installer | `install-hermes-rescue.sh --installer-sha256 HEX` (or `HERMES_INSTALLER_SHA256`) verifies the download before execution; without a pin it prints a warning | Implemented (pin optional) |
 | Installer run as root or clobbering a directory | Refuses root; refuses unsafe `--prefix` (`/`, `$HOME`, source tree, non-bundle directory); rejects newline or `%` in paths used for autostart | Implemented |
+| Case data leaks into the public repository through a skill submission | `submit-skill.py` sanitizes hostnames, usernames, paths, serials, MAC/IP/e-mail and disk UUIDs, then secret-scans and refuses on any finding; the operator sees the full body and confirms by typing `kirim`/`submit` or with `--confirm-sha256` bound to the previewed hash | Implemented; GitHub call Environment-blocked |
+| GitHub token misuse | `RESCUE_GITHUB_ISSUES_TOKEN` must be a fine-grained token with Issues read/write on this repository only; it is sent only in an in-process `Authorization` header to `api.github.com` (HTTPS, no redirects) and is removed from the Hermes environment by `launch-hermes-rescue.sh` | Implemented; token scope is the operator's responsibility |
 | Unvalidated or raw evidence sent to the cloud | `analyze-opencode-go.sh` runs `validate-evidence.py` first and sends nothing on failure; the schema rejects prompts, responses, raw logs, credentials, and extra properties | Implemented |
 | Model output becomes a command | The adapter command comes only from the operator-set `OPENCODE_ADAPTER_COMMAND`; the collector runs a fixed allowlist; the Hermes profile forbids executing commands from logs or model output | Implemented (adapter itself is operator-supplied) |
 | False assurance in evidence | Collector states `hashes_verified: false`, `read_back_verified: false`, `status: not_applicable`; check status derives from real signals; opaque ID is a truncated hash of `/etc/machine-id` | Implemented |
@@ -42,6 +44,7 @@ flowchart TD
 ## Residual risks
 
 - A credential-bearing USB exposes the API key to anyone with physical access; prefer `--no-provision-secrets` and enter the key in the live session.
+- A USB that holds `RESCUE_GITHUB_ISSUES_TOKEN` is credential-bearing too. Anyone holding it can open issues as the token owner until the token is revoked.
 - The Linux Mint key must be obtained through a channel the operator trusts; the pinned fingerprint only helps if the operator confirms it against Linux Mint's own guide.
 - The Hermes installer is downloaded from `https://hermes-agent.nousresearch.com/install.sh`; pin its SHA-256 for high-assurance use.
 - Software checks cannot prove a physical boot or a hardware write blocker.
