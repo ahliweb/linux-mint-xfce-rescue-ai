@@ -600,7 +600,8 @@ class MacLauncherTests(unittest.TestCase):
         self.assertEqual((target['family'], target['release'], target['architecture'], target['encryption']),
                          ('macos', 'macOS 14.5', 'arm64', 'filevault'))
         checks = {c['check_id']: c for c in data['checks']}
-        self.assertEqual(list(checks), ['os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status',
+        # Detection modules (hw-*, sw-*) add their own checks; they are tested in their own test files.
+        self.assertEqual([c for c in checks if not c.startswith(('hw-', 'sw-'))], ['os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status',
                                         'macos-crash-reports', 'macos-startup-disk', 'disk-free-space',
                                         'network-connectivity'])
         for name in ('os-detection', 'macos-apfs-container', 'macos-filevault', 'macos-sip-status', 'macos-startup-disk'):
@@ -610,7 +611,7 @@ class MacLauncherTests(unittest.TestCase):
         self.assertEqual(checks['disk-free-space']['value']['kind'], 'percent')
         self.assertEqual(checks['network-connectivity']['status'], 'unknown')
         self.assertNotIn('target_ref', checks['network-connectivity'])
-        self.assertEqual(data['evidence_manifest']['entry_count'], 8)
+        self.assertEqual(data['evidence_manifest']['entry_count'], len(data['checks']))
 
     def test_layout_from_rescue_omes_host_folder(self):
         proc = self.run_launcher('--evidence-only', script=self.bundle / 'host' / 'RESCUE-MACOS.command')

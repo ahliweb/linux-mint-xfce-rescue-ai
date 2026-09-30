@@ -319,6 +319,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(rc.validate_param({'type': 'integer', 'minimum': 1, 'maximum': 9}, '7'), 7)
         for p, v in (({'type': 'enum', 'values': ['a']}, 'c'), ({'type': 'integer', 'minimum': 1, 'maximum': 9}, '10'),
                      ({'type': 'package_name'}, '-rf'), ({'type': 'package_name'}, 'a b'),
+                     ({'type': 'package_name'}, 'vim-'),
                      ({'type': 'service_name'}, '--now'), ({'type': 'block_device'}, '/dev/../etc/passwd'),
                      ({'type': 'block_device'}, 'sda'), ({'type': 'target_root'}, '/')):
             with self.subTest(param=p, value=v):
@@ -633,13 +634,14 @@ class ModuleHookTests(unittest.TestCase):
         self.assertEqual(rescue_modules._call(ctx, 'x', lambda c: 1 / 0), [])
         self.assertIn('failed', ctx.warnings[0])
 
-    def test_shipped_stubs_return_nothing(self):
-        # hardware is implemented (tests/test_hardware.py); os and software are still stubs
+    def test_shipped_modules_never_raise_and_only_emit_valid_checks(self):
+        # The stubs of #15-#17 used to return nothing; filled modules must still never warn or break.
         for mode in ('live', 'host'):
-            ctx = rescue_modules.Context(mode=mode, scope=('os', 'software'))
-            self.assertEqual(rescue_modules.collect_system(ctx), [])
-            self.assertEqual(rescue_modules.collect_offline_target(ctx, '/nonexistent', {'family': 'linuxmint'}), [])
+            ctx = rescue_modules.Context(mode=mode)
+            checks = rescue_modules.collect_system(ctx)
+            checks += rescue_modules.collect_offline_target(ctx, '/nonexistent', {'family': 'linuxmint'})
             self.assertEqual(ctx.warnings, [])
+            self.assertTrue(all(c['check_id'] in rescue_modules.CHECK_IDS for c in checks))
 
 
 class ScannerAndAnalyzerTests(unittest.TestCase):
@@ -685,12 +687,12 @@ class ScannerAndAnalyzerTests(unittest.TestCase):
                                 '--scope', 'all,os'], capture_output=True, text=True)
             self.assertEqual(r.returncode, 2)
 
-    def test_analyzer_catalog_text_lists_ids_but_never_commands(self):
+    def test_analyzer_catalog_text_lists_ids_and_metadata_never_argv(self):
         text = analyzer.catalog_text(json.loads(LIVE_12.read_text()))
-        self.assertNotIn('argv', text)
-        self.assertNotIn('execute', text)
-        if text:
-            self.assertTrue(all(row['action_id'] for row in json.loads(text)))
+        for row in (json.loads(text) if text else []):
+            self.assertLessEqual(set(row), {'action_id', 'title', 'scope', 'risk', 'target_families', 'triggers'})
+        for word in ('argv', 'execute', 'rollback'):
+            self.assertNotIn(word, text)
 
     def test_prompt_documents_the_proposal_block(self):
         text = (ROOT / 'profiles/rescue-hermes/analysis-prompt.md').read_text()

@@ -430,6 +430,9 @@ def validate_param(param, value, packages=None):
     if kind == 'package_name':
         if not PACKAGE_RE.match(text):
             raise ValueError('is not a valid package name')
+        if text.endswith('-'):
+            # apt reads a trailing '-' as "remove this package": `install --reinstall vim-` removes vim.
+            raise ValueError('must not end with "-" (apt would treat it as a removal)')
         if packages is not None and text not in packages:
             raise ValueError('is not in the operator-selected package list')
         return text
