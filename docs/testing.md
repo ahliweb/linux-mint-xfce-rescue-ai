@@ -53,6 +53,10 @@ flowchart LR
     T --> D[git diff --check]
 ```
 
+### Package workflow gate
+
+`.github/workflows/package.yml` is a second CI gate for release packaging (credential-free `bundle` and `persistence` packages on ghcr.io, see [persistence](persistence.md#paket-github-tanpa-kredensial)). At source level `tests/test_package_workflow.py` checks that only `GITHUB_TOKEN` is referenced, `--no-provision-secrets` is on the build line, every `uses:` is pinned to a 40-hex SHA with a version comment, publishing and write permissions exist only in jobs gated off for `pull_request`, and top-level permissions are read-only; `actionlint` was also run against it. On a pull request that touches the workflow, the build scripts, or the Makefile, the workflow runs a dry build (bundle assembled and checked, ISO downloaded and GPG+SHA-256 verified, persistence image built and asserted credential-free with `debugfs`, no compression, no push). The real publish on a tag or `workflow_dispatch` is Environment-blocked here (needs GitHub, docker, and the network) and must be confirmed by reading the run and the pushed package back.
+
 ### Requirements
 
 | Tool | Needed for | If missing |
@@ -99,6 +103,7 @@ The counts below come from that command (skipped tests are counted too) with `pw
 | `tests/test_host_repair.py` | 72 | The native Windows and macOS repair engines against the Python one: plan versus `repair_catalog.triggered`, AI parsing versus `parse_ai_proposals`, catalog hash and backup fingerprint, journals accepted by `rescue-repair.py --verify-journal`, policy, parameters, timeouts, rollback, Windows argument quoting, interactive approval on a pseudo-terminal, and the JXA planner via the `node` shim |
 | `tests/test_run_report.py` | 85 | The run report ([run report](run-report.md)): model and Markdown renderer from fixtures (sections, redaction, outcomes, before/after, open items, honesty), a tampered journal chain shown as INVALID, the privacy self-check per rule and for the key value, the schema and fixtures, the CLI (`0600`, atomic, exit codes, a journal from the real engine), PowerShell (`pwsh`) and JXA (`node` shim) generators equal to the Python one (JSON, Markdown, index), and the launcher exit paths including the post-repair re-scan on the live USB, the offline path, the private launcher log, and the tty pause (via `script`), Linux, Windows, and macOS |
 | `tests/test_persistence.py` | 32 | `build-persistence.sh` argument validation and secret handling (no docker needed), `overlay_whiteouts.py` (layer conversion, `debugfs` scripts, a real ext4 image), and `prepare-ventoy-usb.sh --persistence` (`ventoy.json` merge, refusal to overwrite, invalid images, host launchers copied to the USB root) |
+| `tests/test_package_workflow.py` | 15 | `.github/workflows/package.yml` (text checks): triggers, only `GITHUB_TOKEN`, `--no-provision-secrets`, SHA-pinned actions, read-only top-level permissions, publish jobs and uploads gated off for pull requests, ref/tag/version handling, pinned-signer ISO verification before the build, the `debugfs` credential-free assertion before compression, and the deterministic bundle |
 | `tests/test_skill_submission.py` | 47 | `skill_sanitize.py` (placeholders, secret scan, hash), `submit-skill.py` dry run, refusals, fallback URL or file, submit and de-duplication against a fake GitHub on `127.0.0.1`, exit codes, token never on argv or in output, and the `RESCUE_GITHUB_ISSUES_TOKEN` allowlist entry |
 
 Hermes script tests run as an unprivileged user: when the suite is executed as root it re-runs the scripts as uid `65534` through `setpriv`, because the installer refuses root. Tests use dummy keys only and never touch a real block device or the network (loopback fake servers only).

@@ -67,6 +67,7 @@ flowchart LR
 - Run report privacy: `report.md` and `report.json` carry no identifiers, paths, package or signature names, or raw output; the Python, PowerShell, and JXA generators must stay equal, and the privacy self-check must keep refusing a leaking report.
 - Tokens: `RESCUE_GITHUB_ISSUES_TOKEN` is read only through the allowlisted config parsers, sent only in an in-process `Authorization` header to `api.github.com`, and removed from the Hermes environment; skill submission needs the operator's explicit confirmation and refuses on any secret finding.
 - Host launchers never elevate, never write to the host disk, never run without the operator's click (no AutoRun), and keep the key off every command line.
+- Published packages (ghcr.io `bundle` and `persistence`, GitHub Release assets) are credential-free and built only in CI by `.github/workflows/package.yml` with `GITHUB_TOKEN` and `--no-provision-secrets`; never upload a credential-bearing image or bundle, never reference another secret there, keep third-party actions pinned to full SHAs, and keep write permissions on the publish jobs only.
 - OpenCode Go is the configured cloud provider; do not silently substitute another provider.
 - Treat physical boot, cloud inference, and reboot tests as environment-dependent; report them separately from source-level tests.
 

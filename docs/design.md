@@ -145,6 +145,8 @@ flowchart LR
 
 With the persistence image, Hermes, the runtime bundle, and the autostart are already installed, and every write of the live session (Hermes memory and sessions, reports, journal, quarantine, signature database) survives reboot on the USB. Building needs docker and network; a real persistence boot is Hardware-required. See [persistence](persistence.md).
 
+Distribution: release tags are packaged in CI (`.github/workflows/package.yml`) into credential-free `bundle` and `persistence` packages on ghcr.io, built with `--no-provision-secrets` from a GPG+SHA-256 verified ISO; see [persistence](persistence.md#paket-github-tanpa-kredensial).
+
 ## Data versus commands
 
 ```mermaid
