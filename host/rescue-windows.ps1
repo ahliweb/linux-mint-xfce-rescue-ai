@@ -418,7 +418,7 @@ function ConvertFrom-ModuleCheck {
     $kind = [string]$Item['kind']
     if ($kind) {
         $n = $Item['number']
-        if (@('percent', 'count', 'bytes', 'days', 'seconds') -notcontains $kind) { return $null }
+        if (@('percent', 'count', 'bytes', 'days', 'seconds', 'celsius') -notcontains $kind) { return $null }
         if (-not ($n -is [int] -or $n -is [long] -or $n -is [double]) -or $n -lt 0 -or $n -gt 1e15) { return $null }
         return New-Check -Id $id -Status $status -TargetRef $ref -Kind $kind -Number $n
     }
@@ -490,7 +490,7 @@ function Test-RescueEvidence {
         }
         if ($c.Contains('value')) {
             $v = $c['value']
-            if (@('percent', 'count', 'bytes', 'days', 'seconds') -notcontains $v['kind']) { $problems.Add("value kind of $id") }
+            if (@('percent', 'count', 'bytes', 'days', 'seconds', 'celsius') -notcontains $v['kind']) { $problems.Add("value kind of $id") }
             if (-not ($v['number'] -is [int] -or $v['number'] -is [long] -or $v['number'] -is [double]) -or $v['number'] -lt 0) { $problems.Add("value number of $id") }
         }
     }
@@ -730,10 +730,11 @@ function Invoke-HostCollection {
         (Get-CrashDumpsCheck),
         (Get-EventLogErrorsCheck),
         (Get-DefenderCheck),
-        (Get-UpdateServiceCheck),
-        (Get-SmartCheck),
-        (Get-NetworkCheck -Skip $SkipNetwork)
+        (Get-UpdateServiceCheck)
     )
+    # smart-health is a disk check: only within the operator's hardware.disk scope.
+    if ($Scope -contains 'all' -or $Scope -contains 'hardware' -or $Scope -contains 'hardware.disk') { $checks += (Get-SmartCheck) }
+    $checks += (Get-NetworkCheck -Skip $SkipNetwork)
     $checks += Invoke-RescueModules -Bundle $Bundle -Scope $Scope -PackageList $PackageList
     if ($checks.Count -gt $script:MaxChecks) { $checks = $checks[0..($script:MaxChecks - 1)] }
     return New-RescueEvidence -Checks $checks -Family $os.Family -Release $os.Release `

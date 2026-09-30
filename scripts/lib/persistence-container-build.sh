@@ -104,8 +104,8 @@ chown -R 0:0 /tmp/rescue-src-ro
 as_mint bash /tmp/rescue-src-ro/scripts/install-hermes-rescue.sh \
   --state-dir "$state_dir" --prefix "$prefix" --bin-dir "$bin_dir" --skip-hermes-install
 
-# install-hermes-rescue.sh installs only rescue-boot-diagnosis; install every
-# skill shipped in the profile (rescue-target-os, ...) into the Hermes state.
+# install-hermes-rescue.sh installs every profile skill; re-copy them here too so the
+# image stays correct even when built from an older installer, then assert them.
 skills_installed=()
 for skill_dir in /tmp/rescue-src-ro/profiles/rescue-hermes/skills/*/; do
   [[ -f ${skill_dir}SKILL.md ]] || continue
@@ -115,7 +115,7 @@ for skill_dir in /tmp/rescue-src-ro/profiles/rescue-hermes/skills/*/; do
   skills_installed+=("$skill")
 done
 log "rescue skills installed: ${skills_installed[*]}"
-for required in rescue-boot-diagnosis rescue-target-os; do
+for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission; do
   [[ -f $state_dir/hermes/skills/$required/SKILL.md ]] || { echo "required skill missing: $required" >&2; exit 1; }
 done
 

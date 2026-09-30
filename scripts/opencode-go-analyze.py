@@ -304,6 +304,10 @@ def main(argv=None):
         print('analyze: evidence is INVALID (%s); nothing was sent.\n'
               'analyze: bukti tidak valid; tidak ada yang dikirim.' % problems[0], file=sys.stderr)
         return EXIT_INVALID
+    if evidence.get('classification') == 'restricted':
+        print('analyze: evidence is classified restricted and never leaves this machine; nothing was sent.\n'
+              'analyze: bukti berklasifikasi restricted tidak pernah dikirim.', file=sys.stderr)
+        return EXIT_INVALID
     sha = hashlib.sha256(evidence_bytes).hexdigest()
 
     timeout_text = os.environ.get('OPENCODE_TIMEOUT_SECONDS', '120')

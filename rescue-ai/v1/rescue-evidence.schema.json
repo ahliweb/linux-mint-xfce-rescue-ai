@@ -202,8 +202,10 @@
                   "count",
                   "bytes",
                   "days",
-                  "seconds"
-                ]
+                  "seconds",
+                  "celsius"
+                ],
+                "description": "celsius (whole degrees, 1.2 only) is for temperatures; all other kinds exist since 1.1."
               },
               "number": {
                 "type": "number",

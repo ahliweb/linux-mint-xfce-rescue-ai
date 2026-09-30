@@ -33,7 +33,7 @@ DOMAINS = ('hardware', 'operating_system', 'software')
 DOMAIN_SCOPE = {'hardware': 'hardware', 'operating_system': 'os', 'software': 'software'}
 HARDWARE_ITEMS = ('cpu', 'memory', 'disk', 'gpu', 'display', 'network', 'battery', 'usb')
 STATUSES = {'pass', 'fail', 'warn', 'not_applicable', 'unknown'}
-KINDS = {'percent', 'count', 'bytes', 'days', 'seconds'}
+KINDS = {'percent', 'count', 'bytes', 'days', 'seconds', 'celsius'}
 MAX_NUMBER = 1e15
 
 

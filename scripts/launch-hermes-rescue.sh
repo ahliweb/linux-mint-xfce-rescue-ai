@@ -81,6 +81,7 @@ if ((scan_targets)); then
   printf 'Scanning installed operating systems on internal disks (read-only) ...\n'
   scan_args=(--output "$evidence_file" --scope "$scope" --repair-policy "$repair_policy")
   [[ -z $packages ]] || scan_args+=(--packages "$packages")
+  [[ -z $OPENCODE_GO_API_KEY ]] || scan_args+=(--provider-ready)  # presence only; the key is never passed
   if timeout 900 sudo -n python3 "$root/scripts/scan-target-os.py" "${scan_args[@]}" && [[ -s $evidence_file ]]; then
     # The scan runs as root; hand the evidence back to the desktop user (best effort: FAT/exFAT ignores it).
     [[ -O $evidence_file ]] || sudo -n chown "$(id -u):$(id -g)" -- "$evidence_file" 2>/dev/null || true

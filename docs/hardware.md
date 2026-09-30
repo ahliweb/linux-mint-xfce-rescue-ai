@@ -62,7 +62,7 @@ Evidence hanya berisi angka (`percent`, `count`, `bytes`) dan status. Tidak ada 
 | Check ID | Arti angka | pass | warn | fail | unknown / not_applicable |
 |---|---|---|---|---|---|
 | `hw-cpu` | `count` = jumlah CPU logis | ada CPU terbaca | Windows: status prosesor bukan OK | - | `cpuinfo` tidak terbaca |
-| `hw-cpu-thermal` | `count` = suhu tertinggi, derajat Celsius (macOS: `percent` = batas kecepatan CPU dari `pmset -g therm`) | di bawah 80 | 80 atau lebih, atau ada event throttling (macOS: batas kecepatan di bawah 100) | 95 atau lebih (macOS: di bawah 50) | tidak ada sensor / izin |
+| `hw-cpu-thermal` | `celsius` = suhu tertinggi, derajat Celsius (macOS: `percent` = batas kecepatan CPU dari `pmset -g therm`) | di bawah 80 | 80 atau lebih, atau ada event throttling (macOS: batas kecepatan di bawah 100) | 95 atau lebih (macOS: di bawah 50) | tidak ada sensor / izin |
 | `hw-memory` | `bytes` = total RAM | 2 GiB atau lebih | kurang dari 2 GiB | ada `HardwareCorrupted` (Linux) | tidak terbaca |
 | `hw-memory-errors` | `count` = error ECC (`ce_count` + `ue_count`; Windows: event WHEA 30 hari terakhir) | 0 | ada error terkoreksi (Windows: ada event WHEA) | ada error tak terkoreksi (Windows: event WHEA level error) | `not_applicable` bila tidak ada EDAC (RAM non-ECC, macOS) |
 | `hw-disk` | `count` = disk internal (USB, removable, loop, optik tidak dihitung) | 1 atau lebih | Windows: status operasional disk bukan OK | tidak ada disk internal terlihat | `lsblk` tidak ada |

@@ -22,6 +22,26 @@ flowchart LR
     K --> H
 ```
 
+## Ways to use the USB
+
+```mermaid
+flowchart LR
+    U[Rescue USB] --> L[Boot the PC from the USB]
+    U --> H[Plug into a running Windows / macOS / Linux]
+    L --> S[Read-only scan of installed OSes, hardware, software]
+    H --> C[Read-only host checks]
+    S --> A[OpenCode Go analysis]
+    C --> A
+    A --> R[Catalog repairs with your approval]
+    R --> J[(Evidence, analysis, journal on the USB)]
+```
+
+| Mode | What happens | Guide |
+|---|---|---|
+| Boot from the USB (Linux Mint 22.3 XFCE live) | Hardware preflight, read-only scan of the operating systems on the internal disks, OpenCode Go analysis, catalog repairs under `--repair-policy` (default `approve-each`), then Hermes. With the persistence image, Hermes and all its state live on the USB | [target OS scan](docs/target-os-scan.md), [persistence](docs/persistence.md) |
+| Running Windows 10/11, macOS 12+, or Linux | Double-click `RESCUE-WINDOWS.cmd` / `RESCUE-MACOS.command`, or run `rescue-omes/host/rescue-linux.sh`. Nothing is installed on the host; evidence, analysis, and the repair journal are written to the USB | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
+| Scope and repair policy (all modes) | `--scope all` or selected areas (`hardware.disk`, `os`, `software.selected --packages ...`); repairs are typed catalog actions only | [repair framework](docs/repair-framework.md) |
+
 ## What is implemented
 
 ```mermaid
@@ -32,11 +52,9 @@ flowchart TD
     C --> T[Health and smoke tests]
 ```
 
-- Hermes profile files: `profiles/rescue-hermes/`.
-- Hermes configuration template with OpenCode Go/MiMo-V2.6-Flash as the default model.
 Status legend used in the docs: **Implemented** (source-level, covered by `make check`), **Hardware-required** (needs a real PC/USB), **Environment-blocked** (needs network, an API key, or provider spend), **Planned** (design only). See [testing](docs/testing.md) for what each level means.
 
-- Hermes profile files: `profiles/rescue-hermes/`. **Implemented**
+- Hermes profile files: `profiles/rescue-hermes/`, and a Hermes configuration template with OpenCode Go / `mimo-v2.6-flash` as the default model. **Implemented**
 - `scripts/install-hermes-rescue.sh` — run as the desktop user (it refuses root and calls `sudo` only where needed). Installs Hermes through the official installer (optionally pinned with `--installer-sha256` / `HERMES_INSTALLER_SHA256`), creates an isolated `HERMES_HOME`, installs the profile, installs a runtime bundle to `/usr/local/lib/rescue-omes` (`--prefix`), symlinks `launch-hermes-rescue.sh` and `check-hermes-rescue.sh` into `/usr/local/bin` (`--bin-dir`), and creates the XFCE autostart entry (skip with `--no-autostart`; skip the Hermes download with `--skip-hermes-install`). **Implemented**
 - `scripts/launch-hermes-rescue.sh` — hardware preflight, then Hermes with the isolated profile. **Implemented**
 - `scripts/check-hermes-rescue.sh` — validates Hermes, configuration, provider endpoint, and model; the API key is passed to `curl` through a stdin config, never on the command line. **Implemented**; the endpoint probe is **Environment-blocked** without network and key.
@@ -271,7 +289,7 @@ See:
 - [Installed software: inventory, health, repair](docs/software.md)
 - [OS detection and repair](docs/os-repair.md)
 - [Repairs from the Windows and macOS launchers](docs/host-repair.md)
-- [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.2.1`)
+- [Changelog](CHANGELOG.md) (current version in `VERSION`: `0.3.0`)
 - [Hermes profile](profiles/rescue-hermes/)
 - [OpenCode Go documentation](https://opencode.ai/docs/go)
 - [Hermes provider documentation](https://hermes-agent.nousresearch.com/docs/integrations/providers)

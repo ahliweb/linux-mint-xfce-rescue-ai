@@ -1213,7 +1213,7 @@ for domain in hardware os software; do
     continue
   fi
   for line in ${(f)mod_out}; do
-    if [[ $line =~ '^([a-z0-9]+(-[a-z0-9]+)*) (pass|fail|warn|not_applicable|unknown)( (percent|count|bytes|days|seconds) ([0-9]+(\.[0-9]+)?))?$' ]] \
+    if [[ $line =~ '^([a-z0-9]+(-[a-z0-9]+)*) (pass|fail|warn|not_applicable|unknown)( (percent|count|bytes|days|seconds|celsius) ([0-9]+(\.[0-9]+)?))?$' ]] \
         && [[ $match[1] == (hw-*|sw-*|macos-*|smart-health|nvme-health|disk-free-space|encryption-status) ]] \
         && (( ${#check_items} < 160 )); then
       if [[ $domain == hardware ]]; then

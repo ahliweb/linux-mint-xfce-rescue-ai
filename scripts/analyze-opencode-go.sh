@@ -25,6 +25,12 @@ python3 "$root/scripts/validate-evidence.py" "$input" >&2 || {
   exit 2
 }
 
+# Restricted evidence never leaves this machine.
+if ! python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("classification") == "restricted")' "$input"; then
+  printf 'evidence is classified restricted; nothing was sent to the adapter\n' >&2
+  exit 2
+fi
+
 # OPENCODE_ADAPTER_COMMAND is an explicit operator setting and is executed as-is
 # by bash -c. It is never derived from model output, logs, filenames or web
 # content. It receives the validated, sanitized JSON on stdin only.

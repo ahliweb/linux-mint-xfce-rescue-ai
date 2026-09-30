@@ -205,6 +205,11 @@ class TestInstalledBundle(HermesScriptTestCase):
         env_file = self.state / "hermes" / "env"
         self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o600)
         self.assertNotIn("export", env_file.read_text())
+        # Every skill shipped in the profile is installed into the Hermes state.
+        shipped = sorted(p.parent.name for p in (self.src / "profiles/rescue-hermes/skills").glob("*/SKILL.md"))
+        installed = sorted(p.parent.name for p in (self.state / "hermes/skills").glob("*/SKILL.md"))
+        self.assertEqual(installed, shipped)
+        self.assertIn("rescue-target-os", installed)
         desktop = self.home / ".config" / "autostart" / "hermes-rescue.desktop"
         exec_line = next(l for l in desktop.read_text().splitlines() if l.startswith("Exec="))
         self.assertIn(f'--state-dir "{self.state}"', exec_line)
