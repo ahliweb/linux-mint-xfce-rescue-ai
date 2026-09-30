@@ -28,18 +28,29 @@ log() { printf '[build] %s\n' "$*"; }
 log 'apt-get update'
 apt-get update -q
 apt-get install -y -q --no-install-recommends ca-certificates curl git python3 python3-jsonschema sudo xz-utils adduser
-optional=(dislocker libfsapfs-utils smartmontools nvme-cli)
+# clamav + clamav-freshclam: the malware scanner (docs/malware.md). Signatures are NOT downloaded here:
+# the database lives on the USB state (<state>/clamav) and is fetched by the operator-approved catalog
+# action mw.clamav-update-signatures. No service may start in the container or on the live system.
+optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam)
 missing_optional=()
+printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+chmod 0755 /usr/sbin/policy-rc.d
 if ! apt-get install -y -q --no-install-recommends "${optional[@]}"; then
   for pkg in "${optional[@]}"; do
     apt-get install -y -q --no-install-recommends "$pkg" || missing_optional+=("$pkg")
   done
 fi
+rm -f /usr/sbin/policy-rc.d
 if ((${#missing_optional[@]})); then
   log "WARNING: optional packages unavailable and skipped: ${missing_optional[*]}"
 else
   log "optional rescue tools installed: ${optional[*]}"
 fi
+# Never let the packages' own freshclam/clamd services download signatures or run on the live system.
+install -d -m 0755 /etc/systemd/system
+for unit in clamav-freshclam.service clamav-daemon.service clamav-daemon.socket; do
+  ln -sfn /dev/null "/etc/systemd/system/$unit"
+done
 
 # 2. Build-only live user. The account databases are NOT copied into the
 # persistence image (casper creates the real user with uid 1000 on first boot);
@@ -53,6 +64,8 @@ else
   useradd -m -u "$live_uid" -g "$live_uid" -s /bin/bash -c 'Live session user' "$live_user"
 fi
 snapshot > /tmp/accounts.after-user
+# The clamav packages create the system user/group "clamav" (their files stay numerically owned; freshclam is
+# run with --user=root by the catalog). Nothing else may add accounts.
 # Temporary passwordless sudo for install-hermes-rescue.sh; removed below.
 printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$live_user" > /etc/sudoers.d/zz-rescue-omes-build
 chmod 0440 /etc/sudoers.d/zz-rescue-omes-build
@@ -132,6 +145,7 @@ find "$prefix" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.command' \) -
 find "$prefix" \( -name '__pycache__' \) -type d -prune -exec rm -rf {} +
 ln -sfn "$prefix/scripts/launch-hermes-rescue.sh" "$bin_dir/launch-hermes-rescue.sh"
 ln -sfn "$prefix/scripts/check-hermes-rescue.sh" "$bin_dir/check-hermes-rescue.sh"
+ln -sfn "$prefix/scripts/malware-quarantine.py" "$bin_dir/rescue-malware-quarantine"
 
 # 5. In-container assertions about what was produced.
 autostart=$live_home/.config/autostart/hermes-rescue.desktop
@@ -144,13 +158,15 @@ if grep -Eq "^OPENCODE_GO_API_KEY=[^']|^OPENCODE_GO_API_KEY='[^']" "$state_dir/h
   echo 'refusing: the build container must not contain an API key' >&2
   exit 1
 fi
+[[ -x $bin_dir/rescue-malware-quarantine ]] || { echo 'rescue-malware-quarantine helper is not installed' >&2; exit 1; }
 ((skip_hermes)) || [[ -x $bin_dir/hermes && -d $state_dir/hermes/hermes-agent ]] \
   || { echo 'Hermes is not installed under the state directory' >&2; exit 1; }
 
 # 6. No system users or groups may have been added by packages: the account
 # databases are excluded from the overlay and casper owns them.
 snapshot > /tmp/accounts.final
-if ! diff -q /tmp/accounts.after-user /tmp/accounts.final >/dev/null; then
+unexpected_accounts=$(comm -13 /tmp/accounts.after-user /tmp/accounts.final | grep -vxF clamav || true)
+if [[ -n $unexpected_accounts ]] || ! diff -q <(grep -vxF clamav /tmp/accounts.after-user) <(grep -vxF clamav /tmp/accounts.final) >/dev/null; then
   echo 'packages added system users/groups; the account databases are excluded from the image:' >&2
   diff /tmp/accounts.after-user /tmp/accounts.final >&2 || true
   exit 1

@@ -50,6 +50,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'lib'))
 import repair_catalog as rc  # noqa: E402
+import malware_detections as md  # noqa: E402
 
 SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 EXECUTING_PLATFORMS = {'live-linux', 'linux-host'}
@@ -267,6 +268,15 @@ def block_device_eligible(path):
                for r in records)
 
 
+def state_root(args):
+    """The USB state: --state-dir (live) or the reports directory that holds repairs/journal.jsonl (host)."""
+    if args.state_dir:
+        return args.state_dir
+    if args.journal:
+        return os.path.dirname(os.path.dirname(os.path.abspath(args.journal)))
+    return None
+
+
 def target_provider():
     """scripts/lib/target_mount.py (open_target(evidence_path, evidence, target_ref, rw) -> context manager)."""
     path = HERE / 'lib' / 'target_mount.py'
@@ -287,6 +297,8 @@ class Engine:
         self.params = args.param_map
         self.packages = set(args.packages) if args.packages else None
         self.results = []
+        self.state_root = state_root(args)
+        self._detections = None
 
     def log(self, action, proposal, stage, outcome, **extra):
         if self.journal is None:
@@ -294,23 +306,62 @@ class Engine:
         self.journal.write(action_id=action['action_id'], origin=proposal['origin'], risk=action['risk'],
                            target_ref=proposal.get('target_ref'), stage=stage, outcome=outcome, **extra)
 
+    def detections(self):
+        """The LOCAL detection list of this run (paths inside; never journaled, never sent). None + warning if absent."""
+        if self._detections is None:
+            try:
+                if not self.state_root:
+                    raise ValueError('no --state-dir or --journal to locate the detection list')
+                self._detections = md.load_list(self.state_root, self.evidence.get('run_id'))
+            except (ValueError, OSError) as exc:
+                warn('  detection list: %s' % exc)
+                self._detections = False
+        return self._detections or None
+
+    def detection_entry(self, ref, action, proposal):
+        """The list entry for *ref* or None (with a warning). It must belong to the proposal's target."""
+        doc = self.detections()
+        entry = doc['_by_id'].get(ref) if doc else None
+        if entry is None:
+            if doc:
+                warn('  %s is not in the local detection list' % ref)
+            return None
+        if action.get('target_families') and proposal.get('target_ref') and entry['target_ref'] != proposal['target_ref']:
+            warn('  %s belongs to %s, not to %s' % (ref, entry['target_ref'], proposal['target_ref']))
+            return None
+        return entry
+
+    def show_detections(self, proposal):
+        doc = self.detections()
+        if not doc:
+            return
+        say('  Deteksi lokal / local detections (paths stay on this screen and the USB):')
+        for entry in doc['detections'][:200]:
+            if not proposal.get('target_ref') or entry['target_ref'] == proposal['target_ref']:
+                say('    ' + md.display_line(entry))
+
     def ask(self, prompt):
         try:
             return input(prompt).strip()
         except EOFError:
             return ''
 
-    def resolve_params(self, action, allow_prompt):
+    def resolve_params(self, action, allow_prompt, proposal=None):
         """(values, problem) where problem is None, 'missing-param' or 'invalid-param'."""
         values, aid = {}, action['action_id']
+        proposal = proposal or {}
         for p in action.get('params') or []:
-            if p['type'] == 'target_root':
-                continue  # filled by the mount provider
-            raw = self.params.get((aid, p['name']))
+            if p['type'] in ('target_root', 'state_dir'):
+                continue  # filled by the mount provider / the engine
+            raw = proposal.get('detection') if p['type'] == 'detection_ref' and proposal.get('detection') else None
+            if raw is None:
+                raw = self.params.get((aid, p['name']))
             if raw is None and 'default' in p:
                 raw = p['default']
             if raw is None and allow_prompt:
                 hint = ', '.join(p['values']) if p['type'] == 'enum' else p['type']
+                if p['type'] == 'detection_ref':
+                    self.show_detections(proposal)
                 raw = self.ask('  Nilai untuk / value for %s (%s): ' % (p['name'], hint)) or None
             if raw is None:
                 return None, 'missing-param'
@@ -318,6 +369,8 @@ class Engine:
                 value = rc.validate_param(p, raw, self.packages)
             except ValueError as exc:
                 warn('  %s %s %s' % (aid, p['name'], exc))
+                return None, 'invalid-param'
+            if p['type'] == 'detection_ref' and self.detection_entry(value, action, proposal) is None:
                 return None, 'invalid-param'
             if p['type'] == 'block_device' and not block_device_eligible(value):
                 warn('  %s %s: %s is not an eligible internal block device (rescue USB and removable media '
@@ -334,8 +387,16 @@ class Engine:
         say('   EN: %s' % action['title'])
         if proposal.get('target_ref'):
             say('   target: %s' % proposal['target_ref'])
-        shown = dict(values, **{p['name']: '<target root>' for p in action.get('params') or []
-                                if p['type'] == 'target_root'})
+        shown = dict(values)
+        for p in action.get('params') or []:
+            if p['type'] == 'target_root':
+                shown[p['name']] = '<target root>'
+            elif p['type'] == 'state_dir':
+                shown[p['name']] = '<USB state>/' + p['values'][0]
+            elif p['type'] == 'detection_ref':
+                entry = self.detection_entry(values.get(p['name']), action, proposal)
+                if entry is not None:
+                    say('   detection: ' + md.display_line(entry))
         say('   execute: %s' % ' '.join(rc.render(action['execute']['argv'], shown)))
         say('   verify:  %s' % ' '.join(rc.render(action['verify']['argv'], shown)))
         rb = action['rollback']
@@ -354,7 +415,7 @@ class Engine:
                 and not action.get('requires_target_rw'))
         cli = aid in self.args.approve
         if auto or cli:
-            values, problem = self.resolve_params(action, allow_prompt=False)
+            values, problem = self.resolve_params(action, allow_prompt=False, proposal=proposal)
             if problem is None:
                 return values, 'auto-safe' if auto else 'cli-approved'
             if not self.interactive:
@@ -363,7 +424,7 @@ class Engine:
         if not self.interactive:
             self.log(action, proposal, 'approval', 'declined', reason='not-interactive')
             return None, 'not-interactive'
-        values, problem = self.resolve_params(action, allow_prompt=True)
+        values, problem = self.resolve_params(action, allow_prompt=True, proposal=proposal)
         if problem:
             self.log(action, proposal, 'approval', 'skipped', reason=problem)
             return None, problem
@@ -409,6 +470,7 @@ class Engine:
             return 'declined'
         journal_params = {k: v for k, v in values.items()}
         self.log(action, proposal, 'approval', 'ok', reason=reason, params=journal_params or None)
+        values = self.engine_values(action, values)
         if needs_target:
             name = next(p['name'] for p in action['params'] if p['type'] == 'target_root')
             try:
@@ -417,12 +479,65 @@ class Engine:
                 with ctx as root:
                     self.log(action, proposal, 'target-rw', 'ok',
                              reason='not-applicable' if not action.get('requires_target_rw') else None)
-                    return self.run_action(action, proposal, dict(values, **{name: root}))
+                    bound = self.bind_detections(action, proposal, dict(values, **{name: root}), root)
+                    if bound is None:
+                        return 'skipped'
+                    return self.run_action(action, proposal, bound)
             except Exception as exc:  # provider failures must never leave the engine half-way
                 warn('  %s: target mount failed: %s' % (aid, exc))
                 self.log(action, proposal, 'target-rw', 'fail', reason='provider-unavailable')
                 return 'failed'
-        return self.run_action(action, proposal, values)
+        bound = self.bind_detections(action, proposal, values, '/')
+        if bound is None:
+            return 'skipped'
+        return self.run_action(action, proposal, bound)
+
+    def engine_values(self, action, values):
+        """Add the engine-provided state_dir values (<state>/clamav or <state>/quarantine)."""
+        out = dict(values)
+        for p in action.get('params') or []:
+            if p['type'] == 'state_dir':
+                out[p['name']] = os.path.join(self.state_root or '', p['values'][0])
+        return out
+
+    def bind_detections(self, action, proposal, values, root):
+        """Replace each detection_ref d-N by the verified absolute path below *root* ('/' on a host).
+
+        The path is the root plus the recorded relative path, no symlink on the way, a regular file, and
+        the sha256 must still match the list (a file replaced after detection is refused). Returns the
+        render values, or None after journaling precondition fail / invalid-param.
+        """
+        out = dict(values)
+        for p in action.get('params') or []:
+            if p['type'] != 'detection_ref':
+                continue
+            entry = self.detection_entry(values[p['name']], action, proposal)
+            path, problem = self.verify_detection(entry, root) if entry else (None, 'missing entry')
+            if problem:
+                warn('  %s %s: %s' % (action['action_id'], p['name'], problem))
+                self.log(action, proposal, 'precondition', 'fail', reason='invalid-param')
+                return None
+            out[p['name']] = path
+        return out
+
+    def verify_detection(self, entry, root):
+        """(path, problem). Root-only mount points (live mode, engine not root) are verified by the privileged
+        helper through sudo instead of directly."""
+        if os.access(root, os.X_OK):
+            return md.resolve_entry(entry, root)
+        helper = resolve_argv(['rescue-malware-quarantine', 'check', '--target-root=' + root,
+                               '--expect-sha256=' + entry['sha256'],
+                               '--path=' + os.path.join(root, entry['rel'])], True, self.path)
+        if helper is None:
+            return None, 'the privileged check helper (rescue-malware-quarantine) is not available'
+        try:
+            proc = subprocess.run(helper, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  env={'PATH': self.path, 'LC_ALL': 'C.UTF-8'}, timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None, 'the privileged check failed to run'
+        if proc.returncode != 0:
+            return None, (proc.stdout.decode('utf-8', 'replace').strip().splitlines() or ['check failed'])[-1][:200]
+        return os.path.join(root, entry['rel']), None
 
     def step(self, action, proposal, stage, step, values):
         result = run_step(step, values, action.get('requires_root', False), self.path,
@@ -560,7 +675,15 @@ def main(argv=None):
         if key not in seen:
             seen.add(key)
             unique.append(p)
-    proposals = unique
+    proposals = []
+    for p in unique:  # --param ACTION.detection=d-1,d-3 runs the action once per detection, each with its own approval
+        refs = []
+        for prm in catalog.get(p['action_id']).get('params') or []:
+            if prm['type'] != 'detection_ref':
+                continue
+            listed = args.param_map.get((p['action_id'], prm['name']))
+            refs = list(dict.fromkeys(r.strip() for r in listed.split(',') if r.strip())) if listed and ',' in listed else []
+        proposals.extend([dict(p, detection=r) for r in refs] if refs else [p])
 
     say('Repair plan / rencana perbaikan: policy=%s scope=%s platform=%s catalog=%s' % (
         args.policy, ','.join(scope), platform, catalog.sha256[:12]))

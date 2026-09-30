@@ -15,10 +15,11 @@ umask 077
 usage() {
   cat >&2 <<'EOF'
 usage: rescue-linux.sh [--evidence-only] [--dry-run] [--bundle DIR] [--pause]
-                       [--scope LIST] [--packages LIST] [--repair-policy POLICY]
+                       [--scope LIST] [--packages LIST] [--repair-policy POLICY] [--malware-full-disk]
   --evidence-only  collect + validate + save evidence; no network, no AI call; repairs listed only
   --dry-run        like --evidence-only, and ask the analyzer to show what it would send
-  --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected
+  --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected | malware
+  --malware-full-disk  scan the whole system for malware (slow; default: user-writable and autostart areas)
   --packages LIST  comma list of packages for --scope software.selected
   --repair-policy  detect-only | approve-each (default) | auto-safe
   --bundle DIR     rescue-omes bundle directory (default: auto-detect next to this script)
@@ -34,6 +35,7 @@ bundle=''
 scope=all
 packages=''
 repair_policy=approve-each
+malware_full=0
 while (($#)); do
   case "$1" in
     --evidence-only) evidence_only=1; shift ;;
@@ -43,6 +45,7 @@ while (($#)); do
     --scope) scope=${2:?--scope needs a list}; shift 2 ;;
     --packages) packages=${2:?--packages needs a list}; shift 2 ;;
     --repair-policy) repair_policy=${2:?--repair-policy needs a policy}; shift 2 ;;
+    --malware-full-disk) malware_full=1; shift ;;
     -h | --help) usage ;;
     *) usage ;;
   esac
@@ -83,6 +86,7 @@ if ! mkdir -p -- "$reports" 2>/dev/null || [[ ! -w $reports ]]; then
 fi
 
 export TMPDIR="$reports"          # any tool that wants a temp file uses the USB, not this host
+((malware_full)) && export RESCUE_MALWARE_FULL_DISK=1
 export PYTHONDONTWRITEBYTECODE=1  # no __pycache__ clutter on the USB bundle
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -138,6 +142,7 @@ def provider_ready():
 ready = provider_ready()
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 REF = 'os-0'
+run_id = 'rescue-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-lh'
 
 
 def run(cmd, timeout=20):
@@ -318,10 +323,18 @@ checks = [
     check_network(),
 ]
 if rescue_modules is not None:
-    mctx = rescue_modules.Context(mode='host', scope=scope, packages=packages)
+    mctx = rescue_modules.Context(mode='host', scope=scope, packages=packages, state_dir=reports,
+                                  malware_full_disk=os.environ.get('RESCUE_MALWARE_FULL_DISK') == '1')
     checks += [rec(c['check_id'], c['status'], c.get('kind'), c.get('number'), ref=c.get('target_ref'))
                for c in rescue_modules.collect_system(mctx)]
     rescue_modules.flush_warnings(mctx)
+    if mctx.detections:
+        try:  # LOCAL list (paths inside, 0600): never evidence, never sent to the cloud
+            rescue_modules.malware.write_detection_list(mctx, run_id, lambda ref: REF)
+            print('malware: %d detection(s) recorded in the local list on the USB (never sent)' % len(mctx.detections),
+                  file=sys.stderr)
+        except (OSError, ValueError) as exc:
+            print('warning: could not write the local malware detection list: %s' % exc, file=sys.stderr)
 checks = checks[:160]
 
 
@@ -348,7 +361,7 @@ else:
 compact = json.dumps(checks, sort_keys=True, separators=(',', ':'))
 report = {
     'schema_version': '1.2',
-    'run_id': 'rescue-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-lh',
+    'run_id': run_id,
     'source_platform': 'linux-host',
     'boot_mode': boot_mode,
     'collected_at': now,

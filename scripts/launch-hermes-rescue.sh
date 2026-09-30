@@ -16,6 +16,7 @@ scan_targets=1
 scope=${RESCUE_SCOPE:-all}
 packages=${RESCUE_PACKAGES:-}
 repair_policy=${RESCUE_REPAIR_POLICY:-approve-each}
+malware_full=0
 while (($#)); do
   case "$1" in
     --state-dir) state_dir=${2:?missing state directory}; state_dir_set=1; shift 2 ;;
@@ -27,7 +28,8 @@ while (($#)); do
     --scope) scope=${2:?missing scope list}; shift 2 ;;
     --packages) packages=${2:?missing package list}; shift 2 ;;
     --repair-policy) repair_policy=${2:?missing repair policy}; shift 2 ;;
-    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe]\n' "$0" >&2; exit 2 ;;
+    --malware-full-disk) malware_full=1; shift ;;
+    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe] [--malware-full-disk]\n' "$0" >&2; exit 2 ;;
   esac
 done
 case $repair_policy in detect-only | approve-each | auto-safe) ;; *) printf 'Invalid --repair-policy: %s\n' "$repair_policy" >&2; exit 2 ;; esac
@@ -79,14 +81,22 @@ if ((scan_targets)); then
   analysis_file="$report_dir/analysis-$ts.md"
   printf 'Memindai sistem operasi di disk internal (read-only) ...\n'
   printf 'Scanning installed operating systems on internal disks (read-only) ...\n'
-  scan_args=(--output "$evidence_file" --scope "$scope" --repair-policy "$repair_policy")
+  scan_args=(--output "$evidence_file" --scope "$scope" --repair-policy "$repair_policy" --state-dir "$state_dir")
+  scan_timeout=900
+  if ((malware_full)); then scan_args+=(--malware-full-disk); scan_timeout=3900; fi
   [[ -z $packages ]] || scan_args+=(--packages "$packages")
   [[ -z $OPENCODE_GO_API_KEY ]] || scan_args+=(--provider-ready)  # presence only; the key is never passed
-  if timeout 900 sudo -n python3 "$root/scripts/scan-target-os.py" "${scan_args[@]}" && [[ -s $evidence_file ]]; then
+  if timeout "$scan_timeout" sudo -n python3 "$root/scripts/scan-target-os.py" "${scan_args[@]}" && [[ -s $evidence_file ]]; then
     # The scan runs as root; hand the evidence back to the desktop user (best effort: FAT/exFAT ignores it).
     [[ -O $evidence_file ]] || sudo -n chown "$(id -u):$(id -g)" -- "$evidence_file" 2>/dev/null || true
     cp -f -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
     chmod 0600 -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
+    # The LOCAL malware detection list (paths inside; never sent to the cloud) is written by the root scan.
+    for detections in "$report_dir"/malware-detections-*.json; do
+      [[ -e $detections ]] || continue
+      [[ -O $detections ]] || sudo -n chown "$(id -u):$(id -g)" -- "$detections" 2>/dev/null || true
+      chmod 0600 -- "$detections" 2>/dev/null || true
+    done
     printf 'Bukti tersimpan: %s\n' "$evidence_file"
     printf 'Menganalisis dengan OpenCode Go (%s) ...\n' 'mimo-v2.6-flash'
     if python3 "$root/scripts/opencode-go-analyze.py" \
