@@ -17,8 +17,13 @@ bundle_only=''
 persistence=''
 replace_persistence=0
 persistence_rel=persistence/rescue-omes-casper-rw.dat
+hermes_portable=()
+hp_tool="$root/scripts/build-hermes-portable.py"
 usage() {
-  printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets] [--signer-fingerprint FPR] [--gpg-homedir DIR] [--persistence FILE.dat [--replace-persistence]]\n' "$0" >&2
+  printf 'usage: %s --ventoy-mount DIR --mint-iso FILE --sha256sums FILE --signature FILE [--no-auto-boot] [--menu-timeout SECONDS] [--env-file FILE] [--no-provision-secrets] [--signer-fingerprint FPR] [--gpg-homedir DIR] [--persistence FILE.dat [--replace-persistence]] [--hermes-portable ARCHIVE]...\n' "$0" >&2
+  printf '       --hermes-portable ARCHIVE   (repeatable, once per platform) credential-free portable Hermes runtime for the host launchers:\n' >&2
+  printf '                                   rescue-omes-hermes-portable-{linux,windows}-x86_64.{tar.gz,zip}; its .sha256 sidecar is required, absolute paths,\n' >&2
+  printf '                                   ".." and symlinks are refused; unpacked to <usb>/rescue-omes/hermes-portable/<platform>/ and read back against MANIFEST.json\n' >&2
   printf '       %s --bundle-only DEST   (testing/inspection: copy only the allowlisted rescue bundle into new/empty DEST and exit)\n' "$0" >&2
 }
 
@@ -107,6 +112,7 @@ while (($#)); do
     --bundle-only) bundle_only=${2:?missing destination}; shift 2 ;;
     --persistence) persistence=${2:?missing persistence image}; shift 2 ;;
     --replace-persistence) replace_persistence=1; shift ;;
+    --hermes-portable) hermes_portable+=("${2:?missing Hermes portable archive}"); shift 2 ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -142,6 +148,29 @@ if label != b"casper-rw":
     raise SystemExit(f"Refusing: persistence image label is {label!r}, casper needs 'casper-rw'.")
 PY
 fi
+# Portable Hermes runtime archives: validate everything before anything is written.
+declare -A hp_seen=()
+hp_platforms=()
+for archive in "${hermes_portable[@]}"; do
+  [[ -f $archive && ! -L $archive ]] || { printf 'Refusing: Hermes portable archive not found or a symlink: %s\n' "$archive" >&2; exit 1; }
+  [[ -f $hp_tool ]] || { printf 'Refusing: %s is missing (needed to validate the archive).\n' "$hp_tool" >&2; exit 1; }
+  archive_base=$(basename -- "$archive")
+  [[ $archive_base =~ ^rescue-omes-hermes-portable-(linux|windows)-x86_64\.(tar\.gz|zip)$ ]] || {
+    printf 'Refusing: unexpected Hermes portable archive name: %s\n' "$archive_base" >&2; exit 1; }
+  hp_platform=${BASH_REMATCH[1]}-x86_64
+  [[ -z ${hp_seen[$hp_platform]:-} ]] || { printf 'Refusing: --hermes-portable given twice for %s\n' "$hp_platform" >&2; exit 1; }
+  hp_seen[$hp_platform]=1
+  [[ -f $archive.sha256 && ! -L $archive.sha256 ]] || {
+    printf 'Refusing: checksum sidecar %s.sha256 is required next to the archive.\n' "$archive" >&2; exit 1; }
+  read -r want_sum want_name < "$archive.sha256" || true
+  want_name=${want_name#\*}
+  [[ $want_sum =~ ^[0-9a-f]{64}$ && $want_name == "$archive_base" ]] || {
+    printf 'Refusing: %s.sha256 is not "<sha256>  %s".\n' "$archive" "$archive_base" >&2; exit 1; }
+  have_sum=$(sha256sum -- "$archive"); have_sum=${have_sum%% *}
+  [[ $have_sum == "$want_sum" ]] || { printf 'Refusing: checksum mismatch for %s.\n' "$archive" >&2; exit 1; }
+  python3 "$hp_tool" --check-archive "$archive" >/dev/null || { printf 'Refusing: %s failed archive validation.\n' "$archive" >&2; exit 1; }
+  hp_platforms+=("$hp_platform")
+done
 mountpoint -q "$mountpoint" || { printf 'Refusing: mount path is not a mounted filesystem: %s\n' "$mountpoint" >&2; exit 1; }
 # A freshly installed Ventoy data partition is empty (EFI lives on the separate
 # VTOYEFI partition), so also accept a partition labelled "Ventoy" whose disk
@@ -184,8 +213,28 @@ printf 'Copied ISO read-back: PASS (%s)\n' "$dst_sum"
 
 # The bundle directory is our own; recreate it cleanly, then copy only the
 # allowlisted paths so secrets and large artifacts are never written to USB.
+# An already unpacked portable Hermes runtime (hundreds of MiB) survives a re-run:
+# move it aside, recreate the bundle, move it back.
+hp_keep="$mountpoint/.rescue-omes-hermes-portable.keep"
+if [[ -d $bundle/hermes-portable ]]; then
+  rm -rf -- "$hp_keep"
+  mv -- "$bundle/hermes-portable" "$hp_keep"
+fi
 rm -rf -- "$bundle"
 copy_bundle "$root" "$bundle"
+if [[ -d $hp_keep ]]; then
+  mv -- "$hp_keep" "$bundle/hermes-portable"
+fi
+for i in "${!hermes_portable[@]}"; do
+  python3 "$hp_tool" --extract-archive "${hermes_portable[$i]}" --dest "$bundle/hermes-portable"
+done
+if ((${#hp_platforms[@]})); then
+  sync
+  # Read back from the USB after the flush: tree_sha256 must equal MANIFEST.json.
+  for plat in "${hp_platforms[@]}"; do
+    python3 "$hp_tool" --verify-tree "$bundle/hermes-portable/$plat" || { printf 'Hermes portable read-back FAILED for %s\n' "$plat" >&2; exit 1; }
+  done
+fi
 
 if ((provision_secrets)); then
   if [[ -f "$env_file" ]]; then
