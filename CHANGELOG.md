@@ -6,9 +6,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `--malware-target os-N` for `scripts/scan-target-os.py` and `scripts/launch-hermes-rescue.sh`: scan only one target with the whole malware budget (a deliberate second full-disk run). Other targets report `malware-scan` `unknown`, never clean; a malformed or unknown `os-N` is a usage error (exit 2) (ahliweb/linux-mint-xfce-rescue-ai#47).
+
 ### Fixed
 
 - `check-hardware-readiness.py`: `usb-boot-media` now resolves the live source (Ventoy `/dev/mapper/ventoy`, dm, partition, loop) to its USB disk through sysfs (`slaves/`, `partition`, `loop/backing_file`, the `/usbN/` device path, nvme), with `lsblk` kept as fallback and cross-check. The physical test of 0.5.0 still showed `transport=unknown, source=/dev/mapper/ventoy`; the observed text now shows the resolved chain, or where resolution stopped (`? (no slaves)` and similar), so a further failure is diagnosable from the report (ahliweb/linux-mint-xfce-rescue-ai#46). Why `ventoy_version` stays `null` in live-session evidence is documented in `docs/hardware.md`.
+- Malware scan budget is shared fairly across targets: each gets `min(per-target cap, remaining / targets still to scan)` and unused time carries forward, in default and `--malware-full-disk` mode. In the 0.5.0 physical test the first target (Windows) used the whole 3300 s full-disk budget and the second (Linux Mint) was never scanned (ahliweb/linux-mint-xfce-rescue-ai#47).
 
 ## [0.5.1] - 2026-10-01
 
