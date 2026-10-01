@@ -20,6 +20,12 @@
               provider-rejected for an HTTP 4xx other than 401/403/408/429) | 5 bundle/reports/journal
               unusable | 64 usage
 
+  Outcome precedence (same in the Linux, macOS and live launchers): the run outcome is the FIRST
+  failure (evidence, key, network, provider); a repair-engine failure never replaces it. It is added
+  to the report as the open item repair-engine-failed (exit-2, or exit-3 for an unusable journal) and
+  the exit code stays the first failure's. A repair journal that cannot be used (exit 5) outranks
+  everything: outcome journal-unusable and exit 5.
+
 .PARAMETER EvidenceOnly
   Collect, validate and save the evidence. No network access at all (the connectivity
   check is reported as 'unknown').
@@ -2235,7 +2241,7 @@ function Get-RrReadiness {
 }
 
 function Get-RrOpenItems {
-    param($Detection, $Actions, $Comparison, [string]$Chain)
+    param($Detection, $Actions, $Comparison, [string]$Chain, [int]$RepairExit = 0)
     $items = New-Object System.Collections.Generic.List[object]
     foreach ($a in $Actions) {
         $final = $a['final_outcome']
@@ -2257,6 +2263,7 @@ function Get-RrOpenItems {
             $items.Add($e)
         }
     }
+    if ($RepairExit -eq 2 -or $RepairExit -eq 3) { $items.Add([ordered]@{ kind = 'repair-engine-failed'; ref = ('exit-' + [string]$RepairExit) }) }
     if ($Chain -ceq 'INVALID') { $items.Add([ordered]@{ kind = 'journal-invalid' }) }
     $enc = $false
     foreach ($t in $Detection['targets']) {
@@ -2314,7 +2321,7 @@ function Get-RrHonesty {
 
 function New-RunReportModel {
     # $In keys: run_id mode outcome started_at ended_at version catalog_sha256 scope repair_policy key_present
-    # evidence evidence_sha256 evidence_after analysis_text ai_counts journal_lines readiness action_info
+    # evidence evidence_sha256 evidence_after analysis_text ai_counts journal_lines repair_exit readiness action_info
     param($In)
     $info = $In['action_info']
     if ($null -eq $info) { $info = @{} }
@@ -2394,7 +2401,7 @@ function New-RunReportModel {
             actions = @($actions) }
         comparison = $comparison
     }
-    $report['open_items'] = Get-RrOpenItems -Detection $detection -Actions $actions -Comparison $comparison -Chain $chain
+    $report['open_items'] = Get-RrOpenItems -Detection $detection -Actions $actions -Comparison $comparison -Chain $chain -RepairExit ([int]$In['repair_exit'])
     $report['honesty'] = Get-RrHonesty -Mode $In['mode'] -Outcome $outcome -KeyPresent $keyPresent -Actions $actions -Comparison $comparison -Scope $scope
     $counts2 = [ordered]@{ total = @($actions).Count }
     foreach ($f in $script:RrFinals) { $counts2[$f.Replace('-', '_')] = 0 }
@@ -2450,6 +2457,7 @@ $script:RrOpenText = @{
     'action-skipped' = 'Aksi dilewati (prasyarat, parameter, atau backup tidak terpenuhi).'
     'action-not-run' = 'Aksi hanya diusulkan (kebijakan detect-only); belum dijalankan.'
     'manual-rollback' = 'Rollback MANUAL diperlukan; ikuti dokumen yang ditautkan.'
+    'repair-engine-failed' = 'Mesin perbaikan sendiri gagal (exit-2: evidence, katalog, atau pilihan tidak valid; exit-3: journal tidak dapat dipakai); tidak ada aksi yang dianggap selesai, periksa log launcher di folder reports USB.'
     'journal-invalid' = 'Rantai hash journal TIDAK VALID; jangan percaya bagian remediasi sebelum diperiksa.'
     'escalate-encrypted-disk' = 'Disk terenkripsi tidak dapat dipindai penuh; buka kunci dengan kunci pemulihan milik pemilik, lalu jalankan ulang.'
     'escalate-hardware-fault' = 'Indikasi kerusakan perangkat keras; cadangkan data sekarang dan bawa ke teknisi.'
@@ -2779,7 +2787,7 @@ function Invoke-RunReport {
     param([string]$Reports, [string]$RunId, [string]$Mode, [string]$Outcome, [string]$Started, [string]$Ended,
         [string]$Version = '', [string]$CatalogSha = '', [string[]]$Scope = @(), [string]$Policy = '', [bool]$KeyPresent = $false,
         [string]$EvidencePath = '', [string]$EvidenceAfterPath = '', [string]$AnalysisPath = '', [string]$JournalPath = '',
-        $ActionInfo = @{}, $AiCounts = $null, $Readiness = $null, [string[]]$Secrets = @())
+        $ActionInfo = @{}, $AiCounts = $null, $Readiness = $null, [string[]]$Secrets = @(), [int]$RepairExit = 0)
     try {
         if (-not [regex]::IsMatch($Started, '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')) { $Started = Get-UtcIso }
         if (-not [regex]::IsMatch($Ended, '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')) { $Ended = Get-UtcIso }
@@ -2799,7 +2807,7 @@ function Invoke-RunReport {
             catalog_sha256 = $cs; scope = @($Scope | Where-Object { $_ }); repair_policy = $pol; key_present = $KeyPresent
             evidence = $ev[0]; evidence_sha256 = $ev[1]; evidence_after = $af[0]; analysis_text = $text; ai_counts = $counts
             journal_lines = (Get-RrFileLines -Path $JournalPath); readiness = $Readiness; action_info = $ActionInfo
-            secrets = @($Secrets); key_redactions = 0
+            secrets = @($Secrets); key_redactions = 0; repair_exit = $RepairExit
         }
         $res = Write-RunReportFiles -Reports $Reports -In $inp -Secrets $Secrets
         Write-Host ('Laporan tersimpan / report saved: ' + (Join-Path (Join-Path $Reports $res.Name) 'report.md'))
@@ -2933,8 +2941,16 @@ function Invoke-RepairTracked {
     # executed in this run) a re-scan with the same scope so the report can list before/after changes.
     param($RepairArgs, [string]$AnalysisText, [bool]$Rescan)
     $rc = Invoke-RepairPhase @RepairArgs -AnalysisText $AnalysisText
-    if ($rc -eq 2) { $script:Rep.Outcome = 'repair-invalid' }
-    elseif ($rc -eq 5) { $script:Rep.Outcome = 'journal-unusable' }
+    # Keep the first failure (evidence/key/network/provider): only a run that has not failed yet takes
+    # repair-invalid; an unusable journal outranks everything. The engine failure goes to the report as
+    # an open item (the Python engine's numbers: 2 invalid input/catalog, 3 unusable journal = exit 5 here).
+    if ($rc -eq 2) {
+        if (@('completed', 'evidence-only', 'dry-run') -ccontains $script:Rep.Outcome) { $script:Rep.Outcome = 'repair-invalid' }
+        $script:Rep.RepairExit = 2
+    } elseif ($rc -eq 5) {
+        $script:Rep.Outcome = 'journal-unusable'
+        $script:Rep.RepairExit = 3
+    }
     $script:Rep.AnalysisText = $AnalysisText
     if ($Rescan -and $script:Rep.Collect -and $script:Rep.Evidence -and ($rc -eq 0 -or $rc -eq 1)) {
         try {
@@ -2981,7 +2997,7 @@ function Send-RunReport {
                 -Version $version -CatalogSha $catSha -Scope @($r.Scope) -Policy $r.Policy -KeyPresent ([bool]$r.KeyPresent) `
                 -EvidencePath $r.Evidence -EvidenceAfterPath $r.After -AnalysisPath $r.Analysis `
                 -JournalPath (Join-Path (Join-Path $r.Reports 'repairs') 'journal.jsonl') `
-                -ActionInfo (Get-RrActionInfo -Catalog $r.Catalog) -AiCounts $counts -Secrets @($r.Secrets))
+                -ActionInfo (Get-RrActionInfo -Catalog $r.Catalog) -AiCounts $counts -Secrets @($r.Secrets) -RepairExit ([int]$r.RepairExit))
     } catch {
         Write-Host ('PERINGATAN / WARNING: the run report could not be written: ' + $_.Exception.Message) -ForegroundColor Yellow
     }
@@ -2994,7 +3010,7 @@ function Invoke-RescueMain {
         [bool]$ListOnly = $false)
     $script:Rep = @{ Ready = $false; Outcome = 'scan-failed'; Evidence = ''; After = ''; Analysis = ''; AnalysisText = ''; Reports = ''; Bundle = ''
         Scope = @('all'); Policy = $Policy; KeyPresent = $false; Secrets = @(); Catalog = $null; Collect = $null; EvidenceObj = $null
-        RunEvidenceId = ''; Started = (Get-UtcIso); RunId = ('rescue-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '-win') }
+        RunEvidenceId = ''; RepairExit = 0; Started = (Get-UtcIso); RunId = ('rescue-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '-win') }
     try {
         Invoke-RescueMainCore -EvidenceOnlyMode $EvidenceOnlyMode -DryRunMode $DryRunMode -Explicit $Explicit -ScriptDir $ScriptDir `
             -ScopeText $ScopeText -PackagesText $PackagesText -Policy $Policy -ApproveItems $ApproveItems -ParamItems $ParamItems `

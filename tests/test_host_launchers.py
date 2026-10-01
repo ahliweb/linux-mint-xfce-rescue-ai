@@ -1078,6 +1078,28 @@ class StaticTests(unittest.TestCase):
             # the response body is never echoed: only a token of at most 64 characters
             self.assertIn('[A-Za-z][A-Za-z0-9_]{0,63}', text)
 
+    def test_every_launcher_keeps_the_first_failure_and_hands_the_repair_exit_to_its_report(self):
+        # #56: repair-invalid only replaces completed/evidence-only/dry-run; journal-unusable outranks; the engine failure
+        # reaches the generator (Python --repair-exit, PowerShell -RepairExit, JXA RESCUE_RR_REPAIR_EXIT) as an open item.
+        win, mac = self.text('rescue-windows.ps1'), self.text('RESCUE-MACOS.command')
+        lin = self.text('rescue-linux.sh')
+        live = (REPO / 'scripts' / 'launch-hermes-rescue.sh').read_text(encoding='utf-8')
+        self.assertNotIn("if ($rc -eq 2) { $script:Rep.Outcome = 'repair-invalid' }", win)
+        self.assertIn("@('completed', 'evidence-only', 'dry-run') -ccontains $script:Rep.Outcome", win)
+        self.assertIn("$script:Rep.Outcome = 'journal-unusable'", win)
+        self.assertIn('-RepairExit ([int]$r.RepairExit)', win)
+        self.assertNotIn('(( repair_rc == 2 )) && rr_outcome=repair-invalid', mac)
+        self.assertIn('case $rr_outcome in completed|evidence-only|dry-run) rr_outcome=repair-invalid ;; esac', mac)
+        self.assertIn('(( repair_rc == 5 )) && rr_outcome=journal-unusable', mac)
+        self.assertIn('RESCUE_RR_REPAIR_EXIT', mac)
+        self.assertNotIn('2) run_outcome=repair-invalid ;;', live)
+        self.assertIn('2) case $run_outcome in completed) run_outcome=repair-invalid ;; *) ;; esac ;;', live)
+        self.assertIn('3) run_outcome=journal-unusable ;;', live)
+        self.assertIn('--repair-exit "$repair_rc"', live)
+        self.assertIn('--repair-exit "$repair_rc"', lin)
+        for text in (win, mac):  # the same open item in the native generators (equality: tests/test_run_report.py)
+            self.assertIn("repair-engine-failed", text)
+
     def test_windows_wrapper(self):
         raw = (HOST / 'RESCUE-WINDOWS.cmd').read_bytes()
         self.assertNotIn(b'\n', raw.replace(b'\r\n', b''))  # CRLF only

@@ -105,6 +105,7 @@ run_outcome=preflight-failed
 report_done=0
 have_readiness=0
 run_evidence='' run_evidence_after='' run_analysis='' run_journal=''
+repair_rc=0   # the repair engine's exit code; 2 or 3 is added to the report as the open item repair-engine-failed
 emit_report() {
   ((report_done)) && return 0
   report_done=1
@@ -117,6 +118,7 @@ emit_report() {
   [[ -z $run_evidence_after || ! -s $run_evidence_after ]] || rargs+=(--evidence-after "$run_evidence_after")
   [[ -z $run_analysis || ! -s $run_analysis ]] || rargs+=(--analysis "$run_analysis")
   [[ -z $run_journal || ! -e $run_journal ]] || rargs+=(--journal "$run_journal")
+  ((repair_rc == 0)) || rargs+=(--repair-exit "$repair_rc")
   python3 "$root/scripts/rescue-report.py" "${rargs[@]}" ||
     printf 'PERINGATAN: laporan proses tidak dapat ditulis penuh (kode %d).\nWARNING: the run report could not be fully written (code %d).\n' "$?" "$?" >&2
 }
@@ -235,7 +237,9 @@ else
     run_journal="$state_dir/repairs/journal.jsonl"
     case $repair_rc in
       0) ;;
-      2) run_outcome=repair-invalid ;;
+      # Keep the first failure (scan/key/network/provider/analyzer): only a run that has not failed yet takes
+      # repair-invalid; an unusable journal outranks everything (same as the host launchers).
+      2) case $run_outcome in completed) run_outcome=repair-invalid ;; *) ;; esac ;;
       3) run_outcome=journal-unusable ;;
       *)
         printf 'PERINGATAN: ada tindakan perbaikan yang gagal atau di-rollback; lihat %s\n' "$run_journal" >&2

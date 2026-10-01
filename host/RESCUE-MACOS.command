@@ -21,6 +21,11 @@
 #             --select | 3 no API key | 4 network/HTTP error (run outcome network-error, or
 #             provider-rejected for an HTTP 4xx other than 401/403/408/429) | 5 bundle/reports/journal
 #             unusable | 64 usage
+# Outcome precedence (same in the Windows, Linux and live launchers): the run outcome is the FIRST
+#             failure (evidence, key, network, provider); a repair-engine failure never replaces it.
+#             It is added to the report as the open item repair-engine-failed (exit-2, or exit-3
+#             for an unusable journal) and the exit code stays the first failure's. A repair journal
+#             that cannot be used (exit 5) outranks everything: outcome journal-unusable and exit 5.
 
 emulate -L zsh
 setopt LOCAL_OPTIONS
@@ -1537,7 +1542,7 @@ function buildReadiness(rd) {
   }
   return { performed: true, gate: overall === 'not_ready' ? 'failed' : 'passed', overall: overall, checks: checks };
 }
-function buildOpenItems(det, actions, cmp, chain) {
+function buildOpenItems(det, actions, cmp, chain, repairExit) {
   var items = [];
   actions.forEach(function (a) {
     var kind = { failed: 'action-failed', 'rolled-back': 'action-rolled-back', declined: 'action-declined', skipped: 'action-skipped', proposed: 'action-not-run' }[a.final_outcome];
@@ -1550,6 +1555,7 @@ function buildOpenItems(det, actions, cmp, chain) {
       items.push(e);
     }
   });
+  if (repairExit === 2 || repairExit === 3) { items.push({ kind: 'repair-engine-failed', ref: 'exit-' + repairExit }); }  // the repair engine itself failed
   if (chain === 'INVALID') { items.push({ kind: 'journal-invalid' }); }
   if (det.targets.some(function (t) {
     return t.access === 'not-mounted-encrypted' || (['bitlocker', 'filevault', 'luks'].indexOf(t.encryption) >= 0 && ['read-only-mounted', 'host-running'].indexOf(t.access) < 0);
@@ -1625,7 +1631,7 @@ function buildReport(inp) {
     remediation: { journal: { chain: chain, records_total: records.length, records_run: runRecords }, actions: actions },
     comparison: cmp
   };
-  report.open_items = buildOpenItems(det, actions, cmp, chain);
+  report.open_items = buildOpenItems(det, actions, cmp, chain, inp.repair_exit);
   report.honesty = buildHonesty(inp.mode, outcome, keyPresent, actions, cmp, scope);
   var acts = { total: actions.length };
   FINALS.forEach(function (f) { acts[f.replace('-', '_')] = 0; });
@@ -1667,6 +1673,8 @@ var OPEN_TEXT = {
   'action-skipped': 'Aksi dilewati (prasyarat, parameter, atau backup tidak terpenuhi).',
   'action-not-run': 'Aksi hanya diusulkan (kebijakan detect-only); belum dijalankan.',
   'manual-rollback': 'Rollback MANUAL diperlukan; ikuti dokumen yang ditautkan.',
+  'repair-engine-failed': 'Mesin perbaikan sendiri gagal (exit-2: evidence, katalog, atau pilihan tidak valid; exit-3: journal tidak dapat dipakai); ' +
+    'tidak ada aksi yang dianggap selesai, periksa log launcher di folder reports USB.',
   'journal-invalid': 'Rantai hash journal TIDAK VALID; jangan percaya bagian remediasi sebelum diperiksa.',
   'escalate-encrypted-disk': 'Disk terenkripsi tidak dapat dipindai penuh; buka kunci dengan kunci pemulihan milik pemilik, lalu jalankan ulang.',
   'escalate-hardware-fault': 'Indikasi kerusakan perangkat keras; cadangkan data sekarang dan bawa ke teknisi.',
@@ -1870,7 +1878,7 @@ function collectInputs() {
     ended_at: envv('RESCUE_RR_ENDED'), version: /^[0-9]+\.[0-9]+\.[0-9]+$/.test(version) ? version : null,
     catalog_sha256: envv('RESCUE_RR_CATALOG_SHA') || null, scope: scope, repair_policy: envv('RESCUE_RR_POLICY') || null,
     key_present: envv('RESCUE_RR_KEY_PRESENT') === 'yes', evidence: ev.doc, evidence_sha256: ev.sha, evidence_after: after.doc,
-    analysis_text: analysis, key_redactions: /^[0-9]+$/.test(envv('RESCUE_RR_KEY_REDACTIONS')) ? parseInt(envv('RESCUE_RR_KEY_REDACTIONS'), 10) : 0, ai_counts: counts, journal_lines: lines, readiness: rd.doc, action_info: info
+    analysis_text: analysis, key_redactions: /^[0-9]+$/.test(envv('RESCUE_RR_KEY_REDACTIONS')) ? parseInt(envv('RESCUE_RR_KEY_REDACTIONS'), 10) : 0, ai_counts: counts, journal_lines: lines, repair_exit: /^[0-9]+$/.test(envv('RESCUE_RR_REPAIR_EXIT')) ? parseInt(envv('RESCUE_RR_REPAIR_EXIT'), 10) : null, readiness: rd.doc, action_info: info
   };
 }
 function loadEntries() {
@@ -1944,6 +1952,10 @@ emit_report() {
   local -x RESCUE_RR_AI_ACCEPTED='' RESCUE_RR_AI_REJECTED=''
   if (( plan_ran )); then RESCUE_RR_AI_ACCEPTED=$ai_accepted; RESCUE_RR_AI_REJECTED=$ai_rejected; fi
   local -x RESCUE_RR_KEY_REDACTIONS=0
+  # The repair engine's own failure, in the Python engine's numbers: 2 invalid input/catalog, 3 unusable journal (this launcher's 5).
+  local -x RESCUE_RR_REPAIR_EXIT=''
+  (( repair_rc == 2 )) && RESCUE_RR_REPAIR_EXIT=2
+  (( repair_rc == 5 )) && RESCUE_RR_REPAIR_EXIT=3
   local rtxt tmp2=$reports/.report-analysis.$$.tmp
   if [[ -n $rr_key && ${#rr_key} -ge 8 && -n $RESCUE_RR_ANALYSIS ]]; then  # the key value in the model text is redacted here
     rtxt=$(cat -- "$RESCUE_RR_ANALYSIS"; printf x)
@@ -2271,7 +2283,11 @@ end_run() {
   # end_run BASE_RC [ANALYSIS_FILE]: run the repair phase, then exit (a journal failure outranks the rest).
   local base=$1 rc
   run_repairs "${2:-}"
-  (( repair_rc == 2 )) && rr_outcome=repair-invalid
+  # Keep the first failure (evidence/key/network/provider): only a run that has not failed yet takes
+  # repair-invalid; an unusable journal outranks everything.
+  if (( repair_rc == 2 )); then
+    case $rr_outcome in completed|evidence-only|dry-run) rr_outcome=repair-invalid ;; esac
+  fi
   (( repair_rc == 5 )) && rr_outcome=journal-unusable
   rescan_after
   rc=$base
