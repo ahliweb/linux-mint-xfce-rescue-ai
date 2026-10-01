@@ -14,8 +14,9 @@
 #             selection | 3 no API key | 4 network/HTTP error (run outcome network-error, or
 #             provider-rejected when the provider answered with an HTTP 4xx other than
 #             401/403/408/429) | 5 bundle/reports dir or repair journal unusable | 6 analyzer script
-#             missing | 64 usage   (3 and 4 take precedence over 1 and 2, as in the Windows and macOS
-#             launchers)
+#             missing or python3-jsonschema missing on this host (outcome dependency-missing; the
+#             evidence is still collected, nothing is installed, no analysis and no repairs) |
+#             64 usage   (3 and 4 take precedence over 1 and 2, as in the Windows and macOS launchers)
 # Outcome precedence: the run outcome is the FIRST failure (scan, evidence, key, network, provider,
 #             analyzer); a repair-engine failure never replaces it. It is added to the report as the
 #             open item repair-engine-failed (exit-2 or exit-3) and the exit code stays the first
@@ -149,8 +150,13 @@ else
 fi
 export PYTHONUNBUFFERED=1
 
+# python3-jsonschema is checked once. Without it schema validation, the AI analysis and the catalog
+# repairs cannot run; this launcher never installs anything on the host, so it says so and stops there.
+have_jsonschema=1
+python3 -c 'import jsonschema' 2>/dev/null || have_jsonschema=0
+
 skip_network=0
-if ((evidence_only || dry_run)); then skip_network=1; fi
+if ((evidence_only || dry_run || !have_jsonschema)); then skip_network=1; fi   # nothing will be sent
 # The analyzer's loopback test hook means no real network is wanted: skip the internet probe too.
 if [[ ${RESCUE_TEST_BASE_URL:-} == http://127.0.0.1:* ]]; then skip_network=1; fi
 
@@ -195,7 +201,7 @@ def provider_ready():
         analyzer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(analyzer)
         return bool(analyzer.find_api_key([os.path.join(bundle, 'config', 'rescue.env')]))
-    except Exception:
+    except (Exception, SystemExit):  # the analyzer exits 2 when python3-jsonschema is missing
         return False
 
 
@@ -503,7 +509,14 @@ fi
 printf 'Evidence tersimpan / saved: %s\n' "$evidence"
 
 validator="$bundle/scripts/validate-evidence.py"
-if [[ -f $validator ]] && python3 -c 'import jsonschema' 2>/dev/null; then
+if ((!have_jsonschema)); then
+  printf '\nID: python3-jsonschema tidak ada di komputer ini. Validasi schema, analisis AI, dan perbaikan katalog membutuhkannya.\n'
+  printf '    Launcher ini TIDAK memasang apa pun di komputer ini. Evidence tetap dikumpulkan (hanya pemeriksaan struktur internal) dan tersimpan di USB:\n    %s\n' "$evidence"
+  printf '    Analisis evidence itu dengan boot dari live USB rescue, atau dari PC lain yang punya python3-jsonschema.\n'
+  printf 'EN: python3-jsonschema is not installed on this computer. Schema validation, the AI analysis and catalog repairs need it.\n'
+  printf '    This launcher installs NOTHING on this computer. The evidence was still collected (internal structural check only) and is saved on the USB (path above).\n'
+  printf '    Analyze it by booting the rescue live USB, or from another PC that has python3-jsonschema.\n'
+elif [[ -f $validator ]]; then
   if ! python3 "$validator" "$evidence"; then
     printf 'ERROR: evidence tidak valid terhadap schema; tidak dikirim / evidence failed schema validation; nothing was sent.\n' >&2
     run_outcome='evidence-invalid'
@@ -556,8 +569,14 @@ repair_rc=0
 if ((evidence_only && !dry_run)); then
   printf 'Mode --evidence-only: tidak ada panggilan jaringan / no network call was made.\n'
   run_outcome='evidence-only'
-  run_repair list
+  if ((have_jsonschema)); then run_repair list; fi   # the repair engine needs python3-jsonschema
   finish 0
+fi
+
+if ((!have_jsonschema)); then
+  # No analyzer, no repair engine (not even --list): see the note above. The evidence is kept.
+  run_outcome='dependency-missing'
+  finish 6
 fi
 
 analyzer="$bundle/scripts/opencode-go-analyze.py"

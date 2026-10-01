@@ -401,7 +401,8 @@ class ReportModelTests(unittest.TestCase):
                  'provider-rejected': ('provider-rejected-request', True),
                  'evidence-only': ('analysis-not-run-offline-mode', True), 'dry-run': ('analysis-not-run-offline-mode', True),
                  'analysis-failed': ('analysis-failed', True), 'scan-failed': ('scan-not-completed', True),
-                 'preflight-failed': ('hardware-preflight-failed', True), 'scan-skipped': ('scan-not-completed', True)}
+                 'preflight-failed': ('hardware-preflight-failed', True), 'scan-skipped': ('scan-not-completed', True),
+                 'dependency-missing': ('host-dependency-missing', True)}
         for outcome, (expected, key) in cases.items():
             with self.subTest(outcome=outcome):
                 rep = report_of(outcome=outcome, key_present=key, journal_lines=None, evidence_after=None)
@@ -976,7 +977,7 @@ class CrossCheckMixin:
     def test_other_platform_modes_and_outcomes(self):
         paths = self.gen.files()
         for mode, outcome, key in (('windows-host', 'no-key', False), ('macos-host', 'network-error', True), ('live-linux', 'dry-run', True),
-                                   ('linux-host', 'provider-rejected', True)):
+                                   ('linux-host', 'provider-rejected', True), ('linux-host', 'dependency-missing', True)):
             with self.subTest(mode=mode):
                 shutil.rmtree(self.tmp / 'py', ignore_errors=True)
                 shutil.rmtree(self.tmp / self.NAME, ignore_errors=True)

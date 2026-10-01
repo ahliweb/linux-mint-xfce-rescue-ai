@@ -25,7 +25,7 @@ STATUSES = ('pass', 'fail', 'warn', 'not_applicable', 'unknown')
 DOMAINS = ('hardware', 'os', 'software', 'malware', 'environment')
 OUTCOMES = ('completed', 'completed-with-failures', 'evidence-only', 'dry-run', 'preflight-failed', 'scan-failed',
             'evidence-invalid', 'no-key', 'network-error', 'provider-rejected', 'analysis-failed', 'analyzer-missing',
-            'repair-invalid', 'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
+            'dependency-missing', 'repair-invalid', 'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
 READINESS_IDS = ('cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media')
 MAX_ANALYSIS_CHARS = 32768
 ENVIRONMENT_CHECKS = frozenset('''network-connectivity iso-integrity block-device-discovery filesystem-discovery
@@ -499,7 +499,7 @@ def build_honesty(mode, outcome, key_present, actions, comparison, scope):
              'analysis-failed': 'analysis-failed', 'scan-failed': 'scan-not-completed',
              'evidence-invalid': 'scan-not-completed', 'scan-skipped': 'scan-not-completed',
              'interrupted': 'scan-not-completed', 'preflight-failed': 'hardware-preflight-failed',
-             'analyzer-missing': 'analysis-failed'}
+             'analyzer-missing': 'analysis-failed', 'dependency-missing': 'host-dependency-missing'}
     if outcome in table:
         blocked.append(table[outcome])
     if not key_present and 'provider-key-missing' not in blocked and outcome not in ('preflight-failed',):
@@ -651,6 +651,7 @@ HONESTY_TEXT = {
     'analysis-failed': 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.',
     'scan-not-completed': 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.',
     'hardware-preflight-failed': 'Environment-blocked: preflight perangkat keras gagal; pemindaian tidak dijalankan.',
+    'host-dependency-missing': 'Environment-blocked: paket Python jsonschema tidak ada di komputer host (tidak dipasang oleh launcher); validasi schema, analisis AI, dan perbaikan katalog tidak dijalankan. Analisis evidence dari live USB rescue atau PC lain.',
     'rescan-not-completed': 'Environment-blocked: pemindaian ulang setelah perbaikan tidak selesai; hasil perbaikan belum dibandingkan.',
 }
 

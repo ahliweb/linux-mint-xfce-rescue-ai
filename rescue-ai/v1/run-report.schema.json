@@ -131,6 +131,7 @@
             "provider-rejected",
             "analysis-failed",
             "analyzer-missing",
+            "dependency-missing",
             "repair-invalid",
             "journal-unusable",
             "scan-skipped",
@@ -1109,7 +1110,7 @@
         },
         "environment_blocked": {
           "type": "array",
-          "maxItems": 8,
+          "maxItems": 9,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -1120,7 +1121,8 @@
               "analysis-failed",
               "scan-not-completed",
               "hardware-preflight-failed",
-              "rescan-not-completed"
+              "rescan-not-completed",
+              "host-dependency-missing"
             ]
           }
         },

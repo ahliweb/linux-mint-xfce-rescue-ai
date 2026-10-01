@@ -405,21 +405,62 @@ class LinuxLauncherTests(unittest.TestCase):
         if HAVE_JSONSCHEMA:
             self.assertEqual(sha, repair_catalog.load(self.bundle / 'rescue-ai' / 'v1' / 'catalog').sha256)
 
-    def test_without_python3_jsonschema_the_run_is_analysis_failed_not_repair_invalid_and_keeps_the_catalog_hash(self):
-        # The field failure of #49: no python3-jsonschema on the host. The analyzer and the engine both exit 2.
+    def assert_dependency_note(self, text):
+        self.assertIn('ID: python3-jsonschema tidak ada di komputer ini', text)
+        self.assertIn('EN: python3-jsonschema is not installed on this computer', text)
+        self.assertIn('TIDAK memasang apa pun', text)
+        self.assertIn('installs NOTHING', text)
+
+    def test_without_python3_jsonschema_the_launcher_says_so_and_runs_neither_analyzer_nor_engine(self):
+        # The field failure of #49: no python3-jsonschema on the host. Nothing is installed; the evidence is kept.
         sys.path.insert(0, str(REPO / 'scripts' / 'lib'))
         import repair_catalog
         base = self._serve(200)
         proc = self.run_launcher(env=self.no_jsonschema_env(RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY))
-        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertEqual(proc.returncode, 6, proc.stdout + proc.stderr)
+        self.assert_dependency_note(proc.stdout)
+        self.assertEqual(_FakeApi.seen, [])                      # the analyzer never ran: no request reached the server
+        self.assertNotIn('Repair plan', proc.stdout + proc.stderr)  # the repair engine never ran (not even --list)
+        self.assertNotIn('rescue-repair', proc.stdout + proc.stderr)
+        self.assertEqual(self.reports('linux-*-analysis.md'), [])
+        self.assertFalse((self.bundle / 'reports' / 'repairs').exists())
+        evidence = json.loads(one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
+        self.assertEqual(evidence['source_platform'], 'linux-host')
+        self.assertFalse(evidence['ai_provider']['authenticated'])  # nothing was or will be sent
         doc = self.last_report()
-        self.assertEqual(doc['header']['outcome'], 'analysis-failed')
-        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items())
+        self.assertEqual(doc['header']['outcome'], 'dependency-missing')
+        if HAVE_JSONSCHEMA:  # the report validates against the schema (checked here, where jsonschema exists)
+            report = one(sorted((self.bundle / 'reports').glob('run-*/report.json')), self)
+            check = subprocess.run([sys.executable, str(REPO / 'scripts/rescue-report.py'), '--validate', str(report)],
+                                   capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertEqual(doc['run_id'], evidence['run_id'])
+        self.assertIn('host-dependency-missing', doc['honesty']['environment_blocked'])
+        self.assertNotIn('repair-engine-failed', [i for i, _ in self.open_items()])
         self.assertEqual(doc['header']['catalog_sha256'],
                          repair_catalog.directory_sha256(self.bundle / 'rescue-ai' / 'v1' / 'catalog'))
         log = self.launcher_log().read_text(encoding='utf-8')
-        self.assertIn('jsonschema', log)  # the reason is on the USB now
+        self.assert_dependency_note(log)
         self.assertNotIn(DUMMY_KEY, log)
+        self.assertIn('dependency-missing', (self.bundle / 'reports' / 'index.md').read_text(encoding='utf-8'))
+
+    def test_without_python3_jsonschema_and_without_key_it_is_still_dependency_missing(self):
+        proc = self.run_launcher(env=self.no_jsonschema_env())
+        self.assertEqual(proc.returncode, 6, proc.stdout + proc.stderr)
+        self.assert_dependency_note(proc.stdout)
+        self.assertEqual(self.last_report()['header']['outcome'], 'dependency-missing')
+        one(self.reports('linux-*-evidence.json'), self)
+
+    def test_without_python3_jsonschema_dry_run_and_evidence_only(self):
+        proc = self.run_launcher('--dry-run', env=self.no_jsonschema_env())
+        self.assertEqual(proc.returncode, 6, proc.stdout + proc.stderr)
+        self.assertEqual(self.last_report()['header']['outcome'], 'dependency-missing')
+        shutil.rmtree(self.bundle / 'reports')
+        proc = self.run_launcher('--evidence-only', env=self.no_jsonschema_env())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)  # the operator asked for evidence only: it exists
+        self.assert_dependency_note(proc.stdout)
+        self.assertNotIn('Repair plan', proc.stdout + proc.stderr)
+        self.assertEqual(self.last_report()['header']['outcome'], 'evidence-only')
 
     @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
     def test_a_repair_engine_failure_keeps_the_analyzer_outcome_and_exit_code(self):
