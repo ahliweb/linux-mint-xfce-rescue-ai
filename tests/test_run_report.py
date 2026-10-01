@@ -1354,6 +1354,21 @@ class MacReportTests(HR.HostRepairCase):
             if path.is_file() and path.name != 'journal.jsonl':
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
 
+    def test_provider_rejection_is_reported_as_provider_rejected(self):
+        self.write_env_file("OPENCODE_GO_API_KEY='%s'\n" % HL.DUMMY_KEY)
+        (self.shims / 'curl.mode').write_text('reject')
+        proc = self.run_args('--scope', 'os')
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        self.assertIn('HTTP 400 (MissingSessionID)', proc.stdout + proc.stderr)
+        self.assertNotIn('secret response text', proc.stdout + proc.stderr)
+        doc, md = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'provider-rejected')
+        self.assertTrue(doc['header']['provider_key_present'])
+        self.assertIn('provider-rejected-request', doc['honesty']['environment_blocked'])
+        self.assertNotIn('network-unreachable', doc['honesty']['environment_blocked'])
+        self.assertIn('bukan masalah jaringan', md)
+
     def test_analysis_key_and_ai_counts(self):
         self.with_key('Analisis.\n```rescue-proposals\n{"proposed_actions":[{"action_id":"os-macos.slow","target_ref":"os-0"},'
                       '{"action_id":"os-macos.nope"}]}\n```\n')

@@ -793,8 +793,8 @@ class MacLauncherTests(unittest.TestCase):
         self.assertNotIn('secret response text', text)
         self.assertNotIn(DUMMY_KEY, text)
         self.assertEqual([p.name for p in (self.bundle / 'reports').iterdir() if p.name.startswith('.')], [])
-        reports = sorted((self.bundle / 'reports').glob('run-*/report.json'))
-        self.assertEqual(json.loads(one(reports, self).read_text(encoding='utf-8'))['header']['outcome'], 'provider-rejected')
+        # The run report outcome is covered in tests/test_run_report.py (MacReportTests): the macOS launcher
+        # writes a report only when osascript exists, and this class has no osascript shim.
 
     def test_key_parser_matches_bash_reference(self):
         for text in KEY_CASES:
