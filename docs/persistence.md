@@ -153,7 +153,7 @@ Sebelum diunggah, workflow memastikan dengan `debugfs` bahwa `hermes/env` di ima
 Mengunduh dan memverifikasi (paket harus berstatus public; jika `oras pull` ditolak, admin repository perlu mengubah visibilitas paket sekali di halaman Packages):
 
 ```bash
-V=0.5.1
+V=0.6.0
 oras pull ghcr.io/ahliweb/linux-mint-xfce-rescue-ai/persistence:$V -o pkg
 cd pkg
 sha256sum -c rescue-omes-casper-rw-$V.dat.zst.sha256

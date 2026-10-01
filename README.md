@@ -7,7 +7,7 @@ Bootable USB rescue toolkit with a dedicated **Hermes Rescue profile** and cloud
 - OpenCode model ID: `opencode-go/mimo-v2.6-flash`
 - Hermes route: `custom` + `https://opencode.ai/zen/go/v1`
 
-The toolkit runs read-only diagnostics (hardware, operating systems, installed software, malware), sanitizes the results into numbers-only evidence, and asks OpenCode Go for bounded hypotheses. A repair is only ever a typed catalog action that the operator approves; the AI can at most name an `action_id`. Everything it produces is written to the USB, and every run ends with a report.
+The toolkit runs read-only diagnostics (hardware, operating systems, installed software, malware, and devices plugged into the PC: Android phones and tablets over USB, USB and opt-in network printers), sanitizes the results into numbers-only evidence, and asks OpenCode Go for bounded hypotheses. A repair is only ever a typed catalog action that the operator approves; the AI can at most name an `action_id`. Everything it produces is written to the USB, and every run ends with a report.
 
 > Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 
@@ -15,7 +15,8 @@ The toolkit runs read-only diagnostics (hardware, operating systems, installed s
 flowchart LR
     USB[Rescue USB] --> P[Preflight]
     P --> S[Read-only scan]
-    S --> E[Evidence 1.2]
+    S --> E[Evidence 1.3]
+    D[USB devices: Android, printers] --> E
     E --> G[OpenCode Go analysis]
     G --> R[Catalog repairs with approval]
     E --> R
@@ -52,13 +53,15 @@ Legend: **Implemented** (source level, covered by `make check`), **Hardware-requ
 | Area | Status | Details |
 |---|---|---|
 | Hermes profile, installer, launcher, health check, XFCE autostart | Implemented; the reboot itself is Hardware-required; the provider probe is Environment-blocked | this file, [design](docs/design.md) |
-| Evidence collector and validator, schema 1.2, config parser | Implemented | [design](docs/design.md), [security model](docs/security-model.md) |
+| Evidence collector and validator, schema 1.3, config parser | Implemented | [design](docs/design.md), [security model](docs/security-model.md) |
 | Ventoy download, install, preparation, signer-pinned ISO check | Implemented; the USB write and the physical boot are Hardware-required | [below](#prepare-an-existing-ventoy-usb) |
 | Persistence image with Hermes pre-installed | Implemented (needs docker and network); boot with persistence is Hardware-required | [persistence](docs/persistence.md) |
 | Credential-free release packages on GitHub Packages (`bundle`, `persistence`), built in CI | Implemented at source level; the first real publish runs on GitHub (Environment-blocked here) | [persistence](docs/persistence.md#paket-github-tanpa-kredensial) |
 | Hardware readiness preflight | Implemented; meaningful only on the target PC | [design](docs/design.md#hardware-readiness-gate) |
 | Live USB scan of the internal disks and cloud analysis | Implemented; real disks are Hardware-required, the cloud call is Environment-blocked | [target OS scan](docs/target-os-scan.md) |
 | Detection: hardware, OS, software, malware | Implemented; real machines are Hardware-required | [hardware](docs/hardware.md), [OS](docs/os-repair.md), [software](docs/software.md), [malware](docs/malware.md) |
+| Android phone/tablet over USB: USB inventory and port identification, read-only ADB checks, ADB repairs, fastboot slot switch and flashing, Samsung Heimdall (experimental), EDL/BROM guidance only | Implemented; real phones are Hardware-required; bootloader unlock is never automated | [android](docs/android.md) |
+| Printers: USB and IPP-over-USB, CUPS/IPP state, installed-OS spooler, opt-in local-link network; queue repairs, consumables operator-only | Implemented; real printers are Hardware-required | [printer](docs/printer.md) |
 | Repair catalog, policy engine, hash-chained journal | Implemented; real repairs are Hardware-required | [repair framework](docs/repair-framework.md) |
 | Windows, macOS, and Linux host launchers with native repairs | Implemented; real Windows 10/11 and macOS runs are Hardware-required | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
 | Run report on the USB | Implemented | [run report](docs/run-report.md) |
@@ -133,13 +136,17 @@ Plug the USB into the running computer. Nothing is installed on the host and the
 |---|---|---|
 | Windows 10/11 | Double-click `RESCUE-WINDOWS.cmd` on the USB | No admin rights requested; SmartScreen guidance in [host launchers](docs/host-launchers.md) |
 | macOS 12+ (Intel and Apple Silicon) | Double-click `RESCUE-MACOS.command` | Built-in tools only; Gatekeeper guidance in [host launchers](docs/host-launchers.md) |
-| Linux / Linux Mint (running system) | `/media/$USER/<USB>/rescue-omes/host/rescue-linux.sh` | Needs `python3` and `python3-jsonschema` |
+| Linux / Linux Mint (running system) | `/media/$USER/<USB>/rescue-omes/host/rescue-linux.sh` | Needs `python3` and `python3-jsonschema`; without it the evidence is still saved and the run ends `dependency-missing` (nothing is installed on the host) |
 
 Useful flags on all three: `--evidence-only` / `--dry-run` (no cloud call), `--scope`, `--packages`, `--repair-policy` (Windows uses `-EvidenceOnly`, `-DryRun`, `-Scope`, `-Packages`, `-RepairPolicy`). Output is in `rescue-omes/reports/`. Repair flags for Windows and macOS are in [host repair](docs/host-repair.md).
 
+## Android phones and printers
+
+Plug the phone or printer into the PC that runs the USB. The live session offers a scan after the OS scan (default no). From a terminal: `python3 scripts/scan-android.py --list-usb` and `python3 scripts/scan-printers.py --list` print every USB device with its port (`bus-port[.port]`), speed and location, and mark the rescue USB `[USB RESCUE]`. Serials, queue names and addresses never enter evidence. Flashing is operator-invoked only; read [android](docs/android.md) and [printer](docs/printer.md) first.
+
 ## Scope and repair policy
 
-`--scope` selects what is examined: `all` (default), `hardware` or `hardware.cpu|memory|disk|gpu|display|network|battery|usb`, `os`, `software`, `software.selected` (with `--packages a,b`), and `malware`. Areas outside the scope are never reported as healthy. `--repair-policy` is `detect-only`, `approve-each` (default: every action needs your approval, destructive actions need a `--backup-ref` and the typed `action_id`), or `auto-safe` (opt-in; only `safe` catalog-trigger actions). Repairs are typed catalog actions in `rescue-ai/v1/catalog/` executed by `scripts/rescue-repair.py` (live USB and Linux host) or natively by the Windows and macOS launchers, and recorded in a hash-chained journal on the USB. Full contract: [repair framework](docs/repair-framework.md).
+`--scope` selects what is examined: `all` (default), `hardware` or `hardware.cpu|memory|disk|gpu|display|network|battery|usb`, `os`, `software`, `software.selected` (with `--packages a,b`), `malware`, `android`, and `printer`. Areas outside the scope are never reported as healthy. `--repair-policy` is `detect-only`, `approve-each` (default: every action needs your approval, destructive actions need a `--backup-ref` and the typed `action_id`), or `auto-safe` (opt-in; only `safe` catalog-trigger actions; `irreversible` actions such as a printer test page always ask). Repairs are typed catalog actions in `rescue-ai/v1/catalog/` executed by `scripts/rescue-repair.py` (live USB and Linux host) or natively by the Windows and macOS launchers, and recorded in a hash-chained journal on the USB. Full contract: [repair framework](docs/repair-framework.md).
 
 ## Prepare an existing Ventoy USB
 
@@ -241,6 +248,8 @@ flowchart LR
     REP --> SW[software]
     REP --> MW[malware]
     REP --> HR[host-repair]
+    REP --> AND[android]
+    REP --> PRN[printer]
     DESIGN --> TS[target-os-scan]
     DESIGN --> HL[host-launchers]
     DESIGN --> PER[persistence]
@@ -256,6 +265,7 @@ flowchart LR
 - [Persistence image with Hermes pre-installed](docs/persistence.md), [target OS scan](docs/target-os-scan.md)
 - [Repair framework (scope, catalog, policy, journal)](docs/repair-framework.md)
 - [Hardware](docs/hardware.md), [OS repair](docs/os-repair.md), [installed software](docs/software.md), [malware](docs/malware.md)
+- [Android phones and tablets](docs/android.md), [printers](docs/printer.md)
 - [Host launchers](docs/host-launchers.md), [repairs from the Windows and macOS launchers](docs/host-repair.md)
 - [Run report](docs/run-report.md), [candidate skill submission](docs/skill-submission.md), [Hermes learning loop](docs/hermes-learning-loop.md)
 - [Hermes profile](profiles/rescue-hermes/), [changelog](CHANGELOG.md), [agent instructions](AGENTS.md)
