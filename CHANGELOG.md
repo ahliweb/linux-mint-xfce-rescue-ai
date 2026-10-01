@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/migrate-persistence-state.py` carries the provider key, Hermes state, field-learned skills and case history from an old persistence image into a new one with `debugfs` (no mount, no root), keeping mode/uid/gid/mtime and taking program files and bundled skills from the new image; `e2fsck -fn` and a per-file SHA-256 read-back must pass. `docs/persistence.md` gains the procedure "Upgrade USB dengan mempertahankan kunci dan state Hermes" (backup, migrate, `prepare-ventoy-usb.sh --replace-persistence`, restore host reports, read back) and `docs/security-model.md` a row. Used to upgrade the field USB from 0.5.0 to 0.6.0 (ahliweb/linux-mint-xfce-rescue-ai#65).
+
 ## [0.6.0] - 2026-10-01
 
 Fixes from the analysis of the USB stick after the 0.5.0 physical test (OpenCode Go session header, Ventoy USB resolution, fair malware budget, honest launcher outcomes) and two new repair targets connected to the PC running the USB: Android phones and tablets (detection, ADB repairs, fastboot/Heimdall flashing with EDL/BROM guidance) and printers (USB, installed-OS spooler, opt-in local-link network). Evidence schema 1.3; the persistence image adds `adb`, `fastboot`, `heimdall-flash` and the CUPS/IPP tools and needs a rebuild.
