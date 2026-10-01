@@ -56,6 +56,7 @@ The companion is an operator-run external system, not an OMES ISO or a second ag
 | Host launchers | The same flow on a running Windows, macOS, or Linux | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`, `host/rescue-linux.sh` ([host launchers](host-launchers.md)) |
 | Skill submission | Sanitized candidate skills to GitHub Issues after operator confirmation | `submit-skill.py`, `lib/skill_sanitize.py` ([skill submission](skill-submission.md)) |
 | Hermes profile | Runtime policy and skills | `profiles/rescue-hermes/` ([learning loop](hermes-learning-loop.md)) |
+| Follow-ups and autorun | Typed read-only follow-ups of flagged checks, the fixed kickoff turn, and the skill `rescue-autorun` | `scripts/rescue-followup.py`, `rescue-ai/v1/followup.schema.json`, `profiles/rescue-hermes/kickoff.md` ([learning loop](hermes-learning-loop.md#autorun-hermes-69)) |
 
 ## End-to-end flow on the live USB
 
@@ -81,9 +82,13 @@ flowchart TD
     RS -- yes --> RS2[Re-scan with the same scope]
     RS -- no --> RP
     RS2 --> RP[Run report: report.md, report.json, index.md]
+    RP --> FU["rescue-followup.py: typed read-only follow-ups (followup-run_id.json)"]
+    FU --> KO["Fixed kickoff turn, relative paths"]
     RF --> HE
-    RP --> HE[Hermes reads report.md first]
+    KO --> HE[Hermes: skill rescue-autorun, then report.md and the follow-up]
 ```
+
+The follow-up step and the kickoff turn are **Implemented** as files (`scripts/rescue-followup.py`, `profiles/rescue-hermes/kickoff.md`, the skill `rescue-autorun`, the Hermes `approvals` policy); wiring them into `launch-hermes-rescue.sh` and the host launchers is done on the launcher side. Hermes may run exactly two typed commands without asking (`rescue-followup`, and `rescue-repair.py --policy auto-safe --select <proposed safe action_id>`); everything else needs the operator ([learning loop](hermes-learning-loop.md#autorun-hermes-69), [security model](security-model.md#hermes-autorun-follow-ups-and-deny-list)).
 
 A failed scan, a missing key, or a network error never blocks Hermes and never blocks the report; the outcome is recorded in `header.outcome` of the report. The sequence of one run:
 
@@ -111,7 +116,8 @@ sequenceDiagram
     L->>S: re-scan when something executed
     L->>P: evidence, analysis, journal, readiness
     P-->>L: report.md and report.json
-    L->>H: exec hermes (token removed from its environment)
+    L->>L: rescue-followup (typed, read-only) writes followup-run_id.json
+    L->>H: exec hermes with the fixed kickoff turn (token removed from its environment)
 ```
 
 ## Host mode (running Windows, macOS, Linux)
