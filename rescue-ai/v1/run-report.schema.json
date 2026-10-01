@@ -101,7 +101,8 @@
               "os",
               "software",
               "software.selected",
-              "malware"
+              "malware",
+              "android"
             ]
           }
         },
@@ -278,7 +279,7 @@
             "properties": {
               "ref": {
                 "type": "string",
-                "pattern": "^os-[0-7]$"
+                "pattern": "^(os|and)-[0-7]$"
               },
               "family": {
                 "enum": [
@@ -286,7 +287,8 @@
                   "linux-other",
                   "windows",
                   "macos",
-                  "unknown"
+                  "unknown",
+                  "android"
                 ]
               },
               "architecture": {
@@ -299,7 +301,9 @@
               "detection": {
                 "enum": [
                   "live-offline",
-                  "host-native"
+                  "host-native",
+                  "usb-adb",
+                  "usb-enumerated"
                 ]
               },
               "encryption": {
@@ -317,7 +321,11 @@
                   "not-mounted-encrypted",
                   "not-mounted-unsupported",
                   "host-running",
-                  "unknown"
+                  "unknown",
+                  "adb-authorized",
+                  "adb-unauthorized",
+                  "adb-unavailable",
+                  "usb-only"
                 ]
               }
             }
@@ -361,7 +369,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^os-[0-7]$"
+                    "pattern": "^(os|and)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -418,7 +426,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^os-[0-7]$"
+                    "pattern": "^(os|and)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -475,7 +483,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^os-[0-7]$"
+                    "pattern": "^(os|and)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -532,7 +540,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^os-[0-7]$"
+                    "pattern": "^(os|and)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -589,7 +597,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^os-[0-7]$"
+                    "pattern": "^(os|and)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -758,7 +766,7 @@
               "action_id": {
                 "type": "string",
                 "maxLength": 64,
-                "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw)\\.[a-z0-9]+(-[a-z0-9]+)*$"
+                "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw|android)\\.[a-z0-9]+(-[a-z0-9]+)*$"
               },
               "origin": {
                 "enum": [
@@ -776,7 +784,7 @@
               },
               "target_ref": {
                 "type": "string",
-                "pattern": "^os-[0-7]$"
+                "pattern": "^(os|and)-[0-7]$"
               },
               "policy": {
                 "enum": [
@@ -837,7 +845,11 @@
                       "verify-failed",
                       "rolled-back",
                       "manual-rollback-required",
-                      "not-applicable"
+                      "not-applicable",
+                      "device-absent",
+                      "device-not-authorized",
+                      "device-ambiguous",
+                      "device-mismatch"
                     ]
                   }
                 }
@@ -916,7 +928,11 @@
                         "verify-failed",
                         "rolled-back",
                         "manual-rollback-required",
-                        "not-applicable"
+                        "not-applicable",
+                        "device-absent",
+                        "device-not-authorized",
+                        "device-ambiguous",
+                        "device-mismatch"
                       ]
                     },
                     "exit_code": {
@@ -1017,7 +1033,7 @@
               },
               "target_ref": {
                 "type": "string",
-                "pattern": "^os-[0-7]$"
+                "pattern": "^(os|and)-[0-7]$"
               },
               "before": {
                 "enum": [
@@ -1077,7 +1093,7 @@
           },
           "target_ref": {
             "type": "string",
-            "pattern": "^os-[0-7]$"
+            "pattern": "^(os|and)-[0-7]$"
           },
           "doc": {
             "type": "string",

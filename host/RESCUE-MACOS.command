@@ -104,7 +104,7 @@ scope_items=(${(s:,:)scope})
 typeset -U scope_items
 for s in $scope_items; do
   case $s in
-    all|hardware|hardware.cpu|hardware.memory|hardware.disk|hardware.gpu|hardware.display|hardware.network|hardware.battery|hardware.usb|os|software|software.selected|malware) ;;
+    all|hardware|hardware.cpu|hardware.memory|hardware.disk|hardware.gpu|hardware.display|hardware.network|hardware.battery|hardware.usb|os|software|software.selected|malware|android) ;;
     *) usage ;;
   esac
 done
@@ -839,7 +839,7 @@ process_proposal() {
   fi
   for p in ${=A_params[$aid]}; do
     pk=$aid'|'$p
-    [[ ${P_type[$pk]} == (block_device|target_root) ]] && unsupported=1
+    [[ ${P_type[$pk]} == (block_device|target_root|android_device) ]] && unsupported=1
   done
   if (( unsupported )) || [[ ${A_trw[$aid]} == 1 ]]; then
     print -r -- "  $aid needs a block device or a mounted target, which host launchers do not support; not run." >&2
@@ -967,7 +967,7 @@ function toStep(raw, where) {
 
 function toAction(raw) {
   var id = has(raw, 'action_id') ? raw.action_id : '';
-  if (typeof id !== 'string' || id.length > 64 || !/^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
+  if (typeof id !== 'string' || id.length > 64 || !/^(hw|os-linux|os-windows|os-macos|sw|mw|android)\.[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
     problems.push('bad action_id'); return null;
   }
   var need = ['title', 'title_id', 'scope', 'platforms', 'risk', 'triggers', 'execute', 'verify', 'rollback', 'backup', 'doc'];
@@ -986,7 +986,7 @@ function toAction(raw) {
   if (rb.kind === 'step' && rbStep === null) { problems.push(id + ' rollback step'); }
   var params = [];
   (raw.params || []).forEach(function (p) {
-    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir'].indexOf(p.type) < 0 ||
+    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device'].indexOf(p.type) < 0 ||
         typeof p.name !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(p.name)) { problems.push(id + ' param'); return; }
     params.push({ name: p.name, type: p.type, values: has(p, 'values') ? p.values.map(String) : [],
       minimum: has(p, 'minimum') ? Number(p.minimum) : 0, maximum: has(p, 'maximum') ? Number(p.maximum) : 0,
@@ -1013,7 +1013,7 @@ files.forEach(function (f) {
   var doc;
   try { doc = JSON.parse(readText(f)); } catch (e) { problems.push(name + ' invalid JSON'); return; }
   if (!isPlain(doc) || doc.catalog_version !== '1' ||
-      ['hardware', 'os-linux', 'os-windows', 'os-macos', 'software', 'malware'].indexOf(doc.domain) < 0 || !Array.isArray(doc.actions)) {
+      ['hardware', 'os-linux', 'os-windows', 'os-macos', 'software', 'malware', 'android'].indexOf(doc.domain) < 0 || !Array.isArray(doc.actions)) {
     problems.push(name + ' header'); return;
   }
   if (domains[doc.domain]) { problems.push(name + ' duplicate domain'); }
@@ -1277,23 +1277,23 @@ var UNITS = { percent: '%', count: '', bytes: ' B', days: ' hari', seconds: ' s'
 var READINESS_IDS = ['cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media'];
 var ENV_CHECKS = ['network-connectivity', 'iso-integrity', 'block-device-discovery', 'filesystem-discovery', 'lvm-or-raid-discovery', 'firmware-boot-entry', 'kernel-log', 'system-journal'];
 var HARDWARE_HEALTH = ['smart-health', 'nvme-health', 'hw-memory-errors', 'hw-disk'];
-var SCOPE_VALUES = ['all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware'];
+var SCOPE_VALUES = ['all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware', 'android'];
 var POLICIES = ['detect-only', 'approve-each', 'auto-safe'];
 var ORIGINS = ['catalog-trigger', 'ai-proposal', 'operator'];
 var RISKS = ['safe', 'reversible', 'destructive'];
 var STAGES = ['proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback'];
 var RECORD_OUTCOMES = ['ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable'];
-var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable'];
+var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch'];
 var TARGET_ENUMS = {
-  family: ['linuxmint', 'linux-other', 'windows', 'macos', 'unknown'], architecture: ['x86_64', 'arm64', 'unknown'],
-  detection: ['live-offline', 'host-native'], encryption: ['none', 'bitlocker', 'filevault', 'luks', 'unknown'],
-  access: ['read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown']
+  family: ['linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android'], architecture: ['x86_64', 'arm64', 'unknown'],
+  detection: ['live-offline', 'host-native', 'usb-adb', 'usb-enumerated'], encryption: ['none', 'bitlocker', 'filevault', 'luks', 'unknown'],
+  access: ['read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown', 'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only']
 };
 var FINALS = ['verified', 'rolled-back', 'failed', 'skipped', 'declined', 'proposed'];
 var MAX_ANALYSIS = 32768;
 var CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g;
 var RUN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$/;
-var ACTION_RE = /^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*$/;
+var ACTION_RE = /^(hw|os-linux|os-windows|os-macos|sw|mw|android)\.[a-z0-9]+(-[a-z0-9]+)*$/;
 var DOC_RE = /^docs\/[A-Za-z0-9._\/-]+(#[A-Za-z0-9._-]+)?$/;
 var ZERO = '0000000000000000000000000000000000000000000000000000000000000000';
 // Existence of a match is what matters, so boundaries use a leading group instead of look-behind
@@ -1343,7 +1343,7 @@ function saneEvidence(doc) {
     var c = checks[i];
     if (!isPlain(c) || !isStr(c.check_id, /^[a-z0-9]+(-[a-z0-9]+)*$/) || c.check_id.length > 64) { return false; }
     if (!inList(c.status, STATUSES)) { return false; }
-    if (has(c, 'target_ref') && !isStr(c.target_ref, /^os-[0-7]$/)) { return false; }
+    if (has(c, 'target_ref') && !isStr(c.target_ref, /^(os|and)-[0-7]$/)) { return false; }
     if (has(c, 'value')) {
       var v = c.value;
       if (!isPlain(v) || typeof v.kind !== 'string' || !has(UNITS, v.kind) || !isNum(v.number) || v.number < 0 || v.number > 1e15) { return false; }
@@ -1358,7 +1358,7 @@ function saneEvidence(doc) {
     if (!Array.isArray(doc.target_systems) || doc.target_systems.length > 8) { return false; }
     for (i = 0; i < doc.target_systems.length; i++) {
       var t = doc.target_systems[i];
-      if (!isPlain(t) || !isStr(t.ref, /^os-[0-7]$/)) { return false; }
+      if (!isPlain(t) || !isStr(t.ref, /^(os|and)-[0-7]$/)) { return false; }
       for (k in TARGET_ENUMS) { if (has(t, k) && !inList(t[k], TARGET_ENUMS[k])) { return false; } }
     }
   }
@@ -1370,7 +1370,7 @@ function recordOk(r) {
   if (!inList(r.origin, ORIGINS) || !inList(r.risk, RISKS) || !inList(r.policy, POLICIES)) { return false; }
   if (!inList(r.stage, STAGES) || !inList(r.outcome, RECORD_OUTCOMES)) { return false; }
   if (has(r, 'reason') && !inList(r.reason, REASONS)) { return false; }
-  if (has(r, 'target_ref') && !isStr(r.target_ref, /^os-[0-7]$/)) { return false; }
+  if (has(r, 'target_ref') && !isStr(r.target_ref, /^(os|and)-[0-7]$/)) { return false; }
   if (has(r, 'backup') && r.backup !== null) {
     var b = r.backup;
     if (!isPlain(b) || !isInt(b.size_bytes) || b.size_bytes < 1 || !isStr(b.fingerprint_sha256, /^[a-f0-9]{64}$/)) { return false; }

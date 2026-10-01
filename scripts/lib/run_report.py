@@ -124,17 +124,19 @@ def check_key(check):
 
 RUN_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$')
 CHECK_ID_RE = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
-TARGET_RE = re.compile(r'^os-[0-7]$')
-ACTION_RE = re.compile(r'^(hw|os-linux|os-windows|os-macos|sw|mw)\.[a-z0-9]+(-[a-z0-9]+)*$')
+TARGET_RE = re.compile(r'^(os|and)-[0-7]$')
+ACTION_RE = re.compile(r'^(hw|os-linux|os-windows|os-macos|sw|mw|android)\.[a-z0-9]+(-[a-z0-9]+)*$')
 MODEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$')
 SCOPE_VALUES = ('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display',
-                'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware')
+                'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware',
+                'android')
 POLICIES = ('detect-only', 'approve-each', 'auto-safe')
 TARGET_ENUMS = {
-    'family': ('linuxmint', 'linux-other', 'windows', 'macos', 'unknown'),
-    'architecture': ('x86_64', 'arm64', 'unknown'), 'detection': ('live-offline', 'host-native'),
+    'family': ('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android'),
+    'architecture': ('x86_64', 'arm64', 'unknown'), 'detection': ('live-offline', 'host-native', 'usb-adb', 'usb-enumerated'),
     'encryption': ('none', 'bitlocker', 'filevault', 'luks', 'unknown'),
-    'access': ('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown'),
+    'access': ('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown',
+               'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only'),
 }
 ORIGINS = ('catalog-trigger', 'ai-proposal', 'operator')
 RISKS = ('safe', 'reversible', 'destructive')
@@ -142,7 +144,8 @@ STAGES = ('proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execut
 RECORD_OUTCOMES = ('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable')
 REASONS = ('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe',
            'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout',
-           'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable')
+           'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable',
+           'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch')
 
 
 def _is_str(value, pattern):

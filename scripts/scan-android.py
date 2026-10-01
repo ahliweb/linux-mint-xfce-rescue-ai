@@ -15,11 +15,14 @@ USB port, never the serial.
 
 Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 
-Usage: scan-android.py (--list-usb | --output FILE) [--source-platform live-linux|linux-host]
+Usage: scan-android.py (--list-usb | --count-android | --output FILE) [--source-platform live-linux|linux-host]
                        [--device and-N | --port BUS-PORT[.PORT]...] [--provider-ready]
+                       [--repair-policy detect-only|approve-each|auto-safe]
   --list-usb   print a bilingual (Bahasa Indonesia / English) table of ALL USB devices and where
                the Android target(s) are; with --output the scan then runs as well
-  --output     write validated evidence (exit 1 when it does not validate)
+  --count-android  print only the number of Android phones/tablets seen on USB (the live launcher uses it)
+  --output     write validated evidence (exit 1 when it does not validate); it carries scope ["android"],
+               the repair policy and the catalog-trigger proposals (action IDs only) like scan-target-os.py
   --device / --port  scan only one phone when several are attached (and-N numbering is by port order)
   --fixture-root DIR, --adb-path DIR  are TEST hooks (fake sysfs/proc tree, directory holding a fake adb)
 Exit codes: 0 done, 1 fatal error (USB sysfs unreadable, device not found, evidence invalid), 2 usage error.
@@ -37,7 +40,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
 from rescue_modules import android, usb_devices  # noqa: E402
+import repair_catalog  # noqa: E402
 
 SOURCE = 'collector-allowlist'
 MODEL_ID = 'mimo-v2.6-flash'
@@ -264,7 +269,7 @@ def usb_ports_entries(usb_list):
     return out
 
 
-def build_evidence(usb_list, targets, per_target, now, platform_name, provider_ready=False):
+def build_evidence(usb_list, targets, per_target, now, platform_name, provider_ready=False, policy='detect-only'):
     """Schema 1.3 evidence. *per_target* maps ref -> (checks, props)."""
     stamp = iso(now)
 
@@ -314,8 +319,22 @@ def build_evidence(usb_list, targets, per_target, now, platform_name, provider_r
         'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},
         'classification': 'confidential',
         'source_references': ['opencode-go:provider', 'nist:sp-800-86'],
-        'repair_policy': 'detect-only',
+        'scope': ['android'],
+        'repair_policy': policy,
     }
+
+
+def add_proposals(report, catalog_dir=None):
+    """Attach catalog-trigger proposals (action IDs only). A broken catalog never breaks the scan."""
+    try:
+        catalog = repair_catalog.load(catalog_dir or repair_catalog.CATALOG_DIR)
+    except (repair_catalog.CatalogError, OSError, ValueError) as exc:
+        print('warning: repair catalog unusable, no proposals added: %s' % exc, file=sys.stderr)
+        return report
+    proposals = repair_catalog.triggered(catalog, report, ('android',))[:32]
+    if proposals:
+        report['repair_proposals'] = proposals
+    return report
 
 
 # ------------------------------------------------------------------------------ main
@@ -331,7 +350,11 @@ def select_targets(targets, device, port):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Read-only USB inventory and Android target scan.')
     parser.add_argument('--list-usb', action='store_true', help='print every USB device and where the phone is')
+    parser.add_argument('--count-android', action='store_true',
+                        help='print only the number of Android phones/tablets seen on USB')
     parser.add_argument('--output', metavar='FILE', help='write schema 1.3 evidence (0600, atomic, validated)')
+    parser.add_argument('--repair-policy', choices=('detect-only', 'approve-each', 'auto-safe'), default='detect-only',
+                        help='the policy the repair engine will use; recorded in the evidence')
     parser.add_argument('--source-platform', choices=('live-linux', 'linux-host'), default='live-linux')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--device', metavar='and-N', help='scan only this Android target (numbering by port order)')
@@ -341,8 +364,10 @@ def main(argv=None):
     parser.add_argument('--fixture-root', metavar='DIR', help=argparse.SUPPRESS)
     parser.add_argument('--adb-path', metavar='DIR', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if not args.list_usb and not args.output:
-        parser.error('give --list-usb and/or --output FILE / beri --list-usb dan/atau --output FILE')
+    if not args.list_usb and not args.output and not args.count_android:
+        parser.error('give --list-usb, --count-android and/or --output FILE / beri --list-usb, --count-android dan/atau --output FILE')
+    if args.count_android and (args.list_usb or args.output):
+        parser.error('--count-android stands alone / --count-android berdiri sendiri')
     if args.device is not None and not REF_RE.match(args.device):
         parser.error('--device must look like and-0 / --device harus berbentuk and-0')
     if args.port is not None and not usb_devices.valid_port(args.port):
@@ -361,6 +386,9 @@ def main(argv=None):
     if usb_list is None:
         print('scan-android: cannot read the USB sysfs / tidak dapat membaca sysfs USB.', file=sys.stderr)
         return 1
+    if args.count_android:
+        print(len([d for d in usb_list if d['is_android']]))
+        return 0
     program = android.find_adb()
     adb = android.Adb(program) if program else None
     live = args.source_platform == 'live-linux'
@@ -390,7 +418,8 @@ def main(argv=None):
         for t in chosen:
             per_target[t['ref']] = android.collect_target_checks(adb, t, adb is not None,
                                                                  today=now.date())
-        report = build_evidence(usb_list, chosen, per_target, now, args.source_platform, args.provider_ready)
+        report = add_proposals(build_evidence(usb_list, chosen, per_target, now, args.source_platform,
+                                              args.provider_ready, args.repair_policy))
         problems = validation_problems(report)
         if problems:
             print('scan-android: evidence did not validate, nothing written / evidence tidak valid, tidak ditulis:',

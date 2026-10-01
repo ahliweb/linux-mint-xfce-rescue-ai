@@ -2,7 +2,7 @@
 
 > Managed by **ahlikoding.com** and **satpamsiber.com** from **ahliweb.com**.
 
-Perangkat Android (smartphone atau tablet) yang dicolok lewat USB ke PC yang menjalankan USB rescue dapat menjadi **target** pemeriksaan: toolkit mendaftar semua perangkat USB, menunjukkan **port USB** mana yang dipakai ponsel (dan mana yang USB rescue itu sendiri), lalu menjalankan pemeriksaan ADB **read-only** bila USB debugging aktif dan disetujui. Isu: ahliweb/linux-mint-xfce-rescue-ai#48. Label status: **Implemented** (level source, dicakup `make check`), **Planned**, **Hardware-required** (butuh PC dan ponsel nyata), **Environment-blocked**. Lihat [testing](testing.md).
+Perangkat Android (smartphone atau tablet) yang dicolok lewat USB ke PC yang menjalankan USB rescue dapat menjadi **target** pemeriksaan: toolkit mendaftar semua perangkat USB, menunjukkan **port USB** mana yang dipakai ponsel (dan mana yang USB rescue itu sendiri), lalu menjalankan pemeriksaan ADB **read-only** bila USB debugging aktif dan disetujui. Sejak fase 2 ada tiga **tindakan perbaikan** katalog yang aman atau dapat dibalik, dijalankan hanya oleh mesin perbaikan ([di bawah](#tindakan-perbaikan-fase-2)). Isu: ahliweb/linux-mint-xfce-rescue-ai#48. Label status: **Implemented** (level source, dicakup `make check`), **Planned**, **Hardware-required** (butuh PC dan ponsel nyata), **Environment-blocked**. Lihat [testing](testing.md).
 
 ## Lingkup
 
@@ -11,8 +11,8 @@ Perangkat Android (smartphone atau tablet) yang dicolok lewat USB ke PC yang men
 | Inventaris USB read-only dari sysfs (tanpa kerja sama ponsel): port, kecepatan, lokasi fisik ACPI, penanda hub dan USB rescue, kelas, merek, mode Android | Implemented |
 | Target keluarga `android` (`and-N`) dengan id opak (hash berkunci, bukan serial) di evidence schema 1.3 | Implemented |
 | Pemeriksaan ADB read-only (versi, patch, verified boot, SELinux, penyimpanan, baterai, indikator root, admin perangkat, aksesibilitas, aplikasi non-store, Play Protect) | Implemented |
-| Tindakan perbaikan katalog untuk Android (`rescue-ai/v1/catalog/android.json`, parameter `android_device`) dan pemasangan ke launcher | **Planned** (fase 2) |
-| Flashing, unbrick, `fastboot flash`, EDL, Odin, buka/kunci bootloader, root, factory reset | **Di luar lingkup**: hanya mode-mode itu yang *dideteksi* |
+| Tindakan perbaikan katalog Android (`rescue-ai/v1/catalog/android.json`: `android.trim-caches`, `android.enable-package-verifier`, `android.reboot`), parameter `android_device` yang di-resolve mesin, penawaran pemindaian di launcher live | Implemented (fase 2) |
+| Flashing, unbrick, `fastboot flash`, EDL, Odin, buka/kunci bootloader, root, factory reset, install/uninstall APK, `adb sideload`, `reboot bootloader/recovery` | **Di luar lingkup** rilis ini: hanya mode-mode itu yang *dideteksi*; katalog tidak memuatnya dan validator katalog menolaknya |
 | Uji dengan ponsel dan PC nyata (port fisik, prompt RSA, ACPI `_PLD` asli) | Hardware-required |
 
 ```mermaid
@@ -28,6 +28,9 @@ flowchart TD
     O --> E
     E --> V["Validasi schema sebelum ditulis"]
     V --> R["Analisis + skill Hermes rescue-android"]
+    V --> G["rescue-repair.py: usulan dari katalog android.json"]
+    G --> D["android_device: cari ulang ponsel (USB + adb), opaque id harus sama"]
+    D --> J["Persetujuan, adb -t ID, verify, journal"]
 ```
 
 ## Mode koneksi yang didukung
@@ -77,7 +80,7 @@ Bila tidak ada ponsel, tabel diikuti petunjuk: kabel charge-only, pilih "Transfe
 3. Setiap perangkat dialamatkan dengan `adb -t <transport_id>` (bilangan bulat dari `adb devices -l`), sehingga serial tidak pernah masuk argv yang kita bentuk. Setiap perintah adalah tuple argv tetap, dengan batas waktu 20 detik, `stdin` dari `/dev/null`, keluaran dibaca paling banyak 4 MiB, dan penemuan mDNS dimatikan (`ADB_MDNS=0`). `adb` memakai server localhost `127.0.0.1:5037`; pada sesi live server yang dimulai pemindaian dihentikan (`adb kill-server`) di akhir, di mode host server milik operator dibiarkan.
 4. Status ADB lain (`offline`, `recovery`, `sideload`, `bootloader`, `no permissions`) menghasilkan `access: adb-unavailable` dan check `unknown`. Paket `adb` dan aturan udev (`android-sdk-platform-tools-common`) disediakan oleh [persistence](persistence.md); tanpa `adb` check ADB `unknown`.
 
-Tidak pernah dijalankan: `adb root`, `install`, `push`, `pull`, `sideload`, `reboot`, `unlock`, `fastboot flash`, string shell yang dibentuk dari data, atau perintah dari keluaran model.
+Pemindaian tidak pernah menjalankan perintah yang menulis: `adb root`, `install`, `push`, `pull`, `sideload`, `reboot`, `unlock`, `fastboot flash`, string shell yang dibentuk dari data, atau perintah dari keluaran model. Satu-satunya perintah yang mengubah ponsel adalah tiga tindakan katalog di bawah, dengan persetujuan operator.
 
 ## Check yang dihasilkan
 
@@ -131,8 +134,60 @@ Ponsel adalah peer USB yang tidak tepercaya: ia dapat menjawab perintah dengan d
 - Android sebelum 8 atau ROM khusus dapat mengubah format `dumpsys`/`pm`; bidang yang tidak terbaca menjadi `unknown`.
 - Enkripsi tidak dilaporkan (`encryption: unknown`); pemindaian tidak membuka kunci layar dan tidak mengakses data pengguna.
 - Perangkat tanpa data USB (hanya mengisi daya) dan MTP vendor-spesifik tanpa ADB tidak terdeteksi.
-- Keluaran model tidak pernah dijalankan; skill Hermes [`rescue-android`](../profiles/rescue-hermes/skills/rescue-android/SKILL.md) memandu diagnosis read-only dan melarang flashing, unlock, root, factory reset, pemasangan APK, dan pencetakan serial.
+- Keluaran model tidak pernah dijalankan; skill Hermes [`rescue-android`](../profiles/rescue-hermes/skills/rescue-android/SKILL.md) memandu diagnosis dan hanya boleh mengusulkan `action_id` katalog Android; ia melarang flashing, unlock, root, factory reset, pemasangan APK, dan pencetakan serial.
 
-## Planned (fase 2, belum diimplementasikan)
+## Tindakan perbaikan (fase 2)
 
-Dirancang, **belum ada**: katalog tindakan Android yang aman dan dapat dibalik (`rescue-ai/v1/catalog/android.json`) yang dijalankan hanya oleh mesin perbaikan Python lewat parameter bertipe `android_device` (di-resolve mesin dari urutan `and-N`, tidak pernah dari evidence atau model), dengan argv tetap dan persetujuan per tindakan; serta pemasangan pemindaian ke launcher live dan host. Lihat [repair-framework](repair-framework.md) untuk kontrak mesin yang akan dipakai.
+Tindakan Android hanyalah **aksi katalog bertipe** di `rescue-ai/v1/catalog/android.json` (domain `android`, prefix `android.`, scope `android`, `target_families: ["android"]`, platform `live-linux` dan `linux-host`), dijalankan oleh `scripts/rescue-repair.py` dengan kontrak yang sama seperti domain lain ([repair-framework](repair-framework.md)): `approve-each` default, `auto-safe` hanya untuk aksi `safe` yang dipicu katalog, setiap aksi di-verify dan dicatat di journal. Argv selalu tetap; AI hanya dapat menyebut `action_id` dan `target_ref` (`and-N`).
+
+| Aksi | Risiko | Pemicu | Argv (ringkas) | Verify | Rollback |
+|---|---|---|---|---|---|
+| `android.trim-caches` | `safe` | `android-storage-free` warn atau fail | `adb -t ID shell pm trim-caches 999G` | `adb -t ID shell df /data` (kode keluar 0) | tidak ada |
+| `android.enable-package-verifier` | `reversible` | `android-play-protect` warn | `adb -t ID shell settings put global package_verifier_enable 1` | `adb -t ID shell settings get global package_verifier_enable` (kode keluar 0) | otomatis: `settings delete global package_verifier_enable` |
+| `android.reboot` | `safe` | tanpa pemicu: hanya `--select` | `adb -t ID reboot` | `adb -t ID get-state` setelah mesin menunggu ponsel kembali | tidak ada |
+
+<a id="android-trim-caches"></a>
+**`android.trim-caches`.** Meminta Android membebaskan cache semua aplikasi sampai ruang kosong yang diminta (`999G` berarti "sebanyak mungkin"). Data pengguna, akun, dan aplikasi tidak disentuh; aplikasi hanya membangun ulang cache-nya. Satu-satunya aksi yang boleh jalan otomatis di `auto-safe` (bila `android-storage-free` warn/fail). Verify hanya membuktikan ponsel masih menjawab dan `df /data` berjalan: mesin hanya membaca kode keluar, jadi **tidak** membuktikan ruang bertambah. Pindai ulang untuk melihat `android-storage-free` setelahnya.
+
+<a id="android-enable-package-verifier"></a>
+**`android.enable-package-verifier`.** Menulis `package_verifier_enable=1` di pengaturan global ponsel (verifikasi paket/Play Protect versi AOSP). `reversible`: butuh persetujuan walau dipicu. Mesin membaca kode keluar saja, jadi verify (`settings get`, selalu 0 bila ponsel menjawab) tidak membaca ulang nilainya; pindai ulang untuk melihat `android-play-protect`. Rollback otomatis (bila execute atau verify gagal) menghapus kunci itu (`settings delete`) sehingga ponsel kembali ke nilai bawaan Android (aktif). Nilai sebelumnya **tidak** ditangkap: bila sebelumnya `0` eksplisit, rollback tidak mengembalikan `0`. Aksi ini tidak mengubah persetujuan pengguna (`package_verifier_user_consent`) di aplikasi Play Protect; bagian itu dilakukan operator di ponsel.
+
+<a id="android-reboot"></a>
+**`android.reboot`.** Memulai ulang ponsel secara normal (bukan ke bootloader atau recovery). Risiko `safe` karena tidak ada perubahan persisten selain kehilangan keadaan yang belum tersimpan di ponsel; tanpa pemicu sehingga tidak pernah jalan otomatis. Setelah `reboot` ID transport berubah, jadi tahap verify mencari ponsel lagi (maksimum 150 detik, tiap 3 detik) dan hanya lulus bila ponsel muncul kembali sebagai perangkat ADB yang disetujui dengan `opaque_id` yang sama; layar ponsel yang terkunci atau prompt RSA baru membuat verify `fail` (`device-not-authorized`) padahal reboot-nya berhasil.
+
+### Parameter `android_device`
+
+Aksi Android menyebut ponselnya lewat parameter bertipe `android_device`, yang **tidak pernah** berasal dari operator, evidence, atau model (`--param` untuk tipe ini diabaikan). Mesin menyelesaikannya saat eksekusi, setelah persetujuan:
+
+1. `target_ref` (`and-N`) usulan harus ada di `target_systems[]` evidence dengan `family: android` dan `opaque_id`.
+2. Mesin membaca ulang inventaris USB (sysfs) dan `adb devices -l`, menyusun target seperti `scan-android.py`, lalu mengambil `and-N` yang sama.
+3. Ia menolak bila: tidak ada (`device-absent`); lebih dari satu target punya identitas yang sama (`device-ambiguous`); `opaque_id` sekarang tidak sama dengan evidence, misalnya ponsel lain di port itu atau penomoran bergeser (`device-mismatch`); atau status ADB bukan `device` (`device-not-authorized`: `unauthorized`, `offline`, `recovery`, `sideload`, `bootloader`, atau tanpa ADB).
+4. Bila lolos, `{android_device}` dirender sebagai bilangan bulat ID transport untuk `adb -t`. ID itu hanya ada di argv proses anak: **tidak** masuk journal, laporan, atau layar (kartu persetujuan menampilkan `<android and-0>`).
+
+Penolakan dicatat di journal sebagai `precondition fail` dengan `reason` bertipe (`device-absent`, `device-not-authorized`, `device-ambiguous`, `device-mismatch`) dan hasil akhir `skipped`; tidak ada perintah yang dikirim ke ponsel. Tahap verify dan rollback mencari ulang ponsel (ID transport bisa berubah). Mesin memberi proses anak `HOME` dan `USER` (kunci RSA ADB ada di `~/.android`) dan mematikan mDNS; kunci API tidak pernah diteruskan. Di sesi live mesin menghentikan server ADB yang ia mulai (`adb kill-server`); di mode host server milik operator dibiarkan.
+
+### Batas yang dijaga validator katalog
+
+`scripts/lib/repair_catalog.py` menolak aksi Android yang: tidak memakai tepat satu `android_device`; memanggil `adb` selain dengan `-t {android_device}`; memakai sub-perintah di luar `shell`, `reboot` (tanpa argumen), `get-state`; memakai program `shell` di luar `pm trim-caches`, `settings get|put|delete global <kunci>`, `df`; menaruh placeholder setelah `shell`; atau berjalan di platform selain `live-linux` dan `linux-host`. Jadi `root`, `install`, `push`, `pull`, `sideload`, `remount`, `reboot bootloader|recovery`, `rm`, `sh`, wipe, dan factory reset tidak dapat masuk katalog tanpa mengubah validator itu sendiri. Mesin host Windows dan macOS menerima katalog yang sama dan menandai `android_device` sebagai tidak didukung (aksi Android tidak pernah berlaku di platform mereka).
+
+### Cara memakai
+
+**Live USB (launcher).** Setelah pemindaian OS selesai, `scripts/launch-hermes-rescue.sh` memeriksa USB (`scan-android.py --count-android`). Bila ada ponsel dan sesi interaktif, launcher menampilkan tabel semua perangkat USB lalu bertanya (default **tidak**; tanpa terminal dilewati) apakah ponsel dipindai. Bila ya: pemindaian read-only sebagai pengguna desktop (kunci ADB ada di `~/.android`) ke `<state-dir>/reports/android-evidence-<stamp>.json`, lalu `rescue-repair.py --scope android` dengan kebijakan yang sama (`--repair-policy`, default `approve-each`), pemindaian ulang bila ada aksi yang dijalankan (`android-evidence-<stamp>-after.json`), dan **laporan run tersendiri** (`run_id` berakhiran `-android`; `rescue-report.py` menerima satu evidence per laporan). Analisis cloud tidak diminta untuk evidence ponsel; Hermes membacanya bila operator meminta. Lewati seluruh fase ini dengan `--no-target-scan` atau `--scope` tanpa `all`/`android`.
+
+**Linux host (`host/rescue-linux.sh` belum memasangnya).** Pakai skrip langsung dari bundel, sebagai pengguna biasa:
+
+```bash
+python3 scripts/scan-android.py --list-usb
+python3 scripts/scan-android.py --source-platform linux-host --repair-policy approve-each --output /tmp/android-evidence.json
+python3 scripts/rescue-repair.py --evidence /tmp/android-evidence.json --scope android --journal /tmp/android-journal.jsonl --list
+python3 scripts/rescue-repair.py --evidence /tmp/android-evidence.json --scope android --journal /tmp/android-journal.jsonl
+python3 scripts/rescue-repair.py --evidence /tmp/android-evidence.json --journal /tmp/android-journal.jsonl --select android.reboot:and-0
+```
+
+Perintah terakhir menjalankan aksi operator (`android.reboot` tidak punya pemicu) dan meminta `ya`/`yes`; tanpa terminal tambahkan `--approve android.reboot`. Di mode host server `adb` milik operator dipakai apa adanya.
+
+### Untuk operator
+
+- Aksi Android **tidak pernah** berjalan tanpa persetujuan Anda kecuali `android.trim-caches` pada kebijakan `auto-safe`. Untuk memperbaiki lebih jauh (hapus aplikasi, factory reset, flashing) lakukan sendiri di ponsel atau lewat layanan resmi pabrikan; toolkit ini tidak melakukannya.
+- Bila penolakan `device-mismatch` muncul, jangan pindahkan atau ganti ponsel di antara pemindaian dan perbaikan; pindai ulang agar `and-N` dan `opaque_id` cocok lagi.
+- Bila `device-not-authorized`: buka kunci ponsel dan setujui "Izinkan USB debugging", lalu jalankan ulang.
