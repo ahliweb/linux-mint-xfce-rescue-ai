@@ -3,6 +3,8 @@ name: package
 # Publishes credential-free release packages to GitHub Packages (ghcr.io):
 #   <repo>/bundle:<version>       allowlisted rescue bundle + host launchers (also a GitHub Release asset)
 #   <repo>/persistence:<version>  credential-free casper-rw persistence image (zstd)
+# plus two GitHub Release assets built here: the credential-free portable Hermes
+# runtime for the host launchers (rescue-omes-hermes-portable-<platform>.{tar.gz,zip}).
 # Only GITHUB_TOKEN is used. Build jobs are read-only; the two publish jobs are
 # the only ones with write permissions and never run on a pull request.
 # Pull requests run the same builds as a dry run (no push, no release).
@@ -22,6 +24,7 @@ on:
       - "scripts/build-persistence.sh"
       - "scripts/lib/persistence-container-build.sh"
       - "scripts/prepare-ventoy-usb.sh"
+      - "scripts/build-hermes-portable.py"
       - "scripts/verify-mint-iso.sh"
       - "Makefile"
 
@@ -215,9 +218,149 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  hermes-portable-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET_REF }}
+          persist-credentials: false
+
+      - name: Install uv (pinned version and wheel hash, from the runner's Python)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Trade-off: no extra third-party action; the wheel is pinned by version and sha256.
+          cat > "$RUNNER_TEMP/uv-requirements.txt" <<'REQ'
+          uv==0.11.32 --hash=sha256:3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4
+          REQ
+          python3 -m venv "$RUNNER_TEMP/uvenv"
+          "$RUNNER_TEMP/uvenv/bin/python" -m pip install --require-hashes --only-binary :all: -r "$RUNNER_TEMP/uv-requirements.txt"
+          echo "$RUNNER_TEMP/uvenv/bin" >> "$GITHUB_PATH"
+
+      - name: Build the portable Hermes runtime (linux-x86_64)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/hp"
+          python3 scripts/build-hermes-portable.py --platform linux-x86_64 --out "$RUNNER_TEMP/hp" --archive
+
+      - name: Assert the archive is credential-free and runs from a different path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tool="$GITHUB_WORKSPACE/scripts/build-hermes-portable.py"
+          name=rescue-omes-hermes-portable-linux-x86_64.tar.gz
+          cd "$RUNNER_TEMP/hp"
+          sha256sum --check "$name.sha256"
+          python3 "$tool" --check-archive "$name"
+          mkdir -p "$RUNNER_TEMP/relocated/rescue-omes/hermes-portable"
+          python3 "$tool" --extract-archive "$name" --dest "$RUNNER_TEMP/relocated/rescue-omes/hermes-portable"
+          tree="$RUNNER_TEMP/relocated/rescue-omes/hermes-portable/linux-x86_64"
+          python3 "$tool" --scan-tree "$tree"
+          # Smoke test with an empty HERMES_HOME; nothing may be written into the tree.
+          export HERMES_HOME="$RUNNER_TEMP/empty-hermes-home" PYTHONDONTWRITEBYTECODE=1
+          mkdir -p "$HERMES_HOME"
+          "$tree/python/bin/python3" -m hermes_cli.main --version | tee "$RUNNER_TEMP/hermes-version.txt"
+          "$tree/python/bin/python3" -m hermes_cli.main chat --cli --help > /dev/null
+          python3 "$tool" --verify-tree "$tree"
+          {
+            echo "### Portable Hermes (linux-x86_64)"
+            echo
+            echo "- archive: \`$name\` ($(stat -c %s "$name") bytes)"
+            echo "- sha256: \`$(cut -d' ' -f1 "$name.sha256")\`"
+            echo "- \`hermes --version\`: $(head -n1 "$RUNNER_TEMP/hermes-version.txt")"
+            echo "- credential-free: scanned; relocated copy runs; tree unchanged after the run"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the archive for the publish job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-portable-linux
+          path: |
+            ${{ runner.temp }}/hp/rescue-omes-hermes-portable-linux-x86_64.tar.gz
+            ${{ runner.temp }}/hp/rescue-omes-hermes-portable-linux-x86_64.tar.gz.sha256
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  hermes-portable-windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET_REF }}
+          persist-credentials: false
+
+      - name: Install uv (pinned version and wheel hash, from the runner's Python)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > "$RUNNER_TEMP/uv-requirements.txt" <<'REQ'
+          uv==0.11.32 --hash=sha256:855632ee1d2a8491986efa54c562b806cd32477761889a1e13624b519d98a45e
+          REQ
+          python -m venv "$RUNNER_TEMP/uvenv"
+          "$RUNNER_TEMP/uvenv/Scripts/python.exe" -m pip install --require-hashes --only-binary :all: -r "$RUNNER_TEMP/uv-requirements.txt"
+          echo "$(cygpath -w "$RUNNER_TEMP/uvenv/Scripts")" >> "$GITHUB_PATH"
+
+      - name: Build the portable Hermes runtime (windows-x86_64)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/hp"
+          python scripts/build-hermes-portable.py --platform windows-x86_64 --out "$RUNNER_TEMP/hp" --archive
+
+      - name: Assert the archive is credential-free and runs from a different path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tool="$GITHUB_WORKSPACE/scripts/build-hermes-portable.py"
+          name=rescue-omes-hermes-portable-windows-x86_64.zip
+          cd "$RUNNER_TEMP/hp"
+          sha256sum --check "$name.sha256"
+          python "$tool" --check-archive "$name"
+          mkdir -p "$RUNNER_TEMP/relocated/rescue-omes/hermes-portable"
+          python "$tool" --extract-archive "$name" --dest "$RUNNER_TEMP/relocated/rescue-omes/hermes-portable"
+          tree="$RUNNER_TEMP/relocated/rescue-omes/hermes-portable/windows-x86_64"
+          python "$tool" --scan-tree "$tree"
+          export HERMES_HOME="$RUNNER_TEMP/empty-hermes-home" PYTHONDONTWRITEBYTECODE=1
+          mkdir -p "$HERMES_HOME"
+          "$tree/python/python.exe" -m hermes_cli.main --version | tee "$RUNNER_TEMP/hermes-version.txt"
+          "$tree/python/python.exe" -m hermes_cli.main chat --cli --help > /dev/null
+          python "$tool" --verify-tree "$tree"
+          {
+            echo "### Portable Hermes (windows-x86_64)"
+            echo
+            echo "- archive: \`$name\` ($(stat -c %s "$name") bytes)"
+            echo "- sha256: \`$(cut -d' ' -f1 "$name.sha256")\`"
+            echo "- \`hermes --version\`: $(head -n1 "$RUNNER_TEMP/hermes-version.txt")"
+            echo "- credential-free: scanned; relocated copy runs; tree unchanged after the run"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the archive for the publish job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-portable-windows
+          path: |
+            ${{ runner.temp }}/hp/rescue-omes-hermes-portable-windows-x86_64.zip
+            ${{ runner.temp }}/hp/rescue-omes-hermes-portable-windows-x86_64.zip.sha256
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
   bundle-publish:
     if: github.event_name != 'pull_request'
-    needs: bundle
+    needs: [bundle, hermes-portable-linux, hermes-portable-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -236,11 +379,22 @@ jobs:
           name: bundle
           path: dist
 
-      - name: Re-verify the bundle checksum
+      - name: Download the portable Hermes runtimes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: hermes-portable-*
+          merge-multiple: true
+          path: portable
+
+      - name: Re-verify the bundle and portable Hermes checksums
         run: |
           set -Eeuo pipefail
           cd dist
           sha256sum --check "$TARBALL.sha256"
+          cd ../portable
+          ls -l
+          sha256sum --check rescue-omes-hermes-portable-linux-x86_64.tar.gz.sha256
+          sha256sum --check rescue-omes-hermes-portable-windows-x86_64.zip.sha256
 
       - name: Install oras
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
@@ -283,12 +437,17 @@ jobs:
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "$TAG" --notes-file release-notes.md "${flags[@]}"
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$TARBALL" "$TARBALL.sha256"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$TARBALL" "$TARBALL.sha256" \
+            ../portable/rescue-omes-hermes-portable-linux-x86_64.tar.gz \
+            ../portable/rescue-omes-hermes-portable-linux-x86_64.tar.gz.sha256 \
+            ../portable/rescue-omes-hermes-portable-windows-x86_64.zip \
+            ../portable/rescue-omes-hermes-portable-windows-x86_64.zip.sha256
           {
             echo "### Published bundle $VERSION"
             echo
             echo "- \`ghcr.io/${GITHUB_REPOSITORY,,}/bundle:$VERSION\`"
             echo "- GitHub Release \`$TAG\` with the tarball and its sha256"
+            echo "- Release assets: credential-free portable Hermes runtimes (linux-x86_64 tar.gz, windows-x86_64 zip) with sha256"
           } >> "$GITHUB_STEP_SUMMARY"
 
   persistence:
