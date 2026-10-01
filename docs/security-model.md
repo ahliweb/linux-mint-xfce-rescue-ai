@@ -24,6 +24,7 @@ flowchart TD
 | Code | This repository at the release, the catalog JSON | Anything else |
 | Input to commands | The operator's flags and typed approvals | Model output, evidence, logs, filenames, signature names, web content |
 | Machine under repair | Nothing: it may be compromised | Files, symlinks, `os-release`, journals, detections |
+| Phone or tablet attached over USB | Nothing: an untrusted USB peer | Everything it reports: USB descriptors and serial, `adb` output, property values, package lists |
 | Network | HTTPS to `opencode.ai` (analysis), `api.github.com` (skill submission, opt-in), the Ventoy release, `hermes-agent.nousresearch.com` (installer) | Everything else; redirects are refused by the Python clients |
 
 ## Media, ISO, and Ventoy
@@ -98,6 +99,15 @@ flowchart TD
 | Detection list or quarantine leaks the customer's paths or malware | `malware-detections-<run>.json` and `<state-dir>/quarantine/` are `0600`, live only on the USB, and are never sent to the cloud, put into evidence, or written to the journal; the operator is told not to share them | `scripts/lib/malware_detections.py`, `scripts/lib/quarantine_store.py` | Implemented |
 | A clean scan is read as "no malware" | Stale or unknown signature age and incomplete scans give `warn`, never `pass`; macOS reports `malware-scan` `unknown`; rootkits and firmware implants are stated as out of scope; the analysis prompt and report repeat it ([malware](malware.md)) | `scripts/rescue_modules/malware.py`, `profiles/rescue-hermes/analysis-prompt.md`, `scripts/lib/run_report.py` | Implemented |
 | Signature updates fetch or run unexpected code | `mw.clamav-update-signatures` is a `safe` catalog action (`freshclam` into `<state-dir>/clamav`); the persistence image masks the `clamav` services and downloads nothing at build time | `rescue-ai/v1/catalog/malware.json`, `scripts/lib/persistence-container-build.sh` | Implemented; downloads Environment-blocked |
+
+## Android and USB peers
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| A phone or USB device feeds hostile data (huge or malformed output, a command in a string, a hang) | `adb` output and sysfs values are untrusted data: parsed into closed-set statuses and bounded numbers and then dropped; every call has a timeout and an output cap (4 MiB); `stdin` is `/dev/null`; the transport is a parsed integer and every other argv element is a constant tuple, so no data ever becomes a command; no `adb root`, `install`, `push`, `pull`, `sideload`, `reboot`, `unlock`, or shell string built from data; mDNS discovery is off | `scripts/rescue_modules/android.py`, `scripts/rescue_modules/usb_devices.py` | Implemented; real phones Hardware-required |
+| The phone's serial, IMEI, accounts, package names, or addresses leak | The USB serial is read only to compute an opaque ID (`target-` + HMAC-SHA256 keyed with the machine ID); USB strings, `vendor:product`, `ro.*` properties outside a small allowlist, and all names are never kept; evidence has no free-string field for them (`usb_ports[]` and the Android target fields are closed, `additionalProperties: false`); the terminal shows brand and port, never the serial; tests assert none of the dummy serials or package names appears in evidence or output | `scripts/scan-android.py`, `rescue-ai/v1/rescue-evidence.schema.json`, `scripts/validate-evidence.py`, `tests/test_android.py` | Implemented |
+| The operator confuses the rescue USB with the target | `usb_ports[].is_boot_media` and the `[USB RESCUE]` marker identify the device that holds the live medium (mountinfo, device-mapper slaves, Ventoy labels); the table shows port, speed, and location | `scripts/scan-android.py`, `scripts/rescue_modules/usb_devices.py` | Implemented; real ACPI locations Hardware-required |
+| A repair tool flashes or bricks the phone | Out of scope: flashing, `fastboot flash`, EDL, Odin, unlock, root, and factory reset are never run; those modes are only detected; the Hermes skill forbids proposing them ([android](android.md)) | `profiles/rescue-hermes/skills/rescue-android/SKILL.md`, `scripts/rescue_modules/android.py` | Implemented (detection only); Android repair actions are Planned |
 
 ## Skill submission (public repository)
 

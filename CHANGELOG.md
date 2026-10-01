@@ -9,6 +9,12 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - `--malware-target os-N` for `scripts/scan-target-os.py` and `scripts/launch-hermes-rescue.sh`: scan only one target with the whole malware budget (a deliberate second full-disk run). Other targets report `malware-scan` `unknown`, never clean; a malformed or unknown `os-N` is a usage error (exit 2) (ahliweb/linux-mint-xfce-rescue-ai#47).
+- Android phone/tablet over USB as target family `android` (`and-N`), phase 1 (ahliweb/linux-mint-xfce-rescue-ai#48): `scripts/scan-android.py` (`--list-usb` prints a bilingual table of every USB device with port path, ACPI location, speed, USB version, class, brand, Android mode and `[USB RESCUE]`/`[HUB]` markers, and says which port the phone is on; `--output` writes 0600 evidence), `scripts/rescue_modules/usb_devices.py` (read-only sysfs inventory) and `scripts/rescue_modules/android.py` (read-only fixed-argv ADB checks addressed by transport id: OS version, security patch age, verified boot, bootloader lock, SELinux, storage, battery, root indicators, device-admin/accessibility/sideload counts, Play Protect, port speed). Serials, USB strings and package names never enter evidence or output; the target id is a keyed hash. Detection-only for fastboot, Qualcomm EDL, MediaTek BROM and Samsung download modes.
+- Evidence schema 1.3: family `android`, `and-N` refs, top-level `usb_ports`, 17 `android-*` and 2 `usb-*` check IDs, validator rules and fixtures. Hermes skill `rescue-android`, `docs/android.md`, security-model rows for phones as untrusted USB peers.
+
+### Changed
+
+- The persistence image installs `adb` and `android-sdk-platform-tools-common` (udev rules for non-root access); an existing image needs a rebuild (ahliweb/linux-mint-xfce-rescue-ai#48).
 
 ### Fixed
 

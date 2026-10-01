@@ -1,0 +1,1 @@
+additional properties|serial; a serial-like string smuggled into usb_ports[] is rejected by the closed schema (usb_ports items allow no free strings); schema validation.
