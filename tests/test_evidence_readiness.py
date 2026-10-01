@@ -203,7 +203,11 @@ class HardwareReadinessTests(unittest.TestCase):
             d = Path(tmp.name) / name / "loop"
             d.mkdir(parents=True)
             (d / "backing_file").write_text(backing + "\n")
-        return calls, mock.patch.object(self.hw, "command", fake), mock.patch.object(self.hw, "SYSFS_BLOCK", Path(tmp.name))
+        # hermetic: neither sysfs root may fall through to the real /sys of the test machine
+        patches = contextlib.ExitStack()
+        patches.enter_context(mock.patch.object(self.hw, "SYSFS_CLASS_BLOCK", Path(tmp.name) / "none"))
+        patches.enter_context(mock.patch.object(self.hw, "SYSFS_BLOCK", Path(tmp.name)))
+        return calls, mock.patch.object(self.hw, "command", fake), patches
 
     def test_ventoy_dm_device_resolves_to_usb_disk_not_iso_size(self):
         gib = 1024 ** 3
@@ -235,7 +239,7 @@ class HardwareReadinessTests(unittest.TestCase):
         with cmd, sysfs:
             check = self.hw.check_usb(8.0)
         self.assertEqual(check["status"], "warn")
-        self.assertEqual(check["observed"], "transport=sata, source=/dev/sda1 -> sda")
+        self.assertEqual(check["observed"], "transport=sata, source=/dev/sda1 -> sda (sata, 500.0 GiB)")
 
     def test_loop_backing_file_is_followed_to_the_physical_disk(self):
         gib = 1024 ** 3
@@ -255,12 +259,157 @@ class HardwareReadinessTests(unittest.TestCase):
         with cmd, sysfs:
             self.assertIsNone(self.hw.resolve_physical_disk("/dev/loop0"))
             tran, size, source = self.hw.storage_for_live_media()
-            self.assertEqual((tran, size, source), ("unknown", None, "/dev/loop0"))
+            self.assertEqual((tran, size), ("unknown", None))
+            self.assertTrue(source.startswith("/dev/loop0 -> "), source)
+            self.assertIn("?", source)
             self.assertEqual(self.hw.check_usb(8.0)["status"], "warn")
         # not a /dev path (for example an overlay/tmpfs name) and empty lsblk output both stay unresolved
         with mock.patch.object(self.hw, "command", lambda *a, **k: ""):
             self.assertIsNone(self.hw.resolve_physical_disk("overlay"))
             self.assertIsNone(self.hw.resolve_physical_disk("/dev/nothing"))
+
+    # --- sysfs resolution with a fake /sys tree (real layout: class/block entries are symlinks into devices/)
+
+    USB_PATH = "pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host0/target0:0:0/0:0:0:0/block"
+    SATA_PATH = "pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block"
+    NVME_PATH = "pci0000:00/0000:00:1d.0/0000:3d:00.0/nvme/nvme0"
+
+    def _fake_sys(self, disks=(), parts=(), dms=(), loops=()):
+        """disks: (name, devices-subpath, GiB); parts: (disk, partname); dms: (dmN, mapper name, [slaves]);
+        loops: (loopN, backing file). Returns the temp root and patches both SYSFS roots."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        cls, blk = root / "sys" / "class" / "block", root / "sys" / "block"
+        cls.mkdir(parents=True)
+        blk.mkdir(parents=True)
+        real = {}
+        for name, sub, gib in disks:
+            d = root / "sys" / "devices" / sub / name
+            d.mkdir(parents=True)
+            (d / "size").write_text(f"{int(gib * 1024 ** 3 // 512)}\n")
+            real[name] = d
+            (cls / name).symlink_to(d)
+            (blk / name).symlink_to(d)
+        for disk, part in parts:
+            d = real[disk] / part
+            d.mkdir()
+            (d / "partition").write_text("1\n")
+            (d / "size").write_text("1000\n")
+            real[part] = d
+            (cls / part).symlink_to(d)
+        for dm, mapper, slaves in dms:
+            d = root / "sys" / "devices" / "virtual" / "block" / dm
+            (d / "dm").mkdir(parents=True)
+            (d / "dm" / "name").write_text(mapper + "\n")
+            (d / "slaves").mkdir()
+            for slave in slaves:
+                (d / "slaves" / slave).symlink_to(real[slave])
+            real[dm] = d
+            (cls / dm).symlink_to(d)
+            (blk / dm).symlink_to(d)
+        for loop, backing in loops:
+            d = root / "sys" / "devices" / "virtual" / "block" / loop
+            (d / "loop").mkdir(parents=True)
+            (d / "loop" / "backing_file").write_text(backing + "\n")
+            (cls / loop).symlink_to(d)
+            (blk / loop).symlink_to(d)
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(self.hw, "SYSFS_CLASS_BLOCK", cls))
+        stack.enter_context(mock.patch.object(self.hw, "SYSFS_BLOCK", blk))
+        return root
+
+    def _no_lsblk(self, findmnt=None):
+        """lsblk knows nothing (casper without udev TRAN); findmnt answers from FINDMNT."""
+        def fake(*args, timeout=8):
+            if args[0] == "findmnt":
+                key = args[args.index("-T") + 1] if "-T" in args else args[-1]
+                return (findmnt or {}).get(key, "")
+            return ""
+        patcher = mock.patch.object(self.hw, "command", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_sysfs_ventoy_dm_over_whole_usb_disk(self):
+        self._fake_sys(disks=[("sda", self.USB_PATH, 28.7)], dms=[("dm-0", "ventoy", ["sda"])])
+        self._no_lsblk({"/cdrom": "/dev/mapper/ventoy"})
+        tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size, 1)), ("usb", 28.7))
+        self.assertEqual(source, "/dev/mapper/ventoy -> dm-0 -> sda")
+        check = self.hw.check_usb(8.0)
+        self.assertEqual(check["status"], "pass")
+        self.assertIn("28.70 GiB (/dev/mapper/ventoy -> dm-0 -> sda)", check["observed"])
+
+    def test_sysfs_ventoy_dm_over_partition_maps_to_parent_disk(self):
+        self._fake_sys(disks=[("sda", self.USB_PATH, 64)], parts=[("sda", "sda1")], dms=[("dm-0", "ventoy", ["sda1"])])
+        self._no_lsblk({"/cdrom": "/dev/mapper/ventoy"})
+        tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size)), ("usb", 64))
+        self.assertEqual(source, "/dev/mapper/ventoy -> dm-0 -> sda1 -> sda")
+
+    def test_sysfs_loop_on_exfat_file_resolves_to_usb_disk(self):
+        self._fake_sys(disks=[("sda", self.USB_PATH, 28.7)], parts=[("sda", "sda1")], loops=[("loop0", "/isos/mint.iso")])
+        self._no_lsblk({"/cdrom": "/dev/loop0", "/isos/mint.iso": "/dev/sda1[/isos]"})
+        tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size, 1)), ("usb", 28.7))
+        self.assertEqual(source, "/dev/loop0 -> /dev/sda1 -> sda")
+
+    def test_sysfs_nvme_is_not_usb(self):
+        self._fake_sys(disks=[("nvme0n1", self.NVME_PATH, 512)], parts=[("nvme0n1", "nvme0n1p1")])
+        self._no_lsblk({"/cdrom": "/dev/nvme0n1p1"})
+        tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size), source), ("nvme", 512, "/dev/nvme0n1p1 -> nvme0n1"))
+        check = self.hw.check_usb(8.0)
+        self.assertEqual(check["status"], "warn")
+        self.assertEqual(check["observed"], "transport=nvme, source=/dev/nvme0n1p1 -> nvme0n1 (nvme, 512.0 GiB)")
+
+    def test_sysfs_disk_without_known_transport_uses_lsblk_tran(self):
+        self._fake_sys(disks=[("sdb", self.SATA_PATH, 500)], parts=[("sdb", "sdb1")])
+        gib = 1024 ** 3
+        lsblk = {"/dev/sdb1": f"sdb1 part  {gib}\nsdb disk sata {500 * gib}\n"}
+        _, cmd, _ = self._mock_system(lsblk, findmnt={"/cdrom": "/dev/sdb1"})
+        with cmd:
+            tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size), source), ("sata", 500, "/dev/sdb1 -> sdb"))
+
+    def test_sysfs_unknown_transport_disk_stays_warn_with_chain(self):
+        self._fake_sys(disks=[("sdb", self.SATA_PATH, 500)], parts=[("sdb", "sdb1")])
+        self._no_lsblk({"/cdrom": "/dev/sdb1"})
+        tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, round(size), source), ("unknown", 500, "/dev/sdb1 -> sdb"))
+        check = self.hw.check_usb(8.0)
+        self.assertEqual(check["status"], "warn")
+        self.assertEqual(check["observed"], "transport=unknown, source=/dev/sdb1 -> sdb")
+
+    def test_small_sysfs_usb_disk_fails(self):
+        self._fake_sys(disks=[("sda", self.USB_PATH, 4)], dms=[("dm-0", "ventoy", ["sda"])])
+        self._no_lsblk({"/cdrom": "/dev/mapper/ventoy"})
+        self.assertEqual(self.hw.check_usb(8.0)["status"], "fail")
+
+    def test_sysfs_dm_without_slaves_warns_with_diagnostic_chain(self):
+        self._fake_sys(dms=[("dm-0", "ventoy", [])])
+        self._no_lsblk({"/cdrom": "/dev/mapper/ventoy"})
+        tran, size, source = self.hw.storage_for_live_media()
+        self.assertEqual((tran, size), ("unknown", None))
+        self.assertEqual(source, "/dev/mapper/ventoy -> dm-0 -> ? (no slaves)")
+        check = self.hw.check_usb(8.0)
+        self.assertEqual(check["status"], "warn")
+        self.assertEqual(check["observed"], "transport=unknown, source=/dev/mapper/ventoy -> dm-0 -> ? (no slaves)")
+        self.assertIn("not blocking", check["note"])
+
+    def test_sysfs_walk_is_bounded_and_rejects_unsafe_names(self):
+        # a slave cycle (dm-0 <-> dm-1) must terminate
+        root = self._fake_sys(dms=[("dm-0", "a", []), ("dm-1", "b", [])])
+        cls = root / "sys" / "class" / "block"
+        (cls / "dm-0" / "slaves" / "dm-1").symlink_to(cls / "dm-1")
+        (cls / "dm-1" / "slaves" / "dm-0").symlink_to(cls / "dm-0")
+        self._no_lsblk()
+        resolved, chain = self.hw.resolve_live_source("/dev/mapper/a")
+        self.assertIsNone(resolved)
+        self.assertIn("?", chain)
+        self.assertIsNone(self.hw._node("x/y"))
+        self.assertIsNone(self.hw._node(""))
 
     def test_network_is_advisory_and_warns_when_offline(self):
         with mock.patch.object(self.hw, "command", return_value=""), \
