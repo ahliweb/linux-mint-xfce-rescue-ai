@@ -18,8 +18,9 @@
 # generated with the JavaScript engine built into macOS (osascript -l JavaScript; no Python).
 #
 # Exit codes: 0 ok | 1 a repair action failed or was rolled back | 2 invalid evidence, catalog or
-#             --select | 3 no API key | 4 network/HTTP error | 5 bundle/reports/journal unusable
-#             64 usage
+#             --select | 3 no API key | 4 network/HTTP error (run outcome network-error, or
+#             provider-rejected for an HTTP 4xx other than 401/403/408/429) | 5 bundle/reports/journal
+#             unusable | 64 usage
 
 emulate -L zsh
 setopt LOCAL_OPTIONS
@@ -1573,7 +1574,7 @@ function buildHonesty(mode, outcome, keyPresent, actions, cmp, scope) {
   if (actions.some(function (a) {
     return a.stages.some(function (s) { return s.stage === 'execute'; }) && ['verified', 'rolled-back', 'failed'].indexOf(a.final_outcome) >= 0;
   })) { hw.push('disk-repair-read-back'); }
-  var table = { 'no-key': 'provider-key-missing', 'network-error': 'network-unreachable', 'evidence-only': 'analysis-not-run-offline-mode',
+  var table = { 'no-key': 'provider-key-missing', 'network-error': 'network-unreachable', 'provider-rejected': 'provider-rejected-request', 'evidence-only': 'analysis-not-run-offline-mode',
     'dry-run': 'analysis-not-run-offline-mode', 'analysis-failed': 'analysis-failed', 'scan-failed': 'scan-not-completed',
     'evidence-invalid': 'scan-not-completed', 'scan-skipped': 'scan-not-completed', 'interrupted': 'scan-not-completed',
     'preflight-failed': 'hardware-preflight-failed', 'analyzer-missing': 'analysis-failed' };
@@ -1680,6 +1681,7 @@ var HONESTY_TEXT = {
   'disk-repair-read-back': 'Hardware-required: hasil perbaikan pada disk fisik harus dikonfirmasi dengan pemeriksaan ulang di mesin nyata.',
   'provider-key-missing': 'Environment-blocked: tidak ada kunci provider, sehingga analisis AI tidak dijalankan.',
   'network-unreachable': 'Environment-blocked: jaringan/HTTP ke provider gagal, analisis AI tidak dijalankan.',
+  'provider-rejected-request': 'Environment-blocked: provider menjawab dengan HTTP 4xx dan menolak permintaan analisis; ini bukan masalah jaringan.',
   'analysis-not-run-offline-mode': 'Environment-blocked: mode offline (evidence-only/dry-run), analisis AI tidak dijalankan.',
   'analysis-failed': 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.',
   'scan-not-completed': 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.',
@@ -2307,9 +2309,30 @@ if (( dry_run )); then
   end_run 0
 fi
 
+# Provider error type token from an HTTP error body file ($1), or nothing. Only a short token
+# (^[A-Za-z][A-Za-z0-9_]{0,63}$) is ever printed; the body itself never is.
+provider_error_type() {
+  local body re='"type"[[:space:]]*:[[:space:]]*"([A-Za-z][A-Za-z0-9_]{0,63})"' found=''
+  body=$(head -c 65536 -- "$1" 2>/dev/null) || body=''
+  while [[ $body =~ $re ]]; do
+    if [[ $match[1] != error ]]; then found=$match[1]; break; fi
+    body=${body#*"$MATCH"}
+  done
+  print -rn -- "$found"
+}
+
 guidance() {
   print -r -- ''
-  if [[ $1 == nokey ]]; then
+  if [[ $1 == rejected ]]; then
+    local detail="HTTP $2"
+    [[ -z $3 ]] || detail+=" ($3)"
+    print -r -- "ID: OpenCode Go menolak permintaan: $detail. Ini bukan masalah jaringan."
+    print -r -- "    Evidence tetap tersimpan di USB: $evidence_path"
+    print -r -- '    Jalankan ulang; bila berulang, laporkan kode HTTP dan tipe galatnya.'
+    print -r -- "EN: OpenCode Go rejected the request: $detail. This is not a network problem."
+    print -r -- "    The evidence is kept on the USB: $evidence_path"
+    print -r -- '    Run again; if it repeats, report the HTTP status and error type.'
+  elif [[ $1 == nokey ]]; then
     print -r -- 'ID: OPENCODE_GO_API_KEY tidak ditemukan di rescue-omes/config/rescue.env.'
     print -r -- "    Evidence tetap tersimpan di USB: $evidence_path"
     print -r -- '    Isi kunci pada file itu (satu baris KEY=..., jangan dibagikan) lalu jalankan ulang,'
@@ -2346,15 +2369,26 @@ unset body
 print -r -- 'Mengirim evidence ke OpenCode Go / sending evidence to OpenCode Go...'
 qkey=${api_key//\\/\\\\}
 qkey=${qkey//\"/\\\"}
+# x-opencode-session: ses_ + the first 32 hex characters of sha256(the evidence JSON sent); a hash, never
+# evidence content. OpenCode Go answers HTTP 400 MissingSessionID without it.
+session_id=ses_$(sha256_str "$ev")
+session_id=${session_id[1,36]}
 http=$(print -r -- "header = \"Authorization: Bearer $qkey\"" | curl --config - \
   --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 \
-  --header 'Content-Type: application/json' --data-binary @"$req" \
+  --header 'Content-Type: application/json' --header "x-opencode-session: $session_id" --data-binary @"$req" \
   --output "$resp" --write-out '%{http_code}' "$ENDPOINT" 2>/dev/null)
 unset qkey api_key
 rm -f -- "$req"
 
 if [[ $http != 200 ]]; then
   print -r -- "Kegagalan / failure: HTTP ${http:-000}" >&2
+  # An HTTP 4xx answer other than 401/403/408/429 means the provider answered and refused the request.
+  if [[ $http == 4[0-9][0-9] && $http != (401|403|408|429) ]]; then
+    guidance rejected "$http" "$(provider_error_type "$resp")"
+    rm -f -- "$resp"
+    rr_outcome=provider-rejected
+    end_run 4
+  fi
   guidance network
   rr_outcome=network-error
   end_run 4

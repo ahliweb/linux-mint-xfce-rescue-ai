@@ -107,7 +107,7 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `1` | Sebuah aksi perbaikan gagal atau di-rollback, di ketiga launcher ([host-repair.md](host-repair.md), [repair-framework.md](repair-framework.md)) |
 | `2` | Evidence tidak valid (tidak ada yang dikirim), atau katalog perbaikan / pilihan aksi tidak valid |
 | `3` | `OPENCODE_GO_API_KEY` tidak ditemukan; evidence tetap tersimpan, panduan dwibahasa dicetak |
-| `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak |
+| `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak. Hasil di laporan proses: `network-error` (tanpa jawaban yang dapat dipakai, atau HTTP 401/403/408/429/5xx) atau `provider-rejected` (provider menjawab HTTP 4xx lain, mis. 400 `MissingSessionID`; pesan memuat kode HTTP dan tipe galat bila berupa token pendek, tidak pernah isi respons) |
 | `5` | Bundle tidak ditemukan, `reports/` di USB tidak bisa ditulis (USB write-protect?), atau journal perbaikan tidak bisa ditulis |
 | `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle; evidence tetap tersimpan |
 | `64` | Argumen salah (termasuk `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
@@ -144,7 +144,7 @@ Modul deteksi opsional (schema 1.2) ada di `host/modules/windows/*.ps1`, `host/m
 
 ## Kunci API dan USB yang membawa kredensial
 
-Launcher membaca `rescue-omes/config/rescue.env` **sebagai data**, hanya kunci `OPENCODE_GO_API_KEY`, dengan aturan yang sama dengan `scripts/lib/rescue-env.sh`: awalan `export`, kutip `'...'` dan `"..."`, baris dengan `$` atau backtick yang akan diekspansi shell dilewati, tidak pernah `source`, `Invoke-Expression`, atau dot-source. Variabel lingkungan `OPENCODE_GO_API_KEY` yang sudah terisi diutamakan. Kunci tidak pernah ada di argumen perintah maupun log: Windows mengirimnya hanya di header `Authorization` di dalam proses; macOS lewat `curl --config -` (stdin); Linux lewat `scripts/opencode-go-analyze.py`.
+Launcher membaca `rescue-omes/config/rescue.env` **sebagai data**, hanya kunci `OPENCODE_GO_API_KEY`, dengan aturan yang sama dengan `scripts/lib/rescue-env.sh`: awalan `export`, kutip `'...'` dan `"..."`, baris dengan `$` atau backtick yang akan diekspansi shell dilewati, tidak pernah `source`, `Invoke-Expression`, atau dot-source. Variabel lingkungan `OPENCODE_GO_API_KEY` yang sudah terisi diutamakan. Setiap permintaan ke OpenCode Go juga membawa header `x-opencode-session: ses_` + 32 hex pertama dari sha256 evidence JSON yang dikirim (hash, bukan isi evidence; tanpa header ini provider menjawab HTTP 400 `MissingSessionID`); ketiga mesin (Python, PowerShell, JXA/zsh) menurunkannya dengan cara yang sama. Kunci tidak pernah ada di argumen perintah maupun log: Windows mengirimnya hanya di header `Authorization` di dalam proses; macOS lewat `curl --config -` (stdin); Linux lewat `scripts/opencode-go-analyze.py`.
 
 **Bila kunci disediakan di USB, USB itu membawa kredensial.** Siapa pun yang memegang USB dapat membaca kunci; exFAT tidak menegakkan mode `0600`. Simpan USB di tempat aman, jangan pinjamkan, dan cabut kunci di sisi provider bila USB hilang. Tanpa kunci, launcher tetap menyimpan evidence dan mencetak panduan dwibahasa; evidence itu dapat dianalisis dari komputer lain. Jangan menyalin `rescue.env` ke media yang bukan milik operator.
 

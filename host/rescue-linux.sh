@@ -11,9 +11,11 @@
 # (reports/run-<utc>/report.md + report.json, reports/index.md; docs/run-report.md) to the USB.
 #
 # Exit codes: 0 ok | 1 a repair action failed or was rolled back | 2 invalid evidence, catalog or
-#             selection | 3 no API key | 4 network/HTTP error | 5 bundle/reports dir or repair journal
-#             unusable | 6 analyzer script missing | 64 usage   (3 and 4 take precedence over 1 and 2,
-#             as in the Windows and macOS launchers)
+#             selection | 3 no API key | 4 network/HTTP error (run outcome network-error, or
+#             provider-rejected when the provider answered with an HTTP 4xx other than
+#             401/403/408/429) | 5 bundle/reports dir or repair journal unusable | 6 analyzer script
+#             missing | 64 usage   (3 and 4 take precedence over 1 and 2, as in the Windows and macOS
+#             launchers)
 set -Eeuo pipefail
 umask 077
 
@@ -543,6 +545,7 @@ case $rc in
   0) if ((dry_run)); then run_outcome=dry-run; else run_outcome=completed; run_analysis=$analysis; fi ;;
   3) run_outcome=no-key ;;
   4) run_outcome=network-error ;;
+  5) run_outcome=provider-rejected ;;
   *) run_outcome='analysis-failed' ;;
 esac
 if ((dry_run)); then run_repair list; else run_repair; fi
@@ -565,6 +568,13 @@ case $rc in
   4)
     printf '\nID: Gagal menghubungi OpenCode Go (jaringan/HTTP). Evidence tetap tersimpan di:\n    %s\n    Periksa koneksi internet lalu jalankan ulang.\n' "$evidence" >&2
     printf 'EN: Could not reach OpenCode Go (network/HTTP error). The evidence is kept at the path above. Check the connection and run again.\n' >&2
+    finish 4
+    ;;
+  5)
+    # The provider answered with an HTTP 4xx (not 401/403/408/429): the analyzer already printed the
+    # status and the error type. Launcher exit code stays 4, the network/HTTP class.
+    printf '\nID: OpenCode Go menolak permintaan (HTTP 4xx, bukan masalah jaringan). Evidence tetap tersimpan di:\n    %s\n    Lihat pesan di atas lalu jalankan ulang; bila berulang, laporkan kode HTTP dan tipe galatnya.\n' "$evidence" >&2
+    printf 'EN: OpenCode Go rejected the request (HTTP 4xx, not a network problem). The evidence is kept at the path above.\n    See the message above and run again; if it repeats, report the HTTP status and error type.\n' >&2
     finish 4
     ;;
   *)

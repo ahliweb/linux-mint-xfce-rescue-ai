@@ -398,6 +398,7 @@ class ReportModelTests(unittest.TestCase):
         self.assertIn('BUKAN bukti kesehatan', self.md)
         self.assertIn('A clean result is not proof of health.', self.md)
         cases = {'no-key': ('provider-key-missing', False), 'network-error': ('network-unreachable', True),
+                 'provider-rejected': ('provider-rejected-request', True),
                  'evidence-only': ('analysis-not-run-offline-mode', True), 'dry-run': ('analysis-not-run-offline-mode', True),
                  'analysis-failed': ('analysis-failed', True), 'scan-failed': ('scan-not-completed', True),
                  'preflight-failed': ('hardware-preflight-failed', True), 'scan-skipped': ('scan-not-completed', True)}
@@ -934,7 +935,8 @@ class CrossCheckMixin:
 
     def test_other_platform_modes_and_outcomes(self):
         paths = self.gen.files()
-        for mode, outcome, key in (('windows-host', 'no-key', False), ('macos-host', 'network-error', True), ('live-linux', 'dry-run', True)):
+        for mode, outcome, key in (('windows-host', 'no-key', False), ('macos-host', 'network-error', True), ('live-linux', 'dry-run', True),
+                                   ('linux-host', 'provider-rejected', True)):
             with self.subTest(mode=mode):
                 shutil.rmtree(self.tmp / 'py', ignore_errors=True)
                 shutil.rmtree(self.tmp / self.NAME, ignore_errors=True)
@@ -1185,6 +1187,34 @@ class LinuxHostReportTests(unittest.TestCase):
         self.assertNotIn(DUMMY_KEY, ''.join(p.read_text(encoding='utf-8', errors='replace') for p in self.reports.rglob('*')
                                             if p.is_file()))
 
+    def test_provider_rejection_is_reported_as_provider_rejected_not_network_error(self):
+        import http.server
+        import threading
+        server = HL._FakeApi
+        server.status, server.seen = 400, []
+        httpd = http.server.HTTPServer(('127.0.0.1', 0), server)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        (self.bundle / 'config').mkdir(exist_ok=True)
+        env_file = self.bundle / 'config' / 'rescue.env'
+        env_file.write_text("OPENCODE_GO_API_KEY='%s'\n" % DUMMY_KEY)
+        env_file.chmod(0o600)
+        env = dict(self.env(), RESCUE_TEST_BASE_URL='http://127.0.0.1:%d' % httpd.server_address[1])
+        proc = self.run_launcher('--scope', 'os', env=env)
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)  # same launcher exit code as a network/HTTP error
+        self.assertIn('HTTP 400', proc.stderr)
+        self.assertIn('OpenCode Go menolak permintaan', proc.stderr)
+        self.assertIn('rejected the request', proc.stderr)
+        doc, md = load_report(self.reports)
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'provider-rejected')
+        self.assertTrue(doc['header']['provider_key_present'])
+        self.assertIn('provider-rejected-request', doc['honesty']['environment_blocked'])
+        self.assertNotIn('network-unreachable', doc['honesty']['environment_blocked'])
+        self.assertIn('bukan masalah jaringan', md)
+        self.assertEqual(doc['analysis']['status'], 'not_run')
+
     def test_declined_repairs_and_no_rescan(self):
         proc = self.run_launcher('--scope', 'os')  # approve-each without a terminal: declined
         self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
@@ -1323,6 +1353,21 @@ class MacReportTests(HR.HostRepairCase):
         for path in reports.rglob('*'):
             if path.is_file() and path.name != 'journal.jsonl':
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
+
+    def test_provider_rejection_is_reported_as_provider_rejected(self):
+        self.write_env_file("OPENCODE_GO_API_KEY='%s'\n" % HL.DUMMY_KEY)
+        (self.shims / 'curl.mode').write_text('reject')
+        proc = self.run_args('--scope', 'os')
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        self.assertIn('HTTP 400 (MissingSessionID)', proc.stdout + proc.stderr)
+        self.assertNotIn('secret response text', proc.stdout + proc.stderr)
+        doc, md = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'provider-rejected')
+        self.assertTrue(doc['header']['provider_key_present'])
+        self.assertIn('provider-rejected-request', doc['honesty']['environment_blocked'])
+        self.assertNotIn('network-unreachable', doc['honesty']['environment_blocked'])
+        self.assertIn('bukan masalah jaringan', md)
 
     def test_analysis_key_and_ai_counts(self):
         self.with_key('Analisis.\n```rescue-proposals\n{"proposed_actions":[{"action_id":"os-macos.slow","target_ref":"os-0"},'
@@ -1493,6 +1538,20 @@ class LiveLauncherReportTests(unittest.TestCase):
         self.assertEqual([(a['action_id'], a['final_outcome']) for a in doc['remediation']['actions']], [('hw.report-fix', 'verified')])
         self.assertIn('Offline run finished', proc.stdout)
         self.assertIn(str(self.reports_dir()), proc.stdout)
+
+    def test_provider_rejection_in_the_live_launcher_is_not_a_network_error(self):
+        c = self.case
+        c.provider = self.TS.FakeProvider(status=400, error_body=b'{"type":"error","error":{"type":"MissingSessionID"}}')
+        self.addCleanup(c.provider.close)
+        proc = self.launch()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)  # Hermes still starts
+        self.assertIn('HERMES-RAN', proc.stdout)
+        self.assertEqual(len(c.provider.requests), 1)
+        doc, _ = load_report(self.reports_dir())
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'provider-rejected')
+        self.assertIn('provider-rejected-request', doc['honesty']['environment_blocked'])
+        self.assertFalse(list(self.reports_dir().glob('analysis-*.md')))
 
     def test_offline_when_readiness_network_check_is_not_pass(self):
         # a route exists but the readiness gate reports the internet check as warn (DNS/HTTPS down)
