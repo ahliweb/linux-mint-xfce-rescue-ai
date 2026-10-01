@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-01
+
+Fixes from the analysis of the USB stick after the 0.5.0 physical test (OpenCode Go session header, Ventoy USB resolution, fair malware budget, honest launcher outcomes) and two new repair targets connected to the PC running the USB: Android phones and tablets (detection, ADB repairs, fastboot/Heimdall flashing with EDL/BROM guidance) and printers (USB, installed-OS spooler, opt-in local-link network). Evidence schema 1.3; the persistence image adds `adb`, `fastboot`, `heimdall-flash` and the CUPS/IPP tools and needs a rebuild.
+
 ### Added
 
 - `--malware-target os-N` for `scripts/scan-target-os.py` and `scripts/launch-hermes-rescue.sh`: scan only one target with the whole malware budget (a deliberate second full-disk run). Other targets report `malware-scan` `unknown`, never clean; a malformed or unknown `os-N` is a usage error (exit 2) (ahliweb/linux-mint-xfce-rescue-ai#47).
