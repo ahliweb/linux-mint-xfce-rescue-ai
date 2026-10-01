@@ -39,8 +39,8 @@ apt-get install -y -q --no-install-recommends ca-certificates curl git python3 p
 # correct on its own. policy-rc.d below keeps every service stopped while installing.
 # fastboot + heimdall-flash: the operator-invoked flashing actions of docs/android.md (fastboot slot switch,
 # image/partition flashing; Samsung download mode through Heimdall, EXPERIMENTAL). Nothing runs automatically.
-optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam adb android-sdk-platform-tools-common
-          fastboot heimdall-flash cups cups-client cups-ipp-utils ipp-usb avahi-utils)
+optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam adb android-sdk-platform-tools-common fastboot heimdall-flash
+          cups cups-client cups-ipp-utils ipp-usb avahi-utils)
 missing_optional=()
 printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
 chmod 0755 /usr/sbin/policy-rc.d
