@@ -113,7 +113,7 @@ Hasil di partisi data Ventoy:
 | `/rescue-omes/` | bundle rescue (juga tersedia untuk launcher host) |
 | `/RESCUE-WINDOWS.cmd`, `/RESCUE-MACOS.command`, `/rescue-linux.sh` | launcher host, disalin ke root USB bila direktori `host/` ada di repo |
 
-Script menolak menimpa `/persistence/rescue-omes-casper-rw.dat` yang sudah ada, karena file itu dapat berisi memory dan sessions Hermes. Pakai `--replace-persistence` hanya bila state lama memang boleh dihapus. File `.dat` diperiksa sebelum penyalinan: harus ext2/3/4 berlabel `casper-rw`.
+Script menolak menimpa `/persistence/rescue-omes-casper-rw.dat` yang sudah ada, karena file itu dapat berisi memory dan sessions Hermes. Pakai `--replace-persistence` hanya bila state lama memang boleh dihapus; untuk meng-upgrade USB sambil mempertahankan key dan state Hermes, ikuti [Upgrade USB dengan mempertahankan kunci dan state Hermes](#upgrade-usb-dengan-mempertahankan-kunci-dan-state-hermes). File `.dat` diperiksa sebelum penyalinan: harus ext2/3/4 berlabel `casper-rw`.
 
 ## State Hermes ada di USB
 
@@ -127,7 +127,115 @@ Casper me-mount filesystem berlabel `casper-rw` di `/cow` dan menyusun overlay `
 | Journal perbaikan berantai hash, karantina malware, database tanda tangan ClamAV | `/home/mint/.local/share/rescue-omes/{repairs/journal.jsonl,quarantine,clamav}` |
 | Kode Hermes + Python terkelola | `.../hermes/hermes-agent`, `/home/mint/.local/share/uv` |
 
-Konsekuensi: kalau `.dat` hilang, rusak, atau di-replace, state Hermes ikut hilang. Cadangkan `.dat` (saat live session tidak berjalan) sebelum `--replace-persistence`. Data kasus milik target yang dirawat tidak boleh disalin ke media lain tanpa persetujuan: laporan, journal, daftar deteksi, dan karantina menggambarkan mesin pelanggan, sehingga file `.dat` yang berisi run nyata harus diperlakukan sebagai data rahasia.
+Konsekuensi: kalau `.dat` hilang, rusak, atau di-replace, state Hermes ikut hilang. Cadangkan `.dat` (saat live session tidak berjalan) sebelum `--replace-persistence`; bila key dan state ingin dipertahankan, pindahkan dulu ke image baru dengan `scripts/migrate-persistence-state.py` ([prosedurnya](#upgrade-usb-dengan-mempertahankan-kunci-dan-state-hermes)). Data kasus milik target yang dirawat tidak boleh disalin ke media lain tanpa persetujuan: laporan, journal, daftar deteksi, dan karantina menggambarkan mesin pelanggan, sehingga file `.dat` yang berisi run nyata harus diperlakukan sebagai data rahasia.
+
+<a id="upgrade-usb-state"></a>
+## Upgrade USB dengan mempertahankan kunci dan state Hermes
+
+`prepare-ventoy-usb.sh --replace-persistence` mengganti `rescue-omes-casper-rw.dat`, sehingga sessions, memory, skill hasil belajar di lapangan, key di `hermes/env`, dan riwayat kasus ikut hilang. Skrip itu juga membuat ulang folder bundle `rescue-omes/` di USB, sehingga `config/rescue.env` dan `reports/` mode host terhapus. `scripts/migrate-persistence-state.py` memindahkan state itu dari image lama ke image baru **tanpa mount dan tanpa root** (hanya `debugfs` pada file image; tidak pernah block device). Status: **Implemented** dan diuji di source level (`tests/test_persistence_migration.py`, image ext4 kecil dari `mke2fs -d`); dipakai pada 2026-10-01 untuk meng-upgrade USB lapangan dari 0.5.0 ke 0.6.0 (25 direktori, 55 file; `hermes/env` dan `state.db` identik menurut hash, `ahliweb/linux-mint-xfce-rescue-ai#65`). Boot fisik dari USB hasil upgrade tetap **Hardware-required** dan dilaporkan terpisah.
+
+```mermaid
+flowchart TD
+    OLD[".dat lama di USB"] --> BK["1. cadangkan: cp --sparse=always, 0600, sha256"]
+    PKG["2. image CI versi baru dari ghcr.io, sha256 diverifikasi"] --> DRY
+    BK --> DRY["3. migrate-persistence-state.py --dry-run"]
+    DRY --> MIG["3. migrasi pada salinan: debugfs, e2fsck -fn, sha256 per file"]
+    USBF["4. cadangkan rescue-omes/reports dan config/rescue.env dari USB"] --> PREP
+    MIG --> PREP["5. prepare-ventoy-usb.sh dari tag rilis: --env-file --persistence --replace-persistence"]
+    PREP --> REST["6. kembalikan rescue-omes/reports"]
+    REST --> RB["7. baca balik dengan debugfs"]
+    RB --> BOOT["uji boot fisik: Hardware-required"]
+    BK -.->|"rollback: taruh .dat cadangan kembali"| OLD
+```
+
+### Yang dibawa dan yang diambil dari image baru
+
+Semua path di bawah `upper/home/mint/.local/share/rescue-omes/` (disingkat `<state>`). Hanya file biasa dan direktori yang dibawa; mode, uid, gid, dan mtime dipertahankan, dan file bernama sama di image baru diganti. Isi file tidak pernah dicetak (hanya path, jumlah, dan hash).
+
+| Kelompok | Path | Asal |
+|---|---|---|
+| Key provider | `<state>/hermes/env` | Dibawa dari image lama |
+| Konfigurasi dan database Hermes | `hermes/config.yaml`, `hermes/state.db` (+ `-wal`, `-shm`), `hermes/projects.db`, `hermes/.hermes_history` | Dibawa |
+| State Hermes | `hermes/memories`, `sessions`, `logs`, `cron`, `hooks`, `pairing`, `backups`, `.curator_backups`, `skills/.curator_ledger.jsonl`, `skills/.usage.json` | Dibawa |
+| Skill hasil belajar di lapangan | `hermes/skills/<nama>` yang **tidak ada** di image baru | Dibawa |
+| Riwayat kasus | `cases`, `learning`, `reports`, `repairs` (journal), `audit`, `clamav` | Dibawa |
+| Kode Hermes dan Python terkelola | `hermes/hermes-agent`, `.local/share/uv`, `hermes/SOUL.md`, profile | Dari image baru |
+| Skill bawaan (ada di kedua image) | `hermes/skills/rescue-*` | Dari image baru (versi baru menang) |
+| File kunci (`*.lock`) dan `.locks` | di mana pun | Dilewati |
+| Symlink, device, dan tipe lain | di mana pun | Dilewati dan dilaporkan; tidak pernah diikuti |
+| Path lain di luar allowlist (cache, dll.) | | Tidak dibawa |
+
+### Prosedur
+
+Jalankan sebagai user biasa di host dengan `e2fsprogs`, saat USB tidak sedang dipakai boot. Contoh memakai versi `0.6.0`; ganti sesuai rilis. Letakkan cadangan **di luar repo** (mis. `~/rescue-backup/`).
+
+**1. Cadangkan `.dat` lama dan verifikasi.** `.dat` lama berisi key dan data kasus; simpan dengan `0600`.
+
+```bash
+mkdir -p -m 700 ~/rescue-backup && umask 077
+cp --sparse=always /mnt/ventoy/persistence/rescue-omes-casper-rw.dat ~/rescue-backup/old.dat
+( cd /mnt/ventoy/persistence && sha256sum rescue-omes-casper-rw.dat ) | tee ~/rescue-backup/old.dat.sha256
+sha256sum ~/rescue-backup/old.dat                    # harus sama dengan baris di atas
+```
+
+**2. Unduh image CI versi baru** dari ghcr.io dan verifikasi, sesuai [Paket GitHub](#paket-github-tanpa-kredensial) (`oras pull ...persistence:$V`, `sha256sum -c` pada `.zst` dan `.dat`, `zstd -d --long=27`). Hasilnya `rescue-omes-casper-rw-$V.dat` yang bebas kredensial.
+
+**3. Dry run, lalu migrasi pada salinan.** `--to` diubah di tempat, jadi kerjakan pada salinan dan simpan `old.dat` sebagai rollback.
+
+```bash
+cp --sparse=always rescue-omes-casper-rw-0.6.0.dat ~/rescue-backup/migrated.dat
+python3 scripts/migrate-persistence-state.py --from ~/rescue-backup/old.dat --to ~/rescue-backup/migrated.dat --dry-run
+python3 scripts/migrate-persistence-state.py --from ~/rescue-backup/old.dat --to ~/rescue-backup/migrated.dat
+```
+
+Keluaran akhir yang benar: `Migrated and verified: N directories, M files; e2fsck clean.` Kode keluar: `0` berhasil dan terverifikasi; `1` verifikasi gagal (jangan pakai image itu); `2` input ditolak (`--from` dan `--to` file yang sama, bukan file biasa (mis. block device), atau bukan image persistence rescue); `3` `debugfs` atau `e2fsck` tidak ada atau gagal. Setelah penulisan, `e2fsck -fn` harus bersih dan setiap file yang dibawa dibaca balik dari image baru lalu SHA-256-nya dibandingkan dengan image lama.
+
+**4. Cadangkan `rescue-omes/reports/` dan `config/rescue.env` dari USB**, karena langkah 5 membuat ulang folder `rescue-omes/` (laporan mode host dan key bundle akan hilang).
+
+```bash
+cp -a /mnt/ventoy/rescue-omes/reports ~/rescue-backup/host-reports
+cp -p /mnt/ventoy/rescue-omes/config/rescue.env ~/rescue-backup/rescue.env
+chmod 600 ~/rescue-backup/rescue.env
+```
+
+**5. Jalankan `prepare-ventoy-usb.sh` dari checkout bersih tag rilis** (bukan dari working tree yang berubah), dengan `.dat` hasil migrasi:
+
+```bash
+git clone --branch v0.6.0 https://github.com/ahliweb/linux-mint-xfce-rescue-ai.git /tmp/rescue-v0.6.0
+cd /tmp/rescue-v0.6.0
+scripts/prepare-ventoy-usb.sh \
+  --ventoy-mount /mnt/ventoy \
+  --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
+  --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
+  --env-file ~/rescue-backup/rescue.env \
+  --persistence ~/rescue-backup/migrated.dat --replace-persistence
+```
+
+`--env-file` hanya menyalin `OPENCODE_GO_API_KEY` ke `config/rescue.env` USB (lihat [Risiko kredensial](#risiko-kredensial)). Script memverifikasi ISO (GPG + SHA-256) dan membaca balik sha256 `.dat` yang disalin.
+
+**6. Kembalikan laporan mode host.**
+
+```bash
+cp -a ~/rescue-backup/host-reports /mnt/ventoy/rescue-omes/reports
+```
+
+**7. Baca balik dengan `debugfs`** langsung dari `.dat` di USB (tanpa mount): pastikan key ada tanpa mencetaknya, dan state tersedia.
+
+```bash
+D=/mnt/ventoy/persistence/rescue-omes-casper-rw.dat
+S=/upper/home/mint/.local/share/rescue-omes
+debugfs -R "stat $S/hermes/env" "$D" | grep -E 'Mode|Size'     # 0600; ukuran sama dengan hermes/env di old.dat
+debugfs -R "ls -l $S/hermes" "$D"                                # state.db, memories, sessions, skills ada
+e2fsck -fn "$D"
+sha256sum "$D" ~/rescue-backup/migrated.dat                      # sama
+```
+
+### Peringatan
+
+- **Image hasil migrasi credential-bearing.** Ia berisi key provider dan data kasus milik mesin yang dirawat. Jangan pernah mengunggahnya (bukan ke ghcr.io, GitHub Release, issue, atau chat), jangan commit, simpan `0600` di USB privat. Image publik dari CI tetap tanpa kredensial; key hanya dipindahkan di antara image milik operator. Skrip tidak pernah mencetak isi file (termasuk `hermes/env`), tidak menulis ke tempat selain image `--to`, dan staging sementara (`0700`) dihapus di akhir.
+- **Kompatibilitas database Hermes antar versi Hermes tidak dijamin.** `state.db` dan `config.yaml` dibawa apa adanya sementara kode Hermes berasal dari image baru. Bila Hermes versi baru gagal membaca state lama, lakukan **rollback**: taruh `~/rescue-backup/old.dat` kembali sebagai `/persistence/rescue-omes-casper-rw.dat` (salin langsung, atau `--replace-persistence` dengan image lama).
+- `old.dat` adalah satu-satunya jalan kembali; jangan hapus sebelum USB hasil upgrade diuji boot fisik dan Hermes memuat sessions lama.
+- Migrasi tidak membuktikan apa pun tentang boot: uji boot dengan persistence, autostart, dan retensi state setelah reboot tetap **Hardware-required**.
 
 ## Paket GitHub (tanpa kredensial)
 
@@ -175,7 +283,8 @@ scripts/prepare-ventoy-usb.sh \
   --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
   --no-provision-secrets \
   --persistence ../../rescue-omes-casper-rw-$V.dat
-# USB sudah punya persistence lama (state Hermes akan HILANG): tambahkan --replace-persistence
+# USB sudah punya persistence lama (state Hermes akan HILANG kecuali dimigrasi dulu, lihat
+# bagian "Upgrade USB dengan mempertahankan kunci dan state Hermes"): tambahkan --replace-persistence
 ```
 
 `--no-provision-secrets` (atau tanpa `--env-file`, lihat [Menyalin ke USB](#menyalin-ke-usb)) menentukan apakah `config/rescue.env` berisi key di bundle pada USB; itu tidak mengubah image `.dat`, yang dari paket ini selalu tanpa key. `--env-file FILE` menyalin hanya `OPENCODE_GO_API_KEY` ke `config/rescue.env` USB dan membuat USB credential-bearing.
@@ -202,7 +311,7 @@ Setelah itu jalankan ulang "Hermes Rescue AI" dari menu aplikasi. Key tersimpan 
 - Bangun ulang setelah mengubah `scripts/`, `profiles/`, atau `config/` (bundle ikut ditanam). Untuk mengubah hanya bundle dan tetap mempertahankan state, salin file ke `/usr/local/lib/rescue-omes` dari dalam sesi live; build ulang membuat image baru dari nol.
 - Menambah paket: edit daftar `optional` di `scripts/lib/persistence-container-build.sh` (lalu update dokumen ini dan `CHANGELOG.md`).
 - Ukuran: `--size-mib` (image sparse; di exFAT ia ditulis penuh). Isi awal sekitar 2.5 GiB untuk `/home/mint` plus paket; sisakan ruang untuk sessions dan reports.
-- Reset ke keadaan bersih: `--replace-persistence` dengan image baru. Untuk tidak memakai persistence, hapus entri `persistence` dari `/ventoy/ventoy.json`.
+- Reset ke keadaan bersih: `--replace-persistence` dengan image baru (tanpa migrasi, state lama hilang; untuk mempertahankannya lihat [Upgrade USB](#upgrade-usb-dengan-mempertahankan-kunci-dan-state-hermes)). Untuk tidak memakai persistence, hapus entri `persistence` dari `/ventoy/ventoy.json`.
 - Inspeksi tanpa root: `debugfs -R 'ls -l /upper/home/mint' rescue-omes-casper-rw.dat` dan `e2fsck -fn rescue-omes-casper-rw.dat`.
 
 ## Batasan dan asumsi
