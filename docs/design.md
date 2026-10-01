@@ -135,7 +135,7 @@ Nothing is installed or written on the host disk; there is no AutoRun, so one cl
 
 ## Android target (phone or tablet over USB)
 
-Besides installed operating systems (`os-N`), a phone or tablet attached over USB is a target of its own family, `android` (`and-N`). `scripts/scan-android.py` enumerates every USB device from sysfs without any cooperation from the phone, marks the rescue USB so it is never confused with the target, shows the port path, speed, and ACPI location, classifies the connection mode (ADB, fastboot, MTP/PTP, RNDIS, Qualcomm EDL, MediaTek preloader/BROM, Samsung Download, Unisoc download), and runs fixed-argv, read-only ADB checks only when USB debugging is enabled and authorized. Evidence is schema 1.3 with an opaque target ID, never the serial. Flashing and unbricking are out of scope; Android repair actions are Planned. Details, check table, and privacy rules: [android](android.md).
+Besides installed operating systems (`os-N`), a phone or tablet attached over USB is a target of its own family, `android` (`and-N`). `scripts/scan-android.py` enumerates every USB device from sysfs without any cooperation from the phone, marks the rescue USB so it is never confused with the target, shows the port path, speed, and ACPI location, classifies the connection mode (ADB, fastboot, MTP/PTP, RNDIS, Qualcomm EDL, MediaTek preloader/BROM, Samsung Download, Unisoc download), and runs fixed-argv, read-only ADB checks only when USB debugging is enabled and authorized. Evidence is schema 1.3 with an opaque target ID, never the serial. Three catalog repair actions (`android.trim-caches`, `android.enable-package-verifier`, `android.reboot`) run only through the Python repair engine and the engine-resolved `android_device` parameter; flashing and unbricking are out of scope. Details, check table, actions, and privacy rules: [android](android.md).
 
 ## Printers (USB, opt-in network, installed OS spooler)
 
@@ -352,7 +352,7 @@ flowchart LR
 | 12 | Candidate memory, feedback labels, regression evaluation, signed promotion | Planned ([learning loop](hermes-learning-loop.md)) |
 | 13 | Hardware boot validation on Pi 5/PC x86 and the UEFI/BIOS matrix | Hardware-required |
 | 14 | Live OpenCode Go smoke test and reboot-autostart check | Environment-blocked (API key, provider spend, physical reboot) |
-| 15 | Android target: USB inventory, port identification, read-only ADB checks, evidence 1.3 ([android](android.md)) | Implemented (detection only); Android repair actions Planned; real phones Hardware-required |
+| 15 | Android target: USB inventory, port identification, read-only ADB checks, evidence 1.3 ([android](android.md)) | Implemented (detection and three safe or reversible repair actions); real phones Hardware-required |
 | 16 | Printers: USB class 07, CUPS/IPP state, opt-in mDNS network printers, installed-OS spooler checks, evidence 1.3 ([printer](printer.md)) | Implemented (detection only); printer repair actions Planned; real printers Hardware-required |
 
 ```mermaid

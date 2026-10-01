@@ -266,6 +266,83 @@ else
   fi
 fi
 
+# Android phone or tablet over USB (docs/android.md). After the OS scan, when the USB inventory shows a
+# phone, print the table of every USB device and ask (default: no; a non-interactive run skips it) whether to
+# scan the phone. The scan is read-only, runs as the desktop user (adb keeps its key in ~/.android), writes its
+# own evidence file android-evidence-<stamp>.json, and the repair engine then runs on it under the same policy.
+# The Android run gets its own run report (rescue-report.py takes one evidence file per report). No cloud
+# analysis of the phone evidence is requested here; Hermes can read the file when the operator asks.
+emit_android_report() {
+  local outcome=$1 started=$2 evidence=$3 after=$4
+  local -a rargs=(--reports-dir "$report_dir" --run-id "$run_id-android" --mode live-linux --outcome "$outcome"
+    --scope android --repair-policy "$repair_policy" --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --env-file "$root/config/rescue.env" --env-file "$state_dir/hermes/env")
+  [[ -n $OPENCODE_GO_API_KEY ]] && rargs+=(--key-present yes) || rargs+=(--key-present no)
+  ((!have_readiness)) || rargs+=(--readiness "$report_file")
+  [[ -z $evidence || ! -s $evidence ]] || rargs+=(--evidence "$evidence")
+  [[ -z $after || ! -s $after ]] || rargs+=(--evidence-after "$after")
+  [[ ! -e $state_dir/repairs/journal.jsonl ]] || rargs+=(--journal "$state_dir/repairs/journal.jsonl")
+  python3 "$root/scripts/rescue-report.py" "${rargs[@]}" ||
+    printf 'PERINGATAN: laporan Android tidak dapat ditulis penuh.\nWARNING: the Android run report could not be fully written.\n' >&2
+}
+
+android_phase() {
+  local count answer evidence after started ts repair_rc=0 outcome=completed ev_run_id
+  local -a scan_args=()
+  ((scan_targets)) || return 0
+  [[ $scope == all || ",$scope," == *,android,* ]] || return 0
+  [[ -t 0 ]] || return 0
+  count=$(python3 "$root/scripts/scan-android.py" --count-android 2>/dev/null) || return 0
+  [[ $count =~ ^[1-9][0-9]*$ ]] || return 0
+  printf '\nPerangkat Android terdeteksi di USB (%s). Semua perangkat USB:\nAndroid device(s) seen on USB (%s). Every USB device:\n' "$count" "$count"
+  python3 "$root/scripts/scan-android.py" --list-usb || true
+  printf '\nPindai ponsel/tablet ini (read-only) dan tawarkan perbaikan? [y/N, default: tidak]\nScan this phone/tablet (read-only) and offer repairs? [y/N, default: no]: '
+  read -r -t 300 answer || answer=''
+  [[ ${answer,,} =~ ^(y|ya|yes)$ ]] || {
+    printf 'Pemindaian ponsel dilewati.\nPhone scan skipped.\n'
+    return 0
+  }
+  ts=$(date -u +%Y%m%d-%H%M%S)
+  started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  evidence="$report_dir/android-evidence-$ts.json"
+  after='' scan_args=(--output "$evidence" --source-platform live-linux --repair-policy "$repair_policy")
+  [[ -z $OPENCODE_GO_API_KEY ]] || scan_args+=(--provider-ready)
+  if ! python3 "$root/scripts/scan-android.py" "${scan_args[@]}" || [[ ! -s $evidence ]]; then
+    rm -f -- "$evidence" 2>/dev/null || true
+    printf 'PERINGATAN: pemindaian ponsel gagal; periksa kabel, USB debugging, dan persetujuan RSA di ponsel.\nWARNING: the phone scan failed; check the cable, USB debugging and the RSA prompt on the phone.\n' >&2
+    emit_android_report scan-failed "$started" '' ''
+    return 0
+  fi
+  chmod 0600 -- "$evidence" 2>/dev/null || true
+  printf 'Bukti ponsel tersimpan: %s\n' "$evidence"
+  # Approval prompts need a tty on stdout, so this step bypasses the log tee (its journal is the record).
+  python3 "$root/scripts/rescue-repair.py" --evidence "$evidence" --policy "$repair_policy" --scope android \
+    --state-dir "$state_dir" 1>&3 2>&4 || repair_rc=$?
+  case $repair_rc in
+    0) ;;
+    2) outcome=repair-invalid ;;
+    3) outcome=journal-unusable ;;
+    *)
+      printf 'PERINGATAN: ada tindakan perbaikan Android yang gagal atau di-rollback; lihat %s\n' "$state_dir/repairs/journal.jsonl" >&2
+      printf 'WARNING: an Android repair action failed or was rolled back; see %s\n' "$state_dir/repairs/journal.jsonl" >&2
+      ;;
+  esac
+  if [[ -s $state_dir/repairs/journal.jsonl ]] && ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
+    grep -F -- "\"run_id\":\"$ev_run_id\"" "$state_dir/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
+    printf 'Memindai ulang ponsel setelah perbaikan ...\nRe-scanning the phone after repairs ...\n'
+    after="$report_dir/android-evidence-$ts-after.json"
+    python3 "$root/scripts/scan-android.py" --output "$after" --source-platform live-linux --repair-policy "$repair_policy" || true
+    if [[ ! -s $after ]]; then
+      rm -f -- "$after" 2>/dev/null || true
+      after=''
+      printf 'PERINGATAN: pemindaian ulang ponsel gagal; tidak ada perbandingan sebelum/sesudah.\nWARNING: the phone re-scan failed; no before/after comparison.\n' >&2
+    fi
+  fi
+  emit_android_report "$outcome" "$started" "$evidence" "$after"
+  return 0
+}
+android_phase || true
+
 # Write the report now (Hermes reads the latest one first); the EXIT trap covers every other exit.
 emit_report
 

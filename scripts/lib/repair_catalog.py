@@ -16,7 +16,9 @@ Placeholders inside argv elements take exactly one of three forms:
   ``{target_root}/lit/path`` only for target_root parameters, a literal path suffix
 
 Engine-provided parameter types (never operator input): ``target_root`` (mount point of the target
-OS) and ``state_dir`` (one fixed subdirectory, ``clamav`` or ``quarantine``, of the USB state).
+OS), ``state_dir`` (one fixed subdirectory, ``clamav`` or ``quarantine``, of the USB state) and
+``android_device`` (the integer ``adb -t`` transport id of the phone named by the proposal's ``and-N``
+target_ref, resolved by the engine at execution time; see docs/android.md).
 ``detection_ref`` (``d-N``) is an operator-chosen opaque reference to one entry of the local
 malware detection list; the engine resolves it to a verified regular-file path.
 """
@@ -33,17 +35,27 @@ CATALOG_SCHEMA = ROOT / 'rescue-ai/v1/repair-catalog.schema.json'
 EVIDENCE_SCHEMA = ROOT / 'rescue-ai/v1/rescue-evidence.schema.json'
 
 DOMAIN_PREFIX = {'hardware': 'hw', 'os-linux': 'os-linux', 'os-windows': 'os-windows',
-                 'os-macos': 'os-macos', 'software': 'sw', 'malware': 'mw'}
-DOMAIN_FAMILIES = {'os-linux': {'linuxmint', 'linux-other'}, 'os-windows': {'windows'}, 'os-macos': {'macos'}}
+                 'os-macos': 'os-macos', 'software': 'sw', 'malware': 'mw', 'android': 'android'}
+DOMAIN_FAMILIES = {'os-linux': {'linuxmint', 'linux-other'}, 'os-windows': {'windows'}, 'os-macos': {'macos'},
+                   'android': {'android'}}
 DOMAIN_PLATFORMS = {'os-linux': {'live-linux', 'linux-host'}, 'os-windows': {'live-linux', 'windows-host'},
-                    'os-macos': {'live-linux', 'macos-host'}}
+                    'os-macos': {'live-linux', 'macos-host'}, 'android': {'live-linux', 'linux-host'}}
+# Parameter types only the Python engine can resolve: such actions never apply to the Windows/macOS host
+# launchers (they list the types as unsupported), so they are limited to the Python engine's platforms.
+PYTHON_ENGINE_PLATFORMS = {'live-linux', 'linux-host'}
+ENGINE_ONLY_PARAMS = frozenset({'android_device'})
+# What an Android action may send to the phone (docs/android.md). adb is always addressed with
+# ``-t {android_device}``; the sub-command and the on-device program are closed lists, so a catalog change
+# cannot add root, install, push/pull, sideload, remount, reboot into bootloader/recovery, or a wipe.
+ADB_NO_ARGS = ('reboot', 'get-state')
+ADB_SHELL = {'pm': ('trim-caches',), 'settings': ('get', 'put', 'delete'), 'df': None}
 DETECTION_RE = re.compile(r'^d-[0-9]{1,4}$')
 LIVE_PLATFORMS = {'linux-mint-xfce-live': 'live-linux', 'systemrescue-live': 'live-linux',
                   'other-live-linux': 'live-linux', 'linux-host': 'linux-host',
                   'windows-host': 'windows-host', 'macos-host': 'macos-host'}
 SCOPE_ITEMS = ('hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display',
-               'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'malware')
-SCOPE_VALUES = ('all', 'hardware') + SCOPE_ITEMS[:-1] + ('software.selected', 'malware')
+               'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'malware', 'android')
+SCOPE_VALUES = ('all', 'hardware') + SCOPE_ITEMS[:10] + ('software.selected', 'malware', 'android')
 
 # Programs that would turn a fixed argv back into "run anything": shells,
 # interpreters, privilege wrappers (the engine adds `sudo -n` itself), command
@@ -132,6 +144,33 @@ def _placeholder_errors(where, argv, params):
     return errors, used
 
 
+def android_command_errors(where, argv, android_params):
+    """adb is always ``adb -t {android_device} <closed sub-command>``; see ADB_NO_ARGS and ADB_SHELL."""
+    if argv[0] != 'adb':
+        return []
+    if not android_params:
+        return ['%s: adb needs an android_device parameter' % where]
+    device = '{%s}' % android_params[0]['name']
+    if len(argv) < 4 or argv[1:3] != ['-t', device]:
+        return ['%s: adb must be addressed as -t %s followed by a sub-command' % (where, device)]
+    sub, rest = argv[3], argv[4:]
+    if sub in ADB_NO_ARGS:
+        return [] if not rest else ['%s: adb %s takes no arguments' % (where, sub)]
+    if sub != 'shell' or not rest:
+        return ['%s: adb sub-command %r is not allowed (allowed: shell, %s)' % (where, sub, ', '.join(ADB_NO_ARGS))]
+    program = rest[0]
+    if program not in ADB_SHELL:
+        return ['%s: adb shell program %r is not allowed (allowed: %s)' % (where, program, ', '.join(sorted(ADB_SHELL)))]
+    allowed = ADB_SHELL[program]
+    if allowed is not None and (len(rest) < 2 or rest[1] not in allowed):
+        return ['%s: adb shell %s may only use: %s' % (where, program, ', '.join(allowed))]
+    if program == 'settings' and (len(rest) < 4 or rest[2] != 'global'):
+        return ['%s: adb shell settings is limited to the global namespace and one literal key' % where]
+    if any('{' in e or '}' in e for e in rest):
+        return ['%s: no placeholder is allowed after adb shell' % where]
+    return []
+
+
 def action_errors(action, domain, check_ids):
     """Cross-field rules the JSON Schema cannot express for one action."""
     aid = action['action_id']
@@ -164,14 +203,26 @@ def action_errors(action, domain, check_ids):
                 say('%s: default of %s is outside minimum..maximum' % (aid, p['name']))
         elif 'minimum' in p or 'maximum' in p:
             say('%s: only integer parameters take minimum/maximum (%s)' % (aid, p['name']))
-        if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir') and 'default' in p:
+        if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir', 'android_device') and 'default' in p:
             say('%s: %s parameters cannot have a default (%s)' % (aid, kind, p['name']))
+        if kind in ENGINE_ONLY_PARAMS and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
+            say('%s: %s parameters exist only on %s (the host launchers cannot resolve them)'
+                % (aid, kind, ' and '.join(sorted(PYTHON_ENGINE_PLATFORMS))))
+        if kind == 'android_device' and action.get('target_families') != ['android']:
+            say('%s: android_device parameters need target_families ["android"]' % aid)
         if kind == 'target_root' and set(action['platforms']) != {'live-linux'}:
             say('%s: target_root parameters exist only on the live-linux platform' % aid)
+
+    android_params = [p for p in params.values() if p['type'] == 'android_device']
+    if len(android_params) > 1:
+        say('%s: at most one android_device parameter' % aid)
+    if domain == 'android' and len(android_params) != 1:
+        say('%s: android actions are addressed to one phone and need exactly one android_device parameter' % aid)
 
     used = set()
     for where, step in _steps(action):
         argv = step['argv']
+        errors.extend(android_command_errors('%s %s' % (aid, where), argv, android_params))
         if argv[0].lower() in FORBIDDEN_PROGRAMS:
             say('%s %s: program %r is not allowed in the catalog' % (aid, where, argv[0]))
         if argv[0] == 'chroot' and (action['risk'] == 'safe' or not action.get('requires_root')):
@@ -221,7 +272,7 @@ def action_errors(action, domain, check_ids):
     else:
         if not families and domain != 'malware':  # malware actions may be about the scanner, not one OS
             say('%s: %s actions need target_families' % (aid, domain))
-        expected_scope = {'software': 'software', 'malware': 'malware'}.get(domain, 'os')
+        expected_scope = {'software': 'software', 'malware': 'malware', 'android': 'android'}.get(domain, 'os')
         if action['scope'] != expected_scope:
             say('%s: %s actions use scope %r' % (aid, domain, expected_scope))
     if domain in DOMAIN_FAMILIES and families and not set(families) <= DOMAIN_FAMILIES[domain]:
@@ -478,6 +529,8 @@ def validate_param(param, value, packages=None):
         raise ValueError('is provided by the target mount provider, never by the operator')
     if kind == 'state_dir':
         raise ValueError('is provided by the engine (the USB state directory), never by the operator')
+    if kind == 'android_device':
+        raise ValueError('is resolved by the engine from the USB inventory and adb, never by the operator')
     raise ValueError('unknown parameter type %s' % kind)
 
 

@@ -22,6 +22,12 @@ on the USB. Destructive actions require --backup-ref. Every executed action is f
 its verify step; a failed execute/verify runs the automatic rollback step when the catalog
 has one, otherwise the manual rollback doc is printed.
 
+Android actions (domain android) address one phone through the engine-resolved android_device
+parameter: at execution time the engine re-reads the USB inventory and ``adb devices -l``, finds the
+and-N target of the proposal, requires it to be adb-authorized and to have the opaque id recorded in
+the evidence, and only then renders the integer transport id for ``adb -t``. The id is never read from
+evidence, model output or the command line and is never journaled.
+
 This Python engine executes on the live-linux and linux-host platforms. Windows and macOS
 evidence can be planned here (--list) but is executed by the host launchers' own engines.
 
@@ -49,8 +55,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'lib'))
+sys.path.insert(0, str(HERE))
 import repair_catalog as rc  # noqa: E402
 import malware_detections as md  # noqa: E402
+from rescue_modules import android, usb_devices  # noqa: E402
 
 SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 EXECUTING_PLATFORMS = {'live-linux', 'linux-host'}
@@ -59,6 +67,11 @@ ZERO_HASH = '0' * 64
 EXIT_OK, EXIT_FAILED, EXIT_INVALID, EXIT_JOURNAL = 0, 1, 2, 3
 YES = {'ya', 'y', 'yes'}
 CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+# After an Android action ran, the verify step waits this long for a restarted phone to show up again as an
+# authorized device (a reboot takes tens of seconds; the transport id changes), polling every few seconds.
+ANDROID_WAIT_SECONDS = 150
+ANDROID_POLL_SECONDS = 3
+ANDROID_CHILD_ENV = ('HOME', 'USER', 'TMPDIR')   # adb keeps its RSA key in ~/.android; fastboot needs nothing
 
 
 def utc_now():
@@ -189,13 +202,16 @@ def resolve_argv(argv, requires_root, path):
     return full
 
 
-def run_step(step, values, requires_root, path, default_timeout):
+def run_step(step, values, requires_root, path, default_timeout, android=False):
     """Run one catalog step; returns a result dict (never raises for the command itself)."""
     argv = rc.render(step['argv'], values)
     full = resolve_argv(argv, requires_root, path)
     if full is None:
         return {'outcome': 'unavailable', 'reason': 'program-not-found', 'argv': argv}
     env = {'PATH': path, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'DEBIAN_FRONTEND': 'noninteractive'}
+    if android:  # adb finds its RSA key below $HOME/.android; no mDNS (no network) for a USB-only tool
+        env.update({k: os.environ[k] for k in ANDROID_CHILD_ENV if os.environ.get(k)})
+        env.update({'ADB_MDNS': '0', 'ADB_MDNS_OPENSCREEN': '0'})
     timeout = step.get('timeout_seconds', default_timeout)
     started = time.monotonic()
     try:
@@ -299,6 +315,92 @@ class Engine:
         self.results = []
         self.state_root = state_root(args)
         self._detections = None
+        self._adb = None
+        self.android_wait = ANDROID_WAIT_SECONDS
+        self.apply_test_hooks()
+
+    def apply_test_hooks(self):
+        """Offline-test hooks, announced loudly like RESCUE_REPAIR_TEST_PATH: a fixture /sys + /proc tree for the
+        USB inventory, and a shorter wait for a phone that does not come back."""
+        root = os.environ.get('RESCUE_REPAIR_TEST_USB_ROOT', '')
+        if root:
+            if root.startswith('/') and os.path.isdir(root):
+                warn('rescue-repair: TEST USB fixture override active (RESCUE_REPAIR_TEST_USB_ROOT)')
+                base = Path(root)
+                usb_devices.SYSFS_USB = base / 'sys/bus/usb/devices'
+                usb_devices.SYS_ROOT = base / 'sys'
+                usb_devices.MOUNTINFO = base / 'proc/self/mountinfo'
+                usb_devices.BY_LABEL = base / 'dev/disk/by-label'
+            else:
+                warn('rescue-repair: ignoring invalid RESCUE_REPAIR_TEST_USB_ROOT')
+        wait = os.environ.get('RESCUE_REPAIR_TEST_ANDROID_WAIT', '')
+        if wait.isdigit() and int(wait) <= ANDROID_WAIT_SECONDS:
+            warn('rescue-repair: TEST Android wait override active (RESCUE_REPAIR_TEST_ANDROID_WAIT)')
+            self.android_wait = int(wait)
+
+    # --------------------------------------------------------------- android_device
+
+    @staticmethod
+    def android_param(action):
+        """Name of the action's android_device parameter, or None."""
+        return next((p['name'] for p in action.get('params') or [] if p['type'] == 'android_device'), None)
+
+    def adb(self):
+        if self._adb is None:
+            program = android.find_adb(self.path)
+            self._adb = android.Adb(program, search_path=self.path) if program else False
+        return self._adb or None
+
+    def resolve_android(self, proposal):
+        """(transport_id, reason): the adb transport id of the phone the proposal names, or a typed refusal.
+
+        Nothing but the proposal's and-N reference and the evidence's opaque id are used; the phone is looked up
+        again right now (USB sysfs + ``adb devices -l``), so a swapped, unplugged or re-numbered phone is caught."""
+        ref = proposal.get('target_ref')
+        target = next((t for t in self.evidence.get('target_systems') or []
+                       if t.get('ref') == ref and t.get('family') == 'android'), None)
+        expected = (target or {}).get('opaque_id')
+        if not ref or not expected:
+            return None, 'device-mismatch'
+        usb_list = usb_devices.list_usb_devices()
+        adb = self.adb()
+        if usb_list is None or adb is None:
+            return None, 'device-absent'
+        found = android.discover(usb_list, adb, True)
+        current = next((t for t in found if t['ref'] == ref), None)
+        if current is None:
+            return None, 'device-absent'
+        if sum(1 for t in found if t['opaque_id'] == expected) > 1:
+            return None, 'device-ambiguous'
+        if current['opaque_id'] != expected:
+            return None, 'device-mismatch'
+        if current['adb_state'] != 'device':
+            return None, 'device-not-authorized'
+        transport = current['transport_id']
+        if not isinstance(transport, int) or isinstance(transport, bool) or not 0 < transport < 1 << 31:
+            return None, 'device-absent'
+        return transport, None
+
+    def bind_android(self, action, proposal, values, wait=0):
+        """(values with the android_device transport id, None) or (None, reason).
+
+        *wait* (seconds) keeps polling while the phone is absent or not authorized yet (verify after a reboot)."""
+        name = self.android_param(action)
+        if name is None:
+            return values, None
+        deadline = time.monotonic() + wait
+        while True:
+            transport, reason = self.resolve_android(proposal)
+            if reason is None:
+                return dict(values, **{name: str(transport)}), None
+            if reason not in ('device-absent', 'device-not-authorized') or time.monotonic() >= deadline:
+                return None, reason
+            time.sleep(min(ANDROID_POLL_SECONDS, max(0.05, deadline - time.monotonic())))
+
+    def close(self):
+        """Stop the adb server this run started (live session only; on a host the operator's server is theirs)."""
+        if self._adb and self.platform == 'live-linux':
+            android.stop_server(self._adb)
 
     def log(self, action, proposal, stage, outcome, **extra):
         if self.journal is None:
@@ -351,7 +453,7 @@ class Engine:
         values, aid = {}, action['action_id']
         proposal = proposal or {}
         for p in action.get('params') or []:
-            if p['type'] in ('target_root', 'state_dir'):
+            if p['type'] in ('target_root', 'state_dir', 'android_device'):
                 continue  # filled by the mount provider / the engine
             raw = proposal.get('detection') if p['type'] == 'detection_ref' and proposal.get('detection') else None
             if raw is None:
@@ -393,6 +495,8 @@ class Engine:
                 shown[p['name']] = '<target root>'
             elif p['type'] == 'state_dir':
                 shown[p['name']] = '<USB state>/' + p['values'][0]
+            elif p['type'] == 'android_device':
+                shown[p['name']] = '<android %s>' % proposal.get('target_ref', '?')
             elif p['type'] == 'detection_ref':
                 entry = self.detection_entry(values.get(p['name']), action, proposal)
                 if entry is not None:
@@ -471,6 +575,11 @@ class Engine:
         journal_params = {k: v for k, v in values.items()}
         self.log(action, proposal, 'approval', 'ok', reason=reason, params=journal_params or None)
         values = self.engine_values(action, values)
+        values, refusal = self.bind_android(action, proposal, values)
+        if refusal:
+            warn('  %s: the phone %s cannot be used now (%s); not run.' % (aid, proposal.get('target_ref', '?'), refusal))
+            self.log(action, proposal, 'precondition', 'fail', reason=refusal)
+            return 'skipped'
         if needs_target:
             name = next(p['name'] for p in action['params'] if p['type'] == 'target_root')
             try:
@@ -540,9 +649,18 @@ class Engine:
         return os.path.join(root, entry['rel']), None
 
     def step(self, action, proposal, stage, step, values):
-        result = run_step(step, values, action.get('requires_root', False), self.path,
-                          DEFAULT_TIMEOUT[stage.split('/')[0]])
-        self.log(action, proposal, stage.split('/')[0], result['outcome'], **{
+        base = stage.split('/')[0]
+        is_android = self.android_param(action) is not None
+        if is_android and base in ('verify', 'rollback'):
+            # The phone may have restarted (new transport id) or been unplugged since the last step: look again.
+            values, refusal = self.bind_android(action, proposal, values, self.android_wait if base == 'verify' else 0)
+            if refusal:
+                outcome = 'fail' if base == 'verify' else 'unavailable'
+                self.log(action, proposal, base, outcome, reason=refusal)
+                say('  %-12s %s (%s)' % (stage, outcome, refusal))
+                return {'outcome': outcome, 'reason': refusal}
+        result = run_step(step, values, action.get('requires_root', False), self.path, DEFAULT_TIMEOUT[base], is_android)
+        self.log(action, proposal, base, result['outcome'], **{
             k: v for k, v in result_fields(result).items() if k not in ('outcome',)})
         say('  %-12s %s' % (stage, result['outcome']))
         if result['outcome'] != 'ok':
@@ -708,9 +826,12 @@ def main(argv=None):
                           hashlib.sha256(raw).hexdigest())
         engine = Engine(args, evidence, hashlib.sha256(raw).hexdigest(), catalog, platform, journal)
         outcomes = []
-        for proposal in proposals:
-            outcome = engine.process(proposal)
-            outcomes.append((proposal, outcome))
+        try:
+            for proposal in proposals:
+                outcome = engine.process(proposal)
+                outcomes.append((proposal, outcome))
+        finally:
+            engine.close()
     except JournalError as exc:
         warn('rescue-repair: %s' % exc)
         return EXIT_JOURNAL

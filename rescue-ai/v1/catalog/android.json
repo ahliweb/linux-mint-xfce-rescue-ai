@@ -1,0 +1,54 @@
+{
+  "catalog_version": "1",
+  "domain": "android",
+  "actions": [
+    {
+      "action_id": "android.trim-caches",
+      "title": "Free app caches on the phone (pm trim-caches)",
+      "title_id": "Kosongkan cache aplikasi di ponsel (pm trim-caches)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "safe",
+      "triggers": [{"check_id": "android-storage-free", "status": ["warn", "fail"]}],
+      "params": [{"name": "device", "type": "android_device"}],
+      "execute": {"argv": ["adb", "-t", "{device}", "shell", "pm", "trim-caches", "999G"], "timeout_seconds": 180},
+      "verify": {"argv": ["adb", "-t", "{device}", "shell", "df", "/data"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/android.md#android-trim-caches"
+    },
+    {
+      "action_id": "android.enable-package-verifier",
+      "title": "Turn the package verifier (Play Protect check) back on",
+      "title_id": "Aktifkan kembali verifikasi paket (pemeriksaan Play Protect)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "reversible",
+      "triggers": [{"check_id": "android-play-protect", "status": ["warn"]}],
+      "params": [{"name": "device", "type": "android_device"}],
+      "execute": {"argv": ["adb", "-t", "{device}", "shell", "settings", "put", "global", "package_verifier_enable", "1"], "timeout_seconds": 30},
+      "verify": {"argv": ["adb", "-t", "{device}", "shell", "settings", "get", "global", "package_verifier_enable"], "timeout_seconds": 30},
+      "rollback": {"kind": "step", "step": {"argv": ["adb", "-t", "{device}", "shell", "settings", "delete", "global", "package_verifier_enable"], "timeout_seconds": 30}},
+      "backup": {"required": false},
+      "doc": "docs/android.md#android-enable-package-verifier"
+    },
+    {
+      "action_id": "android.reboot",
+      "title": "Restart the phone normally (adb reboot)",
+      "title_id": "Mulai ulang ponsel secara normal (adb reboot)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "safe",
+      "triggers": [],
+      "params": [{"name": "device", "type": "android_device"}],
+      "execute": {"argv": ["adb", "-t", "{device}", "reboot"], "timeout_seconds": 60},
+      "verify": {"argv": ["adb", "-t", "{device}", "get-state"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/android.md#android-reboot"
+    }
+  ]
+}
