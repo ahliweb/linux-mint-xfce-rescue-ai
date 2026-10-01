@@ -22,7 +22,7 @@ Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 Usage: scan-target-os.py --output FILE [--scope LIST] [--packages LIST] [--repair-policy P]
                          [--state-dir DIR] [--malware-full-disk] [--malware-target os-N] [--fixture-root DIR]
   --scope / --packages select the detection modules in scripts/rescue_modules/
-  (hardware, operating_system, software, malware); --state-dir is the USB state
+  (hardware, operating_system, software, malware, printer); --state-dir is the USB state
   (signature DB, quarantine, and the LOCAL malware detection list written to
   DIR/reports/, never part of the evidence); --repair-policy is recorded in the
   evidence. Catalog-trigger repair proposals (action IDs only) are added from
