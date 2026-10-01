@@ -1258,7 +1258,7 @@ def main(argv=None):
         global OS_INDEX
         likely = [likely_malware_target(p) for p in candidates]
         work_total = sum(1 for p in candidates if classify(p) not in (None, 'esp'))
-        _progress.step(2, STEPS, 'Memeriksa %d target (OS, perangkat lunak, malware, printer) / Inspecting %d target(s)'
+        _progress.step(2, STEPS, 'Memeriksa %d target (OS, perangkat lunak, malware, printer) / Inspecting %d target(s) '
                        '(OS, software, malware, printers)' % (work_total, work_total))
         global TARGET_BAR
         for pos, part in enumerate(candidates):
