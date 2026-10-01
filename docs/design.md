@@ -45,8 +45,9 @@ The companion is an operator-run external system, not an OMES ISO or a second ag
 | Config parser | Allowlisted `KEY=VALUE` data parser shared by the shell scripts | `lib/rescue-env.sh` |
 | Preflight | CPU, RAM, display, internet, USB live medium | `check-hardware-readiness.py` |
 | Live scanner | Read-only mount and inspection of installed OSes, then the detection modules | `scan-target-os.py`, `rescue_modules/` |
+| Android scanner | USB inventory with port identification and read-only ADB checks of a phone or tablet over USB (target family `android`, `and-N`) | `scan-android.py`, `rescue_modules/usb_devices.py`, `rescue_modules/android.py` ([android](android.md)) |
 | Detection modules | Numbers-only checks per domain | `rescue_modules/{hardware,operating_system,software,malware}.py`, `host/modules/windows/*.ps1`, `host/modules/macos/*.zsh` |
-| Evidence contract | Closed schema 1.0 / 1.1 / 1.2, validator, fixtures | `rescue-ai/v1/rescue-evidence.schema.json`, `validate-evidence.py` |
+| Evidence contract | Closed schema 1.0 / 1.1 / 1.2 / 1.3, validator, fixtures | `rescue-ai/v1/rescue-evidence.schema.json`, `validate-evidence.py` |
 | Analyzer | One bounded request to OpenCode Go, text-only answer | `opencode-go-analyze.py`, `analyze-opencode-go.sh`, `profiles/rescue-hermes/analysis-prompt.md` |
 | Repair catalog and engine | Typed actions, policy gate, backup, verify, rollback, journal | `rescue-ai/v1/catalog/*.json`, `lib/repair_catalog.py`, `rescue-repair.py` ([repair framework](repair-framework.md)) |
 | Target mounts and quarantine | Operator-approved read-write remount; reversible quarantine | `lib/target_mount.py`, `malware-quarantine.py`, `lib/quarantine_store.py`, `lib/malware_detections.py` |
@@ -131,6 +132,10 @@ flowchart TD
 
 Nothing is installed or written on the host disk; there is no AutoRun, so one click by the operator is the approval point. The three launchers implement the same contract with different tools: `host/rescue-linux.sh` uses the Python engine and generator; `host/rescue-windows.ps1` and `host/RESCUE-MACOS.command` have native engines and generators (no Python on the host) whose output is cross-checked against the Python implementation in the tests. Details: [host launchers](host-launchers.md), [host repair](host-repair.md). Real Windows 10/11 and macOS execution is Hardware-required.
 
+## Android target (phone or tablet over USB)
+
+Besides installed operating systems (`os-N`), a phone or tablet attached over USB is a target of its own family, `android` (`and-N`). `scripts/scan-android.py` enumerates every USB device from sysfs without any cooperation from the phone, marks the rescue USB so it is never confused with the target, shows the port path, speed, and ACPI location, classifies the connection mode (ADB, fastboot, MTP/PTP, RNDIS, Qualcomm EDL, MediaTek preloader/BROM, Samsung Download, Unisoc download), and runs fixed-argv, read-only ADB checks only when USB debugging is enabled and authorized. Evidence is schema 1.3 with an opaque target ID, never the serial. Flashing and unbricking are out of scope; Android repair actions are Planned. Details, check table, and privacy rules: [android](android.md).
+
 ## Persistence
 
 ```mermaid
@@ -180,7 +185,7 @@ flowchart TD
 
 ## Evidence contract
 
-`rescue-ai/v1/rescue-evidence.schema.json` accepts only bounded metadata (schema 1.0, 1.1, and 1.2; every shipped scanner and host launcher writes 1.2, `collect-evidence.sh` writes 1.0):
+`rescue-ai/v1/rescue-evidence.schema.json` accepts only bounded metadata (schema 1.0, 1.1, 1.2, and 1.3; the OS scanner and the host launchers write 1.2, `scan-android.py` writes 1.3, `collect-evidence.sh` writes 1.0):
 
 - source live platform, boot mode, timestamps, opaque target identifier;
 - tool and release identifiers;
@@ -189,7 +194,7 @@ flowchart TD
 - explicit OpenCode Go provider/model identity without credentials;
 - analysis, mutation, and verification status;
 - data classification and closed source references;
-- (1.1) `target_systems` and per-check `target_ref`; (1.2) `scope`, `repair_policy`, `repair_proposals`, up to 160 checks.
+- (1.1) `target_systems` and per-check `target_ref`; (1.2) `scope`, `repair_policy`, `repair_proposals`, up to 160 checks; (1.3) the `android` target family (`and-N` refs), `usb_ports`, and `android-*` / `usb-*` check IDs ([android](android.md)).
 
 ```mermaid
 flowchart TD
@@ -342,6 +347,7 @@ flowchart LR
 | 12 | Candidate memory, feedback labels, regression evaluation, signed promotion | Planned ([learning loop](hermes-learning-loop.md)) |
 | 13 | Hardware boot validation on Pi 5/PC x86 and the UEFI/BIOS matrix | Hardware-required |
 | 14 | Live OpenCode Go smoke test and reboot-autostart check | Environment-blocked (API key, provider spend, physical reboot) |
+| 15 | Android target: USB inventory, port identification, read-only ADB checks, evidence 1.3 ([android](android.md)) | Implemented (detection only); Android repair actions Planned; real phones Hardware-required |
 
 ```mermaid
 flowchart LR

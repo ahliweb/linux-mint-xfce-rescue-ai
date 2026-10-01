@@ -32,11 +32,51 @@ V12_CHECK_IDS = {
 V12_MUTATION_STATUSES = {'failed', 'rolled_back'}
 V12_VALUE_KINDS = {'celsius'}
 PRE_V12_MAX_CHECKS = 64
+V13_FAMILIES = {'android'}
+V13_DETECTIONS = {'usb-adb', 'usb-enumerated'}
+V13_ACCESS = {'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only'}
+V13_TARGET_FIELDS = ('opaque_id', 'usb_port')
 SCOPE_GROUPS = {'hardware': 'hardware.', 'software': 'software.'}
 
 
 def is_v12_check(check_id):
     return check_id in V12_CHECK_IDS or check_id.startswith(('hw-', 'sw-', 'malware-'))
+
+
+def is_v13_check(check_id):
+    return check_id.startswith(('android-', 'usb-'))
+
+
+def uses_v13(data):
+    """True when the document uses anything that only exists since schema 1.3 (Android targets, USB inventory)."""
+    if 'usb_ports' in data or any(is_v13_check(c['check_id']) or str(c.get('target_ref', '')).startswith('and-')
+                                  for c in data['checks']):
+        return True
+    for t in data.get('target_systems') or []:
+        if t['family'] in V13_FAMILIES or t['detection'] in V13_DETECTIONS or t['access'] in V13_ACCESS \
+                or t['ref'].startswith('and-') or any(f in t for f in V13_TARGET_FIELDS):
+            return True
+    return False
+
+
+def android_errors(data):
+    """Android/USB cross-field rules (schema 1.3): ref prefix matches the family, ports are consistent."""
+    errors = []
+    ports = [p['port'] for p in data.get('usb_ports') or []]
+    if len(ports) != len(set(ports)):
+        errors.append('usb_ports[].port values must be unique')
+    for t in data.get('target_systems') or []:
+        android_ref = t['ref'].startswith('and-')
+        if android_ref != (t['family'] == 'android'):
+            errors.append('target_systems %s: refs "and-N" and family "android" go together' % t['ref'])
+        if t['detection'] in V13_DETECTIONS and t['family'] != 'android':
+            errors.append('target_systems %s: detection %s is for Android targets only' % (t['ref'], t['detection']))
+        if t['access'] in V13_ACCESS and t['family'] != 'android':
+            errors.append('target_systems %s: access %s is for Android targets only' % (t['ref'], t['access']))
+        port = t.get('usb_port')
+        if port is not None and port not in ports:
+            errors.append('target_systems %s: usb_port does not match any usb_ports[].port' % t['ref'])
+    return errors
 
 
 def scope_errors(scope):
@@ -72,6 +112,11 @@ def semantic_errors(data):
                           'hw-*/sw-*/malware-* and new OS check IDs, failed/rolled_back, celsius)' % data['schema_version'])
         if len(data['checks']) > PRE_V12_MAX_CHECKS:
             errors.append('schema_version %s allows at most %d checks' % (data['schema_version'], PRE_V12_MAX_CHECKS))
+    if data['schema_version'] != '1.3' and uses_v13(data):
+        errors.append('schema_version %s must not use 1.3 fields (android family and and-N refs, usb_ports, '
+                      'android-*/usb-* check IDs, usb-adb/usb-enumerated detection, adb-*/usb-only access)'
+                      % data['schema_version'])
+    errors.extend(android_errors(data))
     errors.extend(scope_errors(data.get('scope') or []))
     seen = set()
     for i, p in enumerate(data.get('repair_proposals') or []):

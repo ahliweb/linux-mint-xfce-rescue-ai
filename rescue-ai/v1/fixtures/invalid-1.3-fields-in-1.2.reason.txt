@@ -1,0 +1,1 @@
+must not use 1.3 fields; schema_version 1.2 must not use 1.3 fields (android family and and-N refs, usb_ports, android-*/usb-* check IDs); validate-evidence.py semantic rule.

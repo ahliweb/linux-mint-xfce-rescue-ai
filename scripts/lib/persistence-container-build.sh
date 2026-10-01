@@ -31,7 +31,10 @@ apt-get install -y -q --no-install-recommends ca-certificates curl git python3 p
 # clamav + clamav-freshclam: the malware scanner (docs/malware.md). Signatures are NOT downloaded here:
 # the database lives on the USB state (<state>/clamav) and is fetched by the operator-approved catalog
 # action mw.clamav-update-signatures. No service may start in the container or on the live system.
-optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam)
+# adb + android-sdk-platform-tools-common: read-only checks of an Android phone attached over USB
+# (docs/android.md). The second package only ships the udev rules for non-root adb access; adb's own
+# Recommends is skipped by --no-install-recommends, hence it is listed. Neither starts a service.
+optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam adb android-sdk-platform-tools-common)
 missing_optional=()
 printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
 chmod 0755 /usr/sbin/policy-rc.d
@@ -128,7 +131,7 @@ for skill_dir in /tmp/rescue-src-ro/profiles/rescue-hermes/skills/*/; do
   skills_installed+=("$skill")
 done
 log "rescue skills installed: ${skills_installed[*]}"
-for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission; do
+for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission rescue-android; do
   [[ -f $state_dir/hermes/skills/$required/SKILL.md ]] || { echo "required skill missing: $required" >&2; exit 1; }
 done
 

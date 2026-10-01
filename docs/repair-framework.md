@@ -16,6 +16,7 @@ Status labels: **Implemented** (source level, `make check`), **Hardware-required
 | AI proposals (`rescue-proposals` block, validated against the catalog) | Implemented; the real model response is Environment-blocked |
 | Target mount provider for offline OS repairs (`scripts/lib/target_mount.py`) | Implemented ([OS repair](os-repair.md)); real mounts are Hardware-required |
 | Run report from the journal, evidence, and analysis ([run report](run-report.md)) | Implemented (`scripts/rescue-report.py`, PowerShell, JXA); real Windows/macOS runs are Hardware-required |
+| Android target (phone/tablet over USB): USB inventory, `and-N` evidence 1.3, read-only ADB checks ([android](android.md)) | Implemented (detection only); Android catalog actions and the `android_device` parameter are **Planned**; real phones are Hardware-required |
 | Repair execution on Windows and macOS hosts | Implemented natively in the launchers ([host repair](host-repair.md)); real Windows/macOS execution is Hardware-required |
 
 ```mermaid
