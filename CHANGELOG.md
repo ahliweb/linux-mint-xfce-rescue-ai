@@ -8,7 +8,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- `--malware-target os-N` for `scripts/scan-target-os.py` and `scripts/launch-hermes-rescue.sh`: scan only one target with the whole malware budget (a deliberate second full-disk run). Other targets report `malware-scan` `unknown`, never clean; a malformed or unknown `os-N` is a usage error (exit 2) (ahliweb/linux-mint-xfce-rescue-ai#47).
+### Changed
+
+- The persistence image installs `adb` and `android-sdk-platform-tools-common` (udev rules for non-root access); an existing image needs a rebuild (ahliweb/linux-mint-xfce-rescue-ai#48).
 
 ### Fixed
 
