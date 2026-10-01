@@ -765,7 +765,8 @@ def build(evidence, mode, evidence_path, state_dir, timeout, proc_root='/'):
         else:
             for cid in wants_disks:
                 names = {d for d in disks if d.startswith('nvme') == (cid == 'nvme-health')}
-                items += disk_items(runner, cid, disks, names, is_root)
+                found = disk_items(runner, cid, disks, names, is_root)
+                items += found or [item(cid, 'disk.attributes', 'not_applicable', 'no-data')]  # no such disk here
     if in_scope(evidence, 'os'):
         for c in flagged:
             if c['check_id'] != 'linux-journal-errors':

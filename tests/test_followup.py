@@ -202,6 +202,13 @@ class TestDiskRecipes(FollowupCase):
         ev = make_evidence(checks=[('smart-health', 'warn', None)], scope=['malware'])
         self.assertEqual([i['check_id'] for i in self.result(self.cli(ev))['items']], ['persistence'])
 
+    def test_flagged_check_without_matching_disk_is_not_applicable(self):
+        self.tool('lsblk', '/bin/cat %s\n' % self.data('lsblk.json', {'blockdevices': [
+            {'name': 'nvme0n1', 'type': 'disk', 'rm': False, 'tran': 'nvme'}]}))
+        doc = self.result(self.cli(make_evidence(checks=[('smart-health', 'unknown', None)])))
+        item = self.find(doc, 'disk.attributes', None, 'smart-health')
+        self.assertEqual((item['status'], item['reason']), ('not_applicable', 'no-data'))
+
     def test_missing_smartctl_is_unknown_never_pass(self):
         self.tool('lsblk', '/bin/cat %s\n' % self.data('lsblk.json', LSBLK))
         doc = self.result(self.cli(make_evidence(checks=[('smart-health', 'warn', None)])))
