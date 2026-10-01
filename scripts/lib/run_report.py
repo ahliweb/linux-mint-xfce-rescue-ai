@@ -24,8 +24,8 @@ MODES = ('live-linux', 'linux-host', 'windows-host', 'macos-host')
 STATUSES = ('pass', 'fail', 'warn', 'not_applicable', 'unknown')
 DOMAINS = ('hardware', 'os', 'software', 'malware', 'environment')
 OUTCOMES = ('completed', 'completed-with-failures', 'evidence-only', 'dry-run', 'preflight-failed', 'scan-failed',
-            'evidence-invalid', 'no-key', 'network-error', 'analysis-failed', 'analyzer-missing', 'repair-invalid',
-            'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
+            'evidence-invalid', 'no-key', 'network-error', 'provider-rejected', 'analysis-failed', 'analyzer-missing',
+            'repair-invalid', 'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
 READINESS_IDS = ('cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media')
 MAX_ANALYSIS_CHARS = 32768
 ENVIRONMENT_CHECKS = frozenset('''network-connectivity iso-integrity block-device-discovery filesystem-discovery
@@ -492,6 +492,7 @@ def build_honesty(mode, outcome, key_present, actions, comparison, scope):
         hardware.append('disk-repair-read-back')
     blocked = []
     table = {'no-key': 'provider-key-missing', 'network-error': 'network-unreachable',
+             'provider-rejected': 'provider-rejected-request',
              'evidence-only': 'analysis-not-run-offline-mode', 'dry-run': 'analysis-not-run-offline-mode',
              'analysis-failed': 'analysis-failed', 'scan-failed': 'scan-not-completed',
              'evidence-invalid': 'scan-not-completed', 'scan-skipped': 'scan-not-completed',
@@ -641,6 +642,7 @@ HONESTY_TEXT = {
     'disk-repair-read-back': 'Hardware-required: hasil perbaikan pada disk fisik harus dikonfirmasi dengan pemeriksaan ulang di mesin nyata.',
     'provider-key-missing': 'Environment-blocked: tidak ada kunci provider, sehingga analisis AI tidak dijalankan.',
     'network-unreachable': 'Environment-blocked: jaringan/HTTP ke provider gagal, analisis AI tidak dijalankan.',
+    'provider-rejected-request': 'Environment-blocked: provider menjawab dengan HTTP 4xx dan menolak permintaan analisis; ini bukan masalah jaringan.',
     'analysis-not-run-offline-mode': 'Environment-blocked: mode offline (evidence-only/dry-run), analisis AI tidak dijalankan.',
     'analysis-failed': 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.',
     'scan-not-completed': 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.',

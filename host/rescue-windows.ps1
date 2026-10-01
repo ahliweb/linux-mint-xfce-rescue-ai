@@ -16,7 +16,8 @@
   to <bundle>\reports\repairs\journal.jsonl (docs/host-repair.md). Never elevates.
 
   Exit codes: 0 ok | 1 a repair action failed or was rolled back | 2 invalid evidence, catalog
-              or -Select | 3 no API key | 4 network/HTTP error | 5 bundle/reports/journal
+              or -Select | 3 no API key | 4 network/HTTP error (run outcome network-error, or
+              provider-rejected for an HTTP 4xx other than 401/403/408/429) | 5 bundle/reports/journal
               unusable | 64 usage
 
 .PARAMETER EvidenceOnly
@@ -2300,7 +2301,7 @@ function Get-RrHonesty {
     }
     if ($ran) { $hardware.Add('disk-repair-read-back') }
     $blocked = New-Object System.Collections.Generic.List[string]
-    $table = @{ 'no-key' = 'provider-key-missing'; 'network-error' = 'network-unreachable'; 'evidence-only' = 'analysis-not-run-offline-mode'
+    $table = @{ 'no-key' = 'provider-key-missing'; 'network-error' = 'network-unreachable'; 'provider-rejected' = 'provider-rejected-request'; 'evidence-only' = 'analysis-not-run-offline-mode'
         'dry-run' = 'analysis-not-run-offline-mode'; 'analysis-failed' = 'analysis-failed'; 'scan-failed' = 'scan-not-completed'
         'evidence-invalid' = 'scan-not-completed'; 'scan-skipped' = 'scan-not-completed'; 'interrupted' = 'scan-not-completed'
         'preflight-failed' = 'hardware-preflight-failed'; 'analyzer-missing' = 'analysis-failed' }
@@ -2463,6 +2464,7 @@ $script:RrHonestyText = @{
     'disk-repair-read-back' = 'Hardware-required: hasil perbaikan pada disk fisik harus dikonfirmasi dengan pemeriksaan ulang di mesin nyata.'
     'provider-key-missing' = 'Environment-blocked: tidak ada kunci provider, sehingga analisis AI tidak dijalankan.'
     'network-unreachable' = 'Environment-blocked: jaringan/HTTP ke provider gagal, analisis AI tidak dijalankan.'
+    'provider-rejected-request' = 'Environment-blocked: provider menjawab dengan HTTP 4xx dan menolak permintaan analisis; ini bukan masalah jaringan.'
     'analysis-not-run-offline-mode' = 'Environment-blocked: mode offline (evidence-only/dry-run), analisis AI tidak dijalankan.'
     'analysis-failed' = 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.'
     'scan-not-completed' = 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.'
@@ -2816,9 +2818,17 @@ function Invoke-RunReport {
 # ----------------------------------------------------------------------------------------
 
 function Write-Guidance {
-    param([string]$Kind, [string]$EvidencePath)
+    param([string]$Kind, [string]$EvidencePath, [int]$HttpCode = 0, [string]$ErrorType = '')
     Write-Host ''
-    if ($Kind -eq 'nokey') {
+    if ($Kind -eq 'rejected') {
+        $detail = "HTTP $HttpCode"
+        if ($ErrorType) { $detail += " ($ErrorType)" }
+        Write-Host "ID: OpenCode Go menolak permintaan: $detail. Ini bukan masalah jaringan. Evidence tetap tersimpan di USB:" -ForegroundColor Yellow
+        Write-Host "    $EvidencePath"
+        Write-Host '    Jalankan ulang; bila berulang, laporkan kode HTTP dan tipe galatnya.'
+        Write-Host "EN: OpenCode Go rejected the request: $detail. This is not a network problem. The evidence is kept on the USB at the path above." -ForegroundColor Yellow
+        Write-Host '    Run again; if it repeats, report the HTTP status and error type.'
+    } elseif ($Kind -eq 'nokey') {
         Write-Host 'ID: OPENCODE_GO_API_KEY tidak ditemukan di rescue-omes\config\rescue.env.' -ForegroundColor Yellow
         Write-Host '    Evidence tetap tersimpan di USB:' -ForegroundColor Yellow
         Write-Host "    $EvidencePath"
@@ -2836,8 +2846,44 @@ function Write-Guidance {
     }
 }
 
+function Get-SessionId {
+    # x-opencode-session: 'ses_' + the first 32 hex characters of sha256(evidence JSON text that is sent). One stable,
+    # opaque id per analysis conversation; OpenCode Go answers HTTP 400 MissingSessionID without it. Never any evidence content.
+    param([string]$EvidenceJson)
+    return 'ses_' + (Get-Sha256Hex -Text $EvidenceJson).Substring(0, 32)
+}
+
+function Get-ProviderErrorType {
+    # The provider's error type token from an HTTP error response, or ''. Only a short token is ever returned; the body is never echoed.
+    param($ErrorRecord)
+    $text = ''
+    try {
+        if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $text = [string]$ErrorRecord.ErrorDetails.Message }
+    } catch { }
+    if (-not $text) {
+        try {
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) {
+                $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+                try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            }
+        } catch { }
+    }
+    if ($text.Length -gt 65536) { $text = $text.Substring(0, 65536) }
+    foreach ($m in [regex]::Matches($text, '"type"\s*:\s*"([A-Za-z][A-Za-z0-9_]{0,63})"')) {
+        if ($m.Groups[1].Value -cne 'error') { return $m.Groups[1].Value }
+    }
+    return ''
+}
+
+function Test-ProviderRejection {
+    # An HTTP 4xx answer that is not an auth (401/403), timeout (408) or rate-limit (429) problem.
+    param([int]$Code)
+    return ($Code -ge 400 -and $Code -lt 500 -and @(401, 403, 408, 429) -notcontains $Code)
+}
+
 function Invoke-OpenCodeGo {
-    # Returns @{ Ok; Text; Error }. The key only travels inside the Authorization header.
+    # Returns @{ Ok; Text; Error; Code; ErrorType }. The key only travels inside the Authorization header.
     param([string]$ApiKey, [string]$SystemPrompt, [string]$EvidenceJson, [string]$CatalogText = '')
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -2855,7 +2901,7 @@ function Invoke-OpenCodeGo {
         # Invoke-WebRequest + explicit UTF-8 decoding: Windows PowerShell 5.1 would otherwise
         # decode a charset-less JSON response as ISO-8859-1 and garble the Indonesian text.
         $resp = Invoke-WebRequest -Uri $script:Endpoint -Method Post -UseBasicParsing -TimeoutSec 120 `
-            -Headers @{ Authorization = ('Bearer ' + $ApiKey); Accept = 'application/json' } `
+            -Headers @{ Authorization = ('Bearer ' + $ApiKey); Accept = 'application/json'; 'x-opencode-session' = (Get-SessionId -EvidenceJson $EvidenceJson) } `
             -ContentType 'application/json; charset=utf-8' -Body $bytes -ErrorAction Stop
         $ms = New-Object System.IO.MemoryStream
         [void]$resp.RawContentStream.Seek(0, [System.IO.SeekOrigin]::Begin)
@@ -2863,14 +2909,16 @@ function Invoke-OpenCodeGo {
         $raw = [System.Text.Encoding]::UTF8.GetString($ms.ToArray())
         $obj = $raw | ConvertFrom-Json
         $text = [string]$obj.choices[0].message.content
-        if ([string]::IsNullOrWhiteSpace($text)) { return @{ Ok = $false; Text = ''; Error = 'empty response' } }
-        return @{ Ok = $true; Text = $text; Error = '' }
+        if ([string]::IsNullOrWhiteSpace($text)) { return @{ Ok = $false; Text = ''; Error = 'empty response'; Code = 0; ErrorType = '' } }
+        return @{ Ok = $true; Text = $text; Error = ''; Code = 200; ErrorType = '' }
     } catch {
         $code = 0
         try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = 0 }
         $msg = 'request failed'
+        $type = ''
         if ($code -gt 0) { $msg = "HTTP $code" }
-        return @{ Ok = $false; Text = ''; Error = $msg }
+        if (Test-ProviderRejection -Code $code) { $type = Get-ProviderErrorType -ErrorRecord $_ }
+        return @{ Ok = $false; Text = ''; Error = $msg; Code = $code; ErrorType = $type }
     }
 }
 
@@ -3106,9 +3154,14 @@ function Invoke-RescueMainCore {
     $apiKey = $null
     if (-not $result.Ok) {
         Write-Host ('Kegagalan / failure: ' + $result.Error) -ForegroundColor Yellow
-        Write-Guidance -Kind 'network' -EvidencePath $evidencePath
         $script:ExitCode = 4
-        $script:Rep.Outcome = 'network-error'
+        if (Test-ProviderRejection -Code $result.Code) {
+            Write-Guidance -Kind 'rejected' -EvidencePath $evidencePath -HttpCode $result.Code -ErrorType $result.ErrorType
+            $script:Rep.Outcome = 'provider-rejected'
+        } else {
+            Write-Guidance -Kind 'network' -EvidencePath $evidencePath
+            $script:Rep.Outcome = 'network-error'
+        }
         $rc = Invoke-RepairTracked -RepairArgs $repairArgs -AnalysisText '' -Rescan (-not $planOnly)
         if ($rc -eq 5) { $script:ExitCode = 5 }
         return

@@ -128,6 +128,7 @@
             "evidence-invalid",
             "no-key",
             "network-error",
+            "provider-rejected",
             "analysis-failed",
             "analyzer-missing",
             "repair-invalid",
@@ -1107,12 +1108,13 @@
         },
         "environment_blocked": {
           "type": "array",
-          "maxItems": 7,
+          "maxItems": 8,
           "uniqueItems": true,
           "items": {
             "enum": [
               "provider-key-missing",
               "network-unreachable",
+              "provider-rejected-request",
               "analysis-not-run-offline-mode",
               "analysis-failed",
               "scan-not-completed",

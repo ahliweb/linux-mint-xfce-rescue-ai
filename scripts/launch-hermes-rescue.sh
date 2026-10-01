@@ -219,7 +219,7 @@ else
         run_analysis=$analysis_file
         printf 'Analisis tersimpan: %s\nAnalysis saved: %s\n' "$analysis_file" "$analysis_file"
       else
-        case $analysis_rc in 3) run_outcome=no-key ;; 4) run_outcome=network-error ;; *) run_outcome=analysis-failed ;; esac
+        case $analysis_rc in 3) run_outcome=no-key ;; 4) run_outcome=network-error ;; 5) run_outcome=provider-rejected ;; *) run_outcome=analysis-failed ;; esac
         printf 'PERINGATAN: analisis OpenCode Go gagal; Hermes tetap dijalankan. Bukti: %s\n' "$evidence_file" >&2
         printf 'WARNING: OpenCode Go analysis failed; starting Hermes anyway. Evidence: %s\n' "$evidence_file" >&2
       fi
