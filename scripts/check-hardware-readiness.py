@@ -54,8 +54,12 @@ def read_mem_mib() -> float | None:
 
 
 SYSFS_BLOCK = pathlib.Path("/sys/block")
+SYSFS_CLASS_BLOCK = pathlib.Path("/sys/class/block")
 MAX_RESOLVE_DEPTH = 4
+MAX_WALK_DEPTH = 8
 _DISK_TYPES = ("disk", "rom")
+_USB_PATH = re.compile(r"/usb\d+(/|$)")
+_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}")
 
 
 def _lsblk_chain(device: str) -> list[tuple[str, str, str, int | None]]:
@@ -73,15 +77,31 @@ def _lsblk_chain(device: str) -> list[tuple[str, str, str, int | None]]:
     return rows
 
 
+def _node(name: str) -> pathlib.Path | None:
+    """sysfs directory of block device NAME (partitions only exist under /sys/class/block)."""
+    if not _SAFE_NAME.fullmatch(name):
+        return None
+    for root in (SYSFS_CLASS_BLOCK, SYSFS_BLOCK):
+        candidate = root / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _read(path: pathlib.Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def _loop_backing_source(name: str) -> str:
     """Device that holds the backing file of loop device NAME (partition suffix allowed); '' when unknown."""
     base = re.sub(r"p\d+$", "", name) if re.fullmatch(r"loop\d+p\d+", name) else name
     if not re.fullmatch(r"loop\d+", base):
         return ""
-    try:
-        backing = (SYSFS_BLOCK / base / "loop" / "backing_file").read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return ""
+    node = _node(base)
+    backing = _read(node / "loop" / "backing_file") if node else ""
     if not backing.startswith("/"):
         return ""
     found = command("findmnt", "-T", backing, "-no", "SOURCE")
@@ -90,9 +110,130 @@ def _loop_backing_source(name: str) -> str:
     return re.sub(r"\[.*\]$", "", found.splitlines()[0].strip())
 
 
+def _dm_node_for(source: str) -> str:
+    """Kernel name (dm-N) for a /dev/mapper/NAME source: realpath first, then the dm/name files."""
+    kernel = os.path.basename(os.path.realpath(source))
+    if re.fullmatch(r"dm-\d+", kernel):
+        return kernel
+    wanted = os.path.basename(source)
+    try:
+        for entry in sorted(SYSFS_CLASS_BLOCK.glob("dm-*")):
+            if _read(entry / "dm" / "name") == wanted:
+                return entry.name
+    except OSError:
+        pass
+    return ""
+
+
+def _sysfs_walk(name: str, chain: list[str], depth: int, loop_depth: int) -> tuple[str, str] | None:
+    """Walk NAME down to its physical disk through slaves/, partitions and loop backing files.
+    Appends visited names to CHAIN. Returns (disk_name, '') or None; a reason is appended to CHAIN
+    as '? (reason)' when the walk dead-ends."""
+    node = _node(name)
+    if node is None:
+        chain.append("? (not in sysfs)")
+        return None
+    if depth > MAX_WALK_DEPTH:
+        chain.append("? (too deep)")
+        return None
+    real = pathlib.Path(os.path.realpath(node))
+    if (node / "partition").exists() or (real / "partition").exists():
+        parent = real.parent.name
+        chain.append(parent)
+        return _sysfs_walk(parent, chain, depth + 1, loop_depth) if parent != name else None
+    slaves = []
+    try:
+        slaves = sorted(p.name for p in (node / "slaves").iterdir())
+    except OSError:
+        pass
+    if slaves:
+        for slave in slaves:
+            trial = list(chain)
+            trial.append(slave)
+            found = _sysfs_walk(slave, trial, depth + 1, loop_depth)
+            if found:
+                chain[:] = trial
+                return found
+        chain.append("? (slaves unresolved)")
+        return None
+    if re.fullmatch(r"loop\d+", name):
+        backing = _loop_backing_source(name)
+        if not backing or loop_depth >= MAX_RESOLVE_DEPTH:
+            chain.append("? (no backing device)")
+            return None
+        chain.append(backing)
+        inner = _sysfs_walk(os.path.basename(os.path.realpath(backing)), chain, depth + 1, loop_depth + 1)
+        return inner
+    if (node / "dm").is_dir() or name.startswith(("dm-", "md")):
+        chain.append("? (no slaves)")
+        return None
+    return name, ""
+
+
+def _sysfs_disk_info(disk: str) -> tuple[str, float | None]:
+    """(transport, size_gib) of physical DISK from sysfs; transport '' when sysfs cannot tell."""
+    node = _node(disk)
+    if node is None:
+        return "", None
+    paths = [os.path.realpath(node)]
+    if (node / "device").exists():
+        paths.append(os.path.realpath(node / "device"))
+    if any(_USB_PATH.search(p + "/") for p in paths):
+        tran = "usb"
+    elif disk.startswith("nvme"):
+        tran = "nvme"
+    else:
+        tran = ""
+    sectors = _read(node / "size")
+    size = int(sectors) * 512 / (1024 ** 3) if sectors.isdigit() else None
+    return tran, size
+
+
+def _resolve_sysfs(source: str, loop_depth: int = 0) -> tuple[tuple[str, float | None, str] | None, list[str]]:
+    """sysfs resolution: ((transport, size_gib, disk) | None, chain). Chain starts with SOURCE."""
+    chain = [source]
+    kernel = _dm_node_for(source) if source.startswith("/dev/mapper/") else os.path.basename(os.path.realpath(source))
+    if not kernel:
+        chain.append("? (dm node not found)")
+        return None, chain
+    if kernel != os.path.basename(source):
+        chain.append(kernel)
+    found = _sysfs_walk(kernel, chain, 0, loop_depth)
+    if not found:
+        return None, chain
+    disk = found[0]
+    tran, size = _sysfs_disk_info(disk)
+    if chain[-1] != disk:
+        chain.append(disk)
+    return (tran, size, disk), chain
+
+
+def resolve_live_source(source: str) -> tuple[tuple[str, float | None, str] | None, str]:
+    """Resolve a live-media source (partition, dm device such as /dev/mapper/ventoy, loop device) to its
+    physical disk with sysfs first and lsblk as fallback/cross-check. Returns
+    ((transport, size_gib, disk) | None, chain_text); chain_text names only kernel devices."""
+    if not source.startswith("/dev/"):
+        return None, source
+    sys_found, chain = _resolve_sysfs(source)
+    if sys_found and sys_found[0] and sys_found[0] != "unknown":
+        return sys_found, " -> ".join(chain)
+    lsblk_found = resolve_physical_disk(source)
+    if lsblk_found and lsblk_found[0] != "unknown":
+        if sys_found and lsblk_found[2] == sys_found[2]:
+            return lsblk_found, " -> ".join(chain)
+        return lsblk_found, f"{source} -> {lsblk_found[2]}" if lsblk_found[2] != os.path.basename(source) else source
+    if sys_found:  # disk found but no transport source knows it
+        tran, size, disk = sys_found
+        if size is None and lsblk_found:
+            size = lsblk_found[1]
+        return ("unknown", size, disk), " -> ".join(chain)
+    if lsblk_found:
+        return lsblk_found, f"{source} -> {lsblk_found[2]}" if lsblk_found[2] != os.path.basename(source) else source
+    return None, " -> ".join(chain)
+
+
 def resolve_physical_disk(source: str, depth: int = 0) -> tuple[str, float | None, str] | None:
-    """Resolve a live-media source (partition, dm device such as /dev/mapper/ventoy, loop device)
-    to its physical disk. Returns (transport, size_gib, disk_name) or None when it cannot be resolved."""
+    """lsblk-based resolution (fallback). Returns (transport, size_gib, disk_name) or None."""
     if depth > MAX_RESOLVE_DEPTH or not source.startswith("/dev/"):
         return None
     rows = _lsblk_chain(source)
@@ -117,12 +258,11 @@ def storage_for_live_media() -> tuple[str, float | None, str]:
             break
     if not source:
         return "", None, "live-media mount was not detected"
-    resolved = resolve_physical_disk(source)
+    resolved, chain = resolve_live_source(source)
     if resolved is None:
-        return "unknown", None, source
-    tran, size, disk = resolved
-    label = source if disk == os.path.basename(source) else f"{source} -> {disk}"
-    return tran, size, label
+        return "unknown", None, chain
+    tran, size, _disk = resolved
+    return tran, size, chain
 
 
 def check_cpu(min_cpus: int) -> dict:
@@ -198,8 +338,10 @@ def check_usb(min_usb: float) -> dict:
                                 note="USB detected but its size could not be read")
         return check_result("usb-boot-media", "pass" if size >= min_usb else "fail", f"USB {size:.2f} GiB ({source})",
                             minimum, note="USB transport and live mount detected")
-    return check_result("usb-boot-media", "warn", f"transport={tran or 'unknown'}, source={source}", minimum,
-                        note="boot source could not be resolved to a USB disk (virtual, bridged or mapped device); not blocking")
+    detail = f" ({tran}, {size:.1f} GiB)" if size is not None and tran != "unknown" else ""
+    return check_result("usb-boot-media", "warn", f"transport={tran or 'unknown'}, source={source}{detail}", minimum,
+                        note="boot source could not be resolved to a USB disk (virtual, bridged or mapped device); "
+                             "the chain shows where resolution stopped; not blocking")
 
 
 def write_private(destination: pathlib.Path, text: str) -> None:

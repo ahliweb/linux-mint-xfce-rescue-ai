@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- `check-hardware-readiness.py`: `usb-boot-media` now resolves the live source (Ventoy `/dev/mapper/ventoy`, dm, partition, loop) to its USB disk through sysfs (`slaves/`, `partition`, `loop/backing_file`, the `/usbN/` device path, nvme), with `lsblk` kept as fallback and cross-check. The physical test of 0.5.0 still showed `transport=unknown, source=/dev/mapper/ventoy`; the observed text now shows the resolved chain, or where resolution stopped (`? (no slaves)` and similar), so a further failure is diagnosable from the report (ahliweb/linux-mint-xfce-rescue-ai#46). Why `ventoy_version` stays `null` in live-session evidence is documented in `docs/hardware.md`.
+
 ## [0.5.1] - 2026-10-01
 
 Credential-free packages on GitHub Packages, built only in CI. v0.5.0 was the first to be published (via `workflow_dispatch`) and was verified anonymously: checksums match and no key is present. The runtime behavior is unchanged from 0.5.0.
