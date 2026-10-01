@@ -29,7 +29,7 @@
         "1.2",
         "1.3"
       ],
-      "description": "1.1 adds target_systems, per-check target_ref/value, host-native platforms, and OS-specific check IDs. 1.2 adds hardware (hw-*) and software (sw-*) check IDs, more OS check IDs, scope, repair_policy, and repair_proposals. 1.3 adds the android target family (and-N refs, usb-adb/usb-enumerated detection, adb-*/usb-only access), android-* and usb-* check IDs, and the top-level usb_ports inventory."
+      "description": "1.1 adds target_systems, per-check target_ref/value, host-native platforms, and OS-specific check IDs. 1.2 adds hardware (hw-*) and software (sw-*) check IDs, more OS check IDs, scope, repair_policy, and repair_proposals. 1.3 adds the android target family (and-N refs, usb-adb/usb-enumerated detection, adb-*/usb-only access), android-* and usb-* check IDs, and the top-level usb_ports inventory, and the printer target family (prn-N refs, usb-cups/usb-ipp/ipp-usb/network-ipp detection, ipp-read/cups-only/ipp-unavailable access), printer-* check IDs, and the top-level printers list. printer-target-* check IDs (offline scan of an installed OS spooler) are valid since 1.2."
     },
     "run_id": {
       "type": "string",
@@ -177,7 +177,21 @@
               "android-developer-options",
               "android-usb-port-speed",
               "usb-device-count",
-              "usb-android-device-count"
+              "usb-android-device-count",
+              "printer-count",
+              "printer-state",
+              "printer-media",
+              "printer-door",
+              "printer-marker-supply",
+              "printer-offline",
+              "printer-accepting-jobs",
+              "printer-queued-jobs",
+              "printer-marker-level-min",
+              "printer-usb-link",
+              "printer-driver",
+              "printer-target-spool-stuck",
+              "printer-target-spooler-service",
+              "printer-target-cups-service"
             ]
           },
           "status": {
@@ -207,8 +221,8 @@
           },
           "target_ref": {
             "type": "string",
-            "pattern": "^(os|and)-[0-7]$",
-            "description": "Refers to target_systems[].ref (os-N operating systems, and-N Android devices since 1.3); omitted for checks about the rescue environment itself."
+            "pattern": "^(os|and|prn)-[0-7]$",
+            "description": "Refers to target_systems[].ref (os-N operating systems, and-N Android devices and prn-N printers since 1.3); omitted for checks about the rescue environment itself."
           },
           "value": {
             "type": "object",
@@ -374,7 +388,7 @@
     "target_systems": {
       "type": "array",
       "maxItems": 8,
-      "description": "Systems examined in this run: operating systems (os-N; live boot: installed systems on internal disks, host mode: the running system) and, since 1.3, Android devices attached over USB (and-N).",
+      "description": "Systems examined in this run: operating systems (os-N; live boot: installed systems on internal disks, host mode: the running system) and, since 1.3, Android devices attached over USB (and-N) and printers (prn-N).",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -388,7 +402,7 @@
         "properties": {
           "ref": {
             "type": "string",
-            "pattern": "^(os|and)-[0-7]$"
+            "pattern": "^(os|and|prn)-[0-7]$"
           },
           "family": {
             "type": "string",
@@ -398,7 +412,8 @@
               "windows",
               "macos",
               "unknown",
-              "android"
+              "android",
+              "printer"
             ]
           },
           "release": {
@@ -422,7 +437,11 @@
               "live-offline",
               "host-native",
               "usb-adb",
-              "usb-enumerated"
+              "usb-enumerated",
+              "usb-cups",
+              "usb-ipp",
+              "ipp-usb",
+              "network-ipp"
             ]
           },
           "encryption": {
@@ -446,18 +465,21 @@
               "adb-authorized",
               "adb-unauthorized",
               "adb-unavailable",
-              "usb-only"
+              "usb-only",
+              "ipp-read",
+              "cups-only",
+              "ipp-unavailable"
             ]
           },
           "opaque_id": {
             "type": "string",
             "pattern": "^target-[A-Za-z0-9][A-Za-z0-9._-]{3,47}$",
-            "description": "Android targets only (1.3): keyed hash of the device serial, never the serial itself."
+            "description": "Android and printer targets only (1.3): keyed hash of the device serial (or of an internal identity for a network printer), never the serial or any name itself."
           },
           "usb_port": {
             "type": "string",
             "pattern": "^[0-9]{1,3}-[0-9]{1,3}(\\.[0-9]{1,3}){0,6}$",
-            "description": "Android targets only (1.3): USB port path of the device; must appear in usb_ports."
+            "description": "Android and USB printer targets only (1.3): USB port path of the device; must appear in usb_ports."
           }
         }
       }
@@ -653,6 +675,69 @@
               "center",
               "right"
             ]
+          }
+        }
+      }
+    },
+    "printers": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Printers examined in this run (1.3), one per target_systems entry of family printer: closed-set fields only. Never queue names, device URIs, IP/MAC addresses, hostnames, serial numbers, job or user names, or printer-info/location strings.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "connection",
+          "brand",
+          "ipp_usb_capable"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^prn-[0-7]$"
+          },
+          "connection": {
+            "type": "string",
+            "enum": [
+              "usb",
+              "ipp-over-usb",
+              "network",
+              "other"
+            ],
+            "description": "How the printer is reached: a USB cable, the ipp-usb loopback endpoint, a local-link network address, or another CUPS backend."
+          },
+          "usb_port": {
+            "type": "string",
+            "pattern": "^[0-9]{1,3}-[0-9]{1,3}(\\.[0-9]{1,3}){0,6}$",
+            "description": "USB port path for usb and ipp-over-usb printers that are plugged in; must appear in usb_ports."
+          },
+          "brand": {
+            "type": "string",
+            "enum": [
+              "hp",
+              "canon",
+              "epson",
+              "brother",
+              "samsung",
+              "xerox",
+              "lexmark",
+              "kyocera",
+              "ricoh",
+              "konica-minolta",
+              "oki",
+              "sharp",
+              "pantum",
+              "fujifilm",
+              "dell",
+              "zebra",
+              "other"
+            ],
+            "description": "Brand from an allowlist (USB vendor ID or the first word of the IPP printer-make-and-model); anything else is other."
+          },
+          "ipp_usb_capable": {
+            "type": "boolean",
+            "description": "The USB printer offers an IPP-over-USB interface (class 07, subclass 01, protocol 04)."
           }
         }
       }

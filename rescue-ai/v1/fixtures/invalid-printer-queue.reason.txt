@@ -1,0 +1,1 @@
+additional properties|queue_name; a queue name, device URI or IP address smuggled into printers[] (an unknown field, or free text in the closed brand field) is rejected by the closed schema; schema validation.

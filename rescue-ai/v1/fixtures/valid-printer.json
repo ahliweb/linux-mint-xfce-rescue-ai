@@ -1,0 +1,270 @@
+{
+  "schema_version": "1.3",
+  "run_id": "rescue-20261001-080000",
+  "source_platform": "linux-mint-xfce-live",
+  "boot_mode": "uefi",
+  "collected_at": "2026-10-01T08:00:00Z",
+  "target_device_opaque_id": "target-9f8e7d6c5b4a3921",
+  "ventoy_version": null,
+  "linux_release": "Linux Mint 22.3",
+  "target_systems": [
+    {
+      "ref": "prn-0",
+      "family": "printer",
+      "detection": "usb-ipp",
+      "encryption": "unknown",
+      "access": "ipp-read",
+      "opaque_id": "target-0a1b2c3d4e5f6071",
+      "usb_port": "1-4"
+    },
+    {
+      "ref": "prn-1",
+      "family": "printer",
+      "detection": "network-ipp",
+      "encryption": "unknown",
+      "access": "ipp-read",
+      "opaque_id": "target-1b2c3d4e5f607182"
+    }
+  ],
+  "printers": [
+    {
+      "ref": "prn-0",
+      "connection": "usb",
+      "brand": "hp",
+      "ipp_usb_capable": true,
+      "usb_port": "1-4"
+    },
+    {
+      "ref": "prn-1",
+      "connection": "network",
+      "brand": "canon",
+      "ipp_usb_capable": false
+    }
+  ],
+  "checks": [
+    {
+      "check_id": "usb-device-count",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "value": {
+        "kind": "count",
+        "number": 2
+      }
+    },
+    {
+      "check_id": "printer-count",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "value": {
+        "kind": "count",
+        "number": 2
+      }
+    },
+    {
+      "check_id": "printer-state",
+      "status": "fail",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-media",
+      "status": "fail",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-door",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-marker-supply",
+      "status": "warn",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-offline",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-accepting-jobs",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-queued-jobs",
+      "status": "warn",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0",
+      "value": {
+        "kind": "count",
+        "number": 2
+      }
+    },
+    {
+      "check_id": "printer-marker-level-min",
+      "status": "warn",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0",
+      "value": {
+        "kind": "percent",
+        "number": 12
+      }
+    },
+    {
+      "check_id": "printer-usb-link",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-driver",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-0"
+    },
+    {
+      "check_id": "printer-state",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-media",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-door",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-marker-supply",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-offline",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-accepting-jobs",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-queued-jobs",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1",
+      "value": {
+        "kind": "count",
+        "number": 0
+      }
+    },
+    {
+      "check_id": "printer-marker-level-min",
+      "status": "pass",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1",
+      "value": {
+        "kind": "percent",
+        "number": 70
+      }
+    },
+    {
+      "check_id": "printer-usb-link",
+      "status": "not_applicable",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    },
+    {
+      "check_id": "printer-driver",
+      "status": "not_applicable",
+      "source": "collector-allowlist",
+      "observed_at": "2026-10-01T08:00:00Z",
+      "target_ref": "prn-1"
+    }
+  ],
+  "evidence_manifest": {
+    "entry_count": 22,
+    "manifest_sha256": "d5368a9959d44a890355491397ed10dd49ccc1c80a3197b5b0e1e15c7b5e480a",
+    "storage_class": "usb-rescue-state"
+  },
+  "ai_provider": {
+    "provider_id": "opencode-go",
+    "model_id": "mimo-v2.6-flash",
+    "authenticated": false,
+    "destination_class": "unknown"
+  },
+  "ai_analysis_status": "not_run",
+  "mutation_status": "none",
+  "verification": {
+    "hashes_verified": false,
+    "read_back_verified": false,
+    "status": "not_applicable"
+  },
+  "classification": "confidential",
+  "source_references": [
+    "opencode-go:provider",
+    "nist:sp-800-86"
+  ],
+  "repair_policy": "detect-only",
+  "usb_ports": [
+    {
+      "port": "1-4",
+      "is_hub": false,
+      "is_boot_media": false,
+      "android_mode": "none",
+      "vendor_brand": "other",
+      "hub_depth": 0,
+      "speed_mbps": 480,
+      "usb_version": "2.00",
+      "panel": "left",
+      "horizontal_position": "left"
+    },
+    {
+      "port": "1-6",
+      "is_hub": false,
+      "is_boot_media": true,
+      "android_mode": "none",
+      "vendor_brand": "other",
+      "hub_depth": 0,
+      "speed_mbps": 480,
+      "usb_version": "2.00"
+    }
+  ]
+}
