@@ -161,7 +161,8 @@ class CatalogInvariantTests(unittest.TestCase):
     def test_shipped_catalogs_are_valid(self):
         catalog = rc.load()
         self.assertEqual(sorted(catalog.files),
-                         ['android.json', 'hardware.json', 'malware.json', 'os-linux.json', 'os-macos.json', 'os-windows.json', 'software.json'])
+                         ['android.json', 'hardware.json', 'malware.json', 'os-linux.json', 'os-macos.json', 'os-windows.json', 'printer.json',
+                          'software.json'])
         self.assertRegex(catalog.sha256, '^[a-f0-9]{64}$')
 
     def test_valid_examples_of_each_risk_class(self):

@@ -1060,14 +1060,18 @@ class OfflineTargetTests(unittest.TestCase):
             touch(spool / ('%04d.SPL' % i))
         self.assertEqual(self.run_target(root, 'windows')['printer-target-spool-stuck']['number'], 5)
 
-    def test_registry_hook_runs_with_the_os_scope_only(self):
+    def test_registry_hook_runs_with_the_printer_scope_only(self):
         root = self.windows()
         checks = rescue_modules.collect_offline_target(rescue_modules.Context(mode='live', scope=('all',)), root,
                                                        {'family': 'windows'})
         ids = {c['check_id'] for c in checks}
         self.assertTrue({'printer-target-spool-stuck', 'printer-target-spooler-service'} <= ids)
-        ctx = rescue_modules.Context(mode='live', scope=('os',))
+        # the spooler of an installed OS is scope printer (phase 2), no longer scope os
+        ctx = rescue_modules.Context(mode='live', scope=('printer',))
         self.assertIn('printer-target-spool-stuck', {c['check_id'] for c in rescue_modules.collect_offline_target(
+            ctx, root, {'family': 'windows'})})
+        ctx = rescue_modules.Context(mode='live', scope=('os',))
+        self.assertNotIn('printer-target-spool-stuck', {c['check_id'] for c in rescue_modules.collect_offline_target(
             ctx, root, {'family': 'windows'})})
         ctx = rescue_modules.Context(mode='live', scope=('hardware',))
         self.assertNotIn('printer-target-spool-stuck', {c['check_id'] for c in rescue_modules.collect_offline_target(
@@ -1083,7 +1087,7 @@ class OfflineTargetTests(unittest.TestCase):
 
 
 class ScanTargetOsIntegrationTests(unittest.TestCase):
-    """scan-target-os.py picks the printer checks up through the module registry (os scope, schema 1.2)."""
+    """scan-target-os.py picks the printer checks up through the module registry (scope printer, schema 1.2)."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='printer-scan-os-'))
@@ -1184,7 +1188,8 @@ class CliTests(Env):
                        'Kertas habis', 'Antrean berhenti atau dijeda', 'menolak pekerjaan baru', 'Jangan cabut perangkat USB rescue',
                        'port 1-6', 'Printer jaringan tidak dicari (opt-in)', 'Network printers were not searched'):
             self.assertIn(needle, text)
-        self.assertIn('(Planned)', text)                                      # repairs are phase 2: never offered now
+        for action in ('printer.resume-queue', 'printer.accept-jobs', 'printer.cancel-stuck-jobs'):    # phase 2 catalog actions
+            self.assertIn(action, text)
 
     def test_list_without_printers_gives_the_checklist(self):
         m = FakeUsb(self.tmp / 'empty')

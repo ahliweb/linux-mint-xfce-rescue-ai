@@ -1,0 +1,147 @@
+{
+  "catalog_version": "1",
+  "domain": "printer",
+  "actions": [
+    {
+      "action_id": "printer.resume-queue",
+      "title": "Resume a stopped print queue (cupsenable)",
+      "title_id": "Lanjutkan antrean cetak yang berhenti (cupsenable)",
+      "scope": "printer",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["printer"],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [{"check_id": "printer-state", "status": ["fail"]}],
+      "params": [
+        {"name": "printer", "type": "printer_ref"},
+        {"name": "bundle", "type": "bundle_root"}
+      ],
+      "execute": {"argv": ["cupsenable", "{printer}"], "timeout_seconds": 30},
+      "verify": {"argv": ["ipptool", "-q", "-T", "10", "ipp://localhost/printers/{printer}", "{bundle}/scripts/lib/ipp/verify-queue-ready.test"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-resume-queue"
+    },
+    {
+      "action_id": "printer.accept-jobs",
+      "title": "Make a print queue accept jobs again (cupsaccept)",
+      "title_id": "Buat antrean cetak menerima pekerjaan lagi (cupsaccept)",
+      "scope": "printer",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["printer"],
+      "risk": "safe",
+      "requires_root": true,
+      "triggers": [{"check_id": "printer-accepting-jobs", "status": ["fail"]}],
+      "params": [
+        {"name": "printer", "type": "printer_ref"},
+        {"name": "bundle", "type": "bundle_root"}
+      ],
+      "execute": {"argv": ["cupsaccept", "{printer}"], "timeout_seconds": 30},
+      "verify": {"argv": ["ipptool", "-q", "-T", "10", "ipp://localhost/printers/{printer}", "{bundle}/scripts/lib/ipp/verify-accepting.test"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-accept-jobs"
+    },
+    {
+      "action_id": "printer.cancel-stuck-jobs",
+      "title": "Cancel every job in a stuck print queue (cancel -a, cannot be undone)",
+      "title_id": "Batalkan semua pekerjaan di antrean cetak yang macet (cancel -a, tidak dapat dibatalkan)",
+      "scope": "printer",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["printer"],
+      "risk": "irreversible",
+      "requires_root": true,
+      "triggers": [{"check_id": "printer-queued-jobs", "status": ["warn"]}],
+      "params": [
+        {"name": "printer", "type": "printer_ref"},
+        {"name": "bundle", "type": "bundle_root"}
+      ],
+      "execute": {"argv": ["cancel", "-a", "{printer}"], "timeout_seconds": 60},
+      "verify": {"argv": ["ipptool", "-q", "-T", "10", "ipp://localhost/printers/{printer}", "{bundle}/scripts/lib/ipp/verify-no-jobs.test"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-cancel-stuck-jobs"
+    },
+    {
+      "action_id": "printer.identify",
+      "title": "Make the printer flash its display and beep (IPP Identify-Printer)",
+      "title_id": "Buat printer menyalakan layar dan berbunyi agar dikenali (IPP Identify-Printer)",
+      "scope": "printer",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["printer"],
+      "risk": "safe",
+      "triggers": [],
+      "params": [
+        {"name": "printer", "type": "printer_ref"},
+        {"name": "bundle", "type": "bundle_root"}
+      ],
+      "execute": {"argv": ["ipptool", "-q", "-T", "10", "ipp://localhost/printers/{printer}", "{bundle}/scripts/lib/ipp/identify-printer.test"], "timeout_seconds": 30},
+      "verify": {"argv": ["lpstat", "-p", "{printer}"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-identify"
+    },
+    {
+      "action_id": "printer.print-test-page",
+      "title": "Print one fixed test page (uses paper and ink or toner)",
+      "title_id": "Cetak satu halaman uji tetap (memakai kertas dan tinta atau toner)",
+      "scope": "printer",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["printer"],
+      "risk": "irreversible",
+      "triggers": [],
+      "params": [
+        {"name": "printer", "type": "printer_ref"},
+        {"name": "bundle", "type": "bundle_root"}
+      ],
+      "execute": {"argv": ["lp", "-d", "{printer}", "-t", "rescue-test-page", "{bundle}/scripts/lib/printer/test-page.txt"], "timeout_seconds": 60},
+      "verify": {"argv": ["ipptool", "-q", "-T", "10", "ipp://localhost/printers/{printer}", "{bundle}/scripts/lib/ipp/verify-queue-ready.test"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-print-test-page"
+    },
+    {
+      "action_id": "printer.clean-print-heads",
+      "title": "Ask the printer to clean its print heads (CUPS command, uses ink)",
+      "title_id": "Minta printer membersihkan print head (perintah CUPS, memakai tinta)",
+      "scope": "printer",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["printer"],
+      "risk": "irreversible",
+      "triggers": [],
+      "params": [
+        {"name": "printer", "type": "printer_ref"},
+        {"name": "bundle", "type": "bundle_root"}
+      ],
+      "execute": {"argv": ["lp", "-d", "{printer}", "-o", "raw", "{bundle}/scripts/lib/printer/clean-heads.cupscmd"], "timeout_seconds": 60},
+      "verify": {"argv": ["ipptool", "-q", "-T", "10", "ipp://localhost/printers/{printer}", "{bundle}/scripts/lib/ipp/verify-queue-ready.test"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-clean-print-heads"
+    },
+    {
+      "action_id": "printer.target-quarantine-spool",
+      "title": "Move the stuck print-spool files of the installed OS to the USB quarantine (restorable)",
+      "title_id": "Pindahkan file spool cetak yang macet di OS terpasang ke karantina USB (dapat dipulihkan)",
+      "scope": "printer",
+      "platforms": ["live-linux"],
+      "target_families": ["windows", "linuxmint", "linux-other"],
+      "risk": "reversible",
+      "requires_root": true,
+      "requires_target_rw": true,
+      "triggers": [{"check_id": "printer-target-spool-stuck", "status": ["warn"]}],
+      "params": [
+        {"name": "target_root", "type": "target_root"},
+        {"name": "quarantine", "type": "state_dir", "values": ["quarantine"]}
+      ],
+      "preconditions": [
+        {"argv": ["rescue-malware-quarantine", "spool-check", "--target-root={target_root}"], "timeout_seconds": 120}
+      ],
+      "execute": {"argv": ["rescue-malware-quarantine", "spool-quarantine", "--target-root={target_root}", "--quarantine-dir={quarantine}"], "timeout_seconds": 900},
+      "verify": {"argv": ["rescue-malware-quarantine", "spool-verify", "--target-root={target_root}", "--quarantine-dir={quarantine}"], "timeout_seconds": 300},
+      "rollback": {"kind": "step", "step": {"argv": ["rescue-malware-quarantine", "spool-restore", "--target-root={target_root}", "--quarantine-dir={quarantine}"], "timeout_seconds": 900}},
+      "backup": {"required": false},
+      "doc": "docs/printer.md#printer-target-quarantine-spool"
+    }
+  ]
+}

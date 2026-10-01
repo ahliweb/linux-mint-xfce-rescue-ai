@@ -1618,6 +1618,12 @@ class LiveLauncherReportTests(unittest.TestCase):
         os.chmod(self.stub, 0o755)
         c._open(self.stub)
         os.chmod(self.stub, 0o755)
+        # no printer is ever offered unless a test asks for one (the machine running the tests may have real printers)
+        printers = c.src / 'scripts' / 'scan-printers.py'
+        printers.write_text('#!/usr/bin/env python3\nimport sys\nprint(0 if "--count" in sys.argv else "")\n')
+        os.chmod(printers, 0o755)
+        c._open(printers)
+        os.chmod(printers, 0o755)
 
     def launch(self, *extra, key=DUMMY_KEY, path_extra=None):
         c = self.case

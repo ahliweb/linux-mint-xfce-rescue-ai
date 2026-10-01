@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DOMAINS = ('hardware', 'operating_system', 'software', 'malware', 'printer')
 DOMAIN_SCOPE = {'hardware': 'hardware', 'operating_system': 'os', 'software': 'software', 'malware': 'malware',
-                'printer': 'os'}  # printer.py: spooler of an installed OS, offline only (docs/printer.md)
+                'printer': 'printer'}  # printer.py: the spooler of an installed OS (offline only) is scope printer too (docs/printer.md)
 HARDWARE_ITEMS = ('cpu', 'memory', 'disk', 'gpu', 'display', 'network', 'battery', 'usb')
 STATUSES = {'pass', 'fail', 'warn', 'not_applicable', 'unknown'}
 KINDS = {'percent', 'count', 'bytes', 'days', 'seconds', 'celsius'}

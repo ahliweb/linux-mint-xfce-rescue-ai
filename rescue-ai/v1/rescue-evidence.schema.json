@@ -512,7 +512,8 @@
           "software",
           "software.selected",
           "malware",
-          "android"
+          "android",
+          "printer"
         ]
       }
     },
@@ -540,7 +541,7 @@
           "action_id": {
             "type": "string",
             "maxLength": 64,
-            "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw|android)\\.[a-z0-9]+(-[a-z0-9]+)*$"
+            "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)\\.[a-z0-9]+(-[a-z0-9]+)*$"
           },
           "origin": {
             "type": "string",
@@ -557,7 +558,7 @@
           },
           "target_ref": {
             "type": "string",
-            "pattern": "^(os|and)-[0-7]$"
+            "pattern": "^(os|and|prn)-[0-7]$"
           }
         }
       }

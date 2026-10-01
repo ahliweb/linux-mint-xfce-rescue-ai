@@ -941,6 +941,27 @@ def _count_files(root, rel, pattern):
     return n
 
 
+def list_spool_files(root, limit=MAX_SPOOL_COUNT):
+    """Relative paths (``/`` separated, real spelling) of the stuck spool files below *root*, sorted, at most *limit*.
+
+    The same files ``collect_offline_target`` counts: regular files (a symlink is never followed or listed) whose name
+    matches the Windows Spooler or CUPS job pattern, in the two fixed spool directories. Read-only."""
+    base = os.path.realpath(root)
+    found = []
+    for rel, pattern in SPOOL_LOCATIONS:
+        folder = _path(root, rel)
+        if folder is None:
+            continue
+        try:
+            with os.scandir(folder) as it:
+                for entry in it:
+                    if entry.is_file(follow_symlinks=False) and pattern.match(entry.name):
+                        found.append(os.path.relpath(os.path.join(folder, entry.name), base).replace(os.sep, '/'))
+        except OSError:
+            continue
+    return sorted(found)[:limit]
+
+
 def _stuck(check_id, count):
     if count is None:
         return _c(check_id, 'unknown')
@@ -949,6 +970,9 @@ def _stuck(check_id, count):
 
 WINDOWS_SPOOL = re.compile(r'^[^/]{1,64}\.(spl|shd)$', re.I)
 CUPS_SPOOL = re.compile(r'^(c[0-9]{5,}|d[0-9]{5,}-[0-9]{3})$')
+# The only files the spool quarantine (``rescue-malware-quarantine spool-*``, catalog action
+# printer.target-quarantine-spool) may move: exactly the files this module counts as stuck.
+SPOOL_LOCATIONS = (('Windows/System32/spool/PRINTERS', WINDOWS_SPOOL), ('var/spool/cups', CUPS_SPOOL))
 CUPS_WANTS = ('etc/systemd/system/printer.target.wants', 'etc/systemd/system/sockets.target.wants',
               'etc/systemd/system/multi-user.target.wants')
 CUPS_UNITS = ('cups.service', 'cups.socket', 'cups.path')

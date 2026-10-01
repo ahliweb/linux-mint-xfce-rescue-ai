@@ -43,6 +43,7 @@ packages=${RESCUE_PACKAGES:-}
 repair_policy=${RESCUE_REPAIR_POLICY:-approve-each}
 malware_full=0
 malware_target=
+printer_network=0
 while (($#)); do
   case "$1" in
     --state-dir) state_dir=${2:?missing state directory}; state_dir_set=1; shift 2 ;;
@@ -56,7 +57,8 @@ while (($#)); do
     --repair-policy) repair_policy=${2:?missing repair policy}; shift 2 ;;
     --malware-full-disk) malware_full=1; shift ;;
     --malware-target) malware_target=${2:?missing target (os-N)}; shift 2 ;;
-    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe] [--malware-full-disk] [--malware-target os-N]\n' "$0" >&2; exit 2 ;;
+    --printer-network) printer_network=1; shift ;;
+    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe] [--malware-full-disk] [--malware-target os-N] [--printer-network]\n' "$0" >&2; exit 2 ;;
   esac
 done
 [[ -z $malware_target || $malware_target =~ ^os-[0-9]{1,2}$ ]] || { printf 'Invalid --malware-target (os-N required): %s\n' "$malware_target" >&2; exit 2; }
@@ -342,6 +344,84 @@ android_phase() {
   return 0
 }
 android_phase || true
+
+# Printers (docs/printer.md). After the OS scan (and the Android offer), when the printer scan finds a printer, print
+# the table and ask (default: no; a non-interactive run skips it) whether to scan the printer(s) and offer repairs.
+# The scan is read-only, runs as the desktop user, writes its own evidence file printer-evidence-<stamp>.json, and
+# the repair engine then runs on it under the same policy (a test page, a head cleaning and cancelling jobs always
+# ask). Network printers are looked up only with --printer-network, for this run. The printer run gets its own run
+# report. Queue names, addresses and serials are never printed, journaled or reported.
+emit_printer_report() {
+  local outcome=$1 started=$2 evidence=$3 after=$4
+  local -a rargs=(--reports-dir "$report_dir" --run-id "$run_id-printer" --mode live-linux --outcome "$outcome"
+    --scope printer --repair-policy "$repair_policy" --started-at "$started" --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --env-file "$root/config/rescue.env" --env-file "$state_dir/hermes/env")
+  [[ -n $OPENCODE_GO_API_KEY ]] && rargs+=(--key-present yes) || rargs+=(--key-present no)
+  ((!have_readiness)) || rargs+=(--readiness "$report_file")
+  [[ -z $evidence || ! -s $evidence ]] || rargs+=(--evidence "$evidence")
+  [[ -z $after || ! -s $after ]] || rargs+=(--evidence-after "$after")
+  [[ ! -e $state_dir/repairs/journal.jsonl ]] || rargs+=(--journal "$state_dir/repairs/journal.jsonl")
+  python3 "$root/scripts/rescue-report.py" "${rargs[@]}" ||
+    printf 'PERINGATAN: laporan printer tidak dapat ditulis penuh.\nWARNING: the printer run report could not be fully written.\n' >&2
+}
+
+printer_phase() {
+  local count answer evidence after started ts repair_rc=0 outcome=completed ev_run_id
+  local -a net=() scan_args=() repair_args=(--scope printer)
+  ((scan_targets)) || return 0
+  [[ $scope == all || ",$scope," == *,printer,* ]] || return 0
+  [[ -t 0 ]] || return 0
+  ((!printer_network)) || { net=(--network); repair_args+=(--printer-network); }
+  count=$(python3 "$root/scripts/scan-printers.py" --count ${net[@]+"${net[@]}"} 2>/dev/null) || return 0
+  [[ $count =~ ^[1-9][0-9]*$ ]] || return 0
+  printf '\nPrinter terdeteksi (%s):\nPrinter(s) detected (%s):\n' "$count" "$count"
+  python3 "$root/scripts/scan-printers.py" --list ${net[@]+"${net[@]}"} || true
+  printf '\nPindai printer ini (read-only) dan tawarkan perbaikan? [y/N, default: tidak]\nScan this printer (read-only) and offer repairs? [y/N, default: no]: '
+  read -r -t 300 answer || answer=''
+  [[ ${answer,,} =~ ^(y|ya|yes)$ ]] || {
+    printf 'Pemindaian printer dilewati.\nPrinter scan skipped.\n'
+    return 0
+  }
+  ts=$(date -u +%Y%m%d-%H%M%S)
+  started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  evidence="$report_dir/printer-evidence-$ts.json"
+  after='' scan_args=(--output "$evidence" --source-platform live-linux --repair-policy "$repair_policy")
+  [[ -z $OPENCODE_GO_API_KEY ]] || scan_args+=(--provider-ready)
+  if ! python3 "$root/scripts/scan-printers.py" "${scan_args[@]}" ${net[@]+"${net[@]}"} || [[ ! -s $evidence ]]; then
+    rm -f -- "$evidence" 2>/dev/null || true
+    printf 'PERINGATAN: pemindaian printer gagal; periksa printer, kabel, dan layanan CUPS.\nWARNING: the printer scan failed; check the printer, the cable and the CUPS service.\n' >&2
+    emit_printer_report scan-failed "$started" '' ''
+    return 0
+  fi
+  chmod 0600 -- "$evidence" 2>/dev/null || true
+  printf 'Bukti printer tersimpan: %s\n' "$evidence"
+  # Approval prompts need a tty on stdout, so this step bypasses the log tee (its journal is the record).
+  python3 "$root/scripts/rescue-repair.py" --evidence "$evidence" --policy "$repair_policy" --state-dir "$state_dir" \
+    "${repair_args[@]}" 1>&3 2>&4 || repair_rc=$?
+  case $repair_rc in
+    0) ;;
+    2) outcome=repair-invalid ;;
+    3) outcome=journal-unusable ;;
+    *)
+      printf 'PERINGATAN: ada tindakan perbaikan printer yang gagal atau di-rollback; lihat %s\n' "$state_dir/repairs/journal.jsonl" >&2
+      printf 'WARNING: a printer repair action failed or was rolled back; see %s\n' "$state_dir/repairs/journal.jsonl" >&2
+      ;;
+  esac
+  if [[ -s $state_dir/repairs/journal.jsonl ]] && ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
+    grep -F -- "\"run_id\":\"$ev_run_id\"" "$state_dir/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
+    printf 'Memindai ulang printer setelah perbaikan ...\nRe-scanning the printer after repairs ...\n'
+    after="$report_dir/printer-evidence-$ts-after.json"
+    python3 "$root/scripts/scan-printers.py" --output "$after" --source-platform live-linux --repair-policy "$repair_policy" ${net[@]+"${net[@]}"} || true
+    if [[ ! -s $after ]]; then
+      rm -f -- "$after" 2>/dev/null || true
+      after=''
+      printf 'PERINGATAN: pemindaian ulang printer gagal; tidak ada perbandingan sebelum/sesudah.\nWARNING: the printer re-scan failed; no before/after comparison.\n' >&2
+    fi
+  fi
+  emit_printer_report "$outcome" "$started" "$evidence" "$after"
+  return 0
+}
+printer_phase || true
 
 # Write the report now (Hermes reads the latest one first); the EXIT trap covers every other exit.
 emit_report

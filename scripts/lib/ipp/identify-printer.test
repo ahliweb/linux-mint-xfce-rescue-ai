@@ -1,0 +1,18 @@
+# Fixed IPP Identify-Printer request used by the catalog action printer.identify (docs/printer.md).
+# Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
+#
+# Asks the printer to flash its display and sound a beep so the operator can tell which one it is. It sends no name,
+# address, serial or job data; the printer URI is the only variable and the repair engine builds it from the CUPS
+# queue of the printer it resolved (ipp://localhost/printers/QUEUE). A printer or driver that does not implement
+# Identify-Printer answers operation-not-supported and the action reports a failed step; nothing else happens.
+{
+	NAME "rescue identify printer"
+	OPERATION Identify-Printer
+	GROUP operation-attributes-tag
+	ATTR charset attributes-charset utf-8
+	ATTR language attributes-natural-language en
+	ATTR uri printer-uri $uri
+	ATTR keyword identify-actions display,sound
+	STATUS successful-ok
+	STATUS successful-ok-ignored-or-substituted-attributes
+}

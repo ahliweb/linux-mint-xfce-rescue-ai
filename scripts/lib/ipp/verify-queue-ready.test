@@ -1,0 +1,17 @@
+# Verify step of printer.resume-queue, printer.print-test-page and printer.clean-print-heads (docs/printer.md).
+# Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
+#
+# Passes (ipptool exits 0) only when the queue answers IPP and its printer-state is idle (3) or processing (4), that
+# is, not stopped (5). It asks for nothing but printer-state and sends no name, address, serial or job data. The
+# printer URI is the only variable (ipp://localhost/printers/QUEUE, built by the repair engine).
+{
+	NAME "rescue verify queue is not stopped"
+	OPERATION Get-Printer-Attributes
+	GROUP operation-attributes-tag
+	ATTR charset attributes-charset utf-8
+	ATTR language attributes-natural-language en
+	ATTR uri printer-uri $uri
+	ATTR keyword requested-attributes printer-state
+	STATUS successful-ok
+	EXPECT printer-state OF-TYPE enum WITH-VALUE 3,4
+}

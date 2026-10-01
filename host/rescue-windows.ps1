@@ -289,7 +289,7 @@ $script:CheckIds = @(
     'sw-held-packages', 'sw-package-integrity', 'sw-app-health', 'sw-startup-items',
     'malware-scan', 'malware-signatures', 'malware-realtime-protection', 'malware-quarantine')
 $script:ScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu',
-    'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware', 'android')
+    'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware', 'android', 'printer')
 $script:ModuleDomains = @('hardware', 'os', 'software', 'malware')
 $script:MaxChecks = 160
 # Environment variables a repair child process may inherit (system/profile locations only).
@@ -824,14 +824,14 @@ function ConvertTo-CatalogAction {
     # in make check. Any problem makes the whole catalog unusable (nothing is half-trusted).
     param($Raw, [string]$Domain, $Problems)
     $id = [string](Get-JsonProp $Raw 'action_id')
-    if ($id -cnotmatch '^(hw|os-linux|os-windows|os-macos|sw|mw|android)\.[a-z0-9]+(-[a-z0-9]+)*\z' -or $id.Length -gt 64) {
+    if ($id -cnotmatch '^(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)\.[a-z0-9]+(-[a-z0-9]+)*\z' -or $id.Length -gt 64) {
         $Problems.Add('bad action_id'); return $null
     }
     foreach ($k in @('title', 'title_id', 'scope', 'platforms', 'risk', 'triggers', 'execute', 'verify', 'rollback', 'backup', 'doc')) {
         if (-not (Test-JsonHas $Raw $k)) { $Problems.Add("$id missing $k"); return $null }
     }
     $risk = [string]$Raw.risk
-    if (@('safe', 'reversible', 'destructive') -cnotcontains $risk) { $Problems.Add("$id risk"); return $null }
+    if (@('safe', 'reversible', 'irreversible', 'destructive') -cnotcontains $risk) { $Problems.Add("$id risk"); return $null }
     $n = 0
     $before = $Problems.Count
     $exec = ConvertTo-CatalogStep $Raw.execute "$id execute" $Problems
@@ -852,7 +852,7 @@ function ConvertTo-CatalogAction {
     foreach ($p in @(Get-JsonProp $Raw 'params')) {
         if ($null -eq $p) { continue }
         $pt = [string]$p.type
-        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
+        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
             $Problems.Add("$id param"); continue
         }
         $entry = @{ name = [string]$p.name; type = $pt; values = @(); minimum = 0; maximum = 0; has_default = $false; default = $null }
@@ -906,7 +906,7 @@ function Read-RescueCatalog {
         $ms.Write($nb, 0, $nb.Length); $ms.WriteByte(0); $ms.Write($raw, 0, $raw.Length); $ms.WriteByte(0)
         try { $doc = $utf8.GetString($raw) | ConvertFrom-Json } catch { $problems.Add("$name invalid JSON"); continue }
         $domain = [string](Get-JsonProp $doc 'domain')
-        if ((Get-JsonProp $doc 'catalog_version') -ne '1' -or @('hardware', 'os-linux', 'os-windows', 'os-macos', 'software', 'malware', 'android') -cnotcontains $domain -or -not (Test-JsonHas $doc 'actions')) {
+        if ((Get-JsonProp $doc 'catalog_version') -ne '1' -or @('hardware', 'os-linux', 'os-windows', 'os-macos', 'software', 'malware', 'android', 'printer') -cnotcontains $domain -or -not (Test-JsonHas $doc 'actions')) {
             $problems.Add("$name header"); continue
         }
         if ($domains.ContainsKey($domain)) { $problems.Add("$name duplicate domain") }
@@ -1655,7 +1655,7 @@ function Invoke-RepairProposal {
         Write-RepairLog -Action $action -Proposal $Proposal -Stage 'approval' -Outcome 'unavailable' -Extra @{ reason = 'not-applicable' }
         return 'skipped'
     }
-    $unsupported = @($action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' -or $_.type -ceq 'fastboot_device' -or $_.type -ceq 'fastboot_slot' -or $_.type -ceq 'firmware_file' -or $_.type -ceq 'sha256' }).Count -gt 0
+    $unsupported = @($action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' -or $_.type -ceq 'fastboot_device' -or $_.type -ceq 'fastboot_slot' -or $_.type -ceq 'firmware_file' -or $_.type -ceq 'sha256' -or $_.type -ceq 'printer_ref' -or $_.type -ceq 'bundle_root' }).Count -gt 0
     if ($unsupported -or $action.requires_target_rw) {
         Write-Host ('  ' + $aid + ' needs a block device or a mounted target, which host launchers do not support; not run.') -ForegroundColor Yellow
         Write-RepairLog -Action $action -Proposal $Proposal -Stage 'target-rw' -Outcome 'unavailable' -Extra @{ reason = 'provider-unavailable' }
@@ -1799,30 +1799,30 @@ function Invoke-RepairPhase {
 # ----------------------------------------------------------------------------------------
 
 $script:RrStatuses = @('pass', 'fail', 'warn', 'not_applicable', 'unknown')
-$script:RrDomains = @('hardware', 'os', 'software', 'malware', 'environment')
+$script:RrDomains = @('hardware', 'os', 'software', 'malware', 'printer', 'environment')
 $script:RrUnits = @{ percent = '%'; count = ''; bytes = ' B'; days = ' hari'; seconds = ' s'; celsius = ' C' }
 $script:RrReadinessIds = @('cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media')
 $script:RrEnvChecks = @('network-connectivity', 'iso-integrity', 'block-device-discovery', 'filesystem-discovery', 'lvm-or-raid-discovery', 'firmware-boot-entry', 'kernel-log', 'system-journal')
 $script:RrHardwareHealth = @('smart-health', 'nvme-health', 'hw-memory-errors', 'hw-disk')
-$script:RrScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware', 'android')
+$script:RrScopeValues = @('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display', 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware', 'android', 'printer')
 $script:RrPolicies = @('detect-only', 'approve-each', 'auto-safe')
 $script:RrOrigins = @('catalog-trigger', 'ai-proposal', 'operator')
-$script:RrRisks = @('safe', 'reversible', 'destructive')
+$script:RrRisks = @('safe', 'reversible', 'irreversible', 'destructive')
 $script:RrStages = @('proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback')
 $script:RrRecordOutcomes = @('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable')
-$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch')
+$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch', 'printer-absent', 'printer-mismatch', 'printer-ambiguous')
 $script:RrTargetEnums = @{
-    family = @('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android')
+    family = @('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android', 'printer')
     architecture = @('x86_64', 'arm64', 'unknown')
-    detection = @('live-offline', 'host-native', 'usb-adb', 'usb-enumerated')
+    detection = @('live-offline', 'host-native', 'usb-adb', 'usb-enumerated', 'usb-cups', 'usb-ipp', 'ipp-usb', 'network-ipp')
     encryption = @('none', 'bitlocker', 'filevault', 'luks', 'unknown')
-    access = @('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown', 'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only')
+    access = @('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown', 'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only', 'ipp-read', 'cups-only', 'ipp-unavailable')
 }
 $script:RrFinals = @('verified', 'rolled-back', 'failed', 'skipped', 'declined', 'proposed')
 $script:RrMaxAnalysis = 32768
 $script:RrControl = '[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]'
 $script:RrRunRe = '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$'
-$script:RrActionRe = '^(hw|os-linux|os-windows|os-macos|sw|mw|android)\.[a-z0-9]+(-[a-z0-9]+)*$'
+$script:RrActionRe = '^(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)\.[a-z0-9]+(-[a-z0-9]+)*$'
 $script:RrDocRe = '^docs/[A-Za-z0-9._/-]+(#[A-Za-z0-9._-]+)?$'
 $script:RrPrivacyRules = @(
     @('unix-home-path', '/home/[^/\s]+', 'None'),
@@ -1897,6 +1897,7 @@ function Get-RrDomain {
     if ($Id.StartsWith('hw-') -or $Id -ceq 'smart-health' -or $Id -ceq 'nvme-health') { return 'hardware' }
     if ($Id.StartsWith('sw-')) { return 'software' }
     if ($Id.StartsWith('malware-')) { return 'malware' }
+    if ($Id.StartsWith('printer-')) { return 'printer' }
     if ($script:RrEnvChecks -ccontains $Id) { return 'environment' }
     return 'os'
 }
@@ -1922,7 +1923,7 @@ function Test-RrSaneEvidence {
         $id = Get-RrProp $c 'check_id'
         if (-not (Test-RrStr $id '^[a-z0-9]+(-[a-z0-9]+)*$') -or $id.Length -gt 64) { return $false }
         if (-not (Test-RrIn (Get-RrProp $c 'status') $script:RrStatuses)) { return $false }
-        if ((Test-JsonHas $c 'target_ref') -and -not (Test-RrStr (Get-RrProp $c 'target_ref') '^(os|and)-[0-7]$')) { return $false }
+        if ((Test-JsonHas $c 'target_ref') -and -not (Test-RrStr (Get-RrProp $c 'target_ref') '^(os|and|prn)-[0-7]$')) { return $false }
         if (Test-JsonHas $c 'value') {
             $v = Get-RrProp $c 'value'
             if (-not (Test-RrObj $v)) { return $false }
@@ -1942,7 +1943,7 @@ function Test-RrSaneEvidence {
         $targets = Get-RrProp $Doc 'target_systems'
         if ($targets -isnot [array] -or $targets.Count -gt 8) { return $false }
         foreach ($t in $targets) {
-            if (-not (Test-RrObj $t) -or -not (Test-RrStr (Get-RrProp $t 'ref') '^(os|and)-[0-7]$')) { return $false }
+            if (-not (Test-RrObj $t) -or -not (Test-RrStr (Get-RrProp $t 'ref') '^(os|and|prn)-[0-7]$')) { return $false }
             foreach ($k in $script:RrTargetEnums.Keys) {
                 if ((Test-JsonHas $t $k) -and -not (Test-RrIn (Get-RrProp $t $k) $script:RrTargetEnums[$k])) { return $false }
             }
@@ -1962,7 +1963,7 @@ function Test-RrRecordOk {
     if (-not (Test-RrIn (Get-RrProp $R 'origin') $script:RrOrigins) -or -not (Test-RrIn (Get-RrProp $R 'risk') $script:RrRisks) -or -not (Test-RrIn (Get-RrProp $R 'policy') $script:RrPolicies)) { return $false }
     if (-not (Test-RrIn (Get-RrProp $R 'stage') $script:RrStages) -or -not (Test-RrIn (Get-RrProp $R 'outcome') $script:RrRecordOutcomes)) { return $false }
     if ((Test-JsonHas $R 'reason') -and -not (Test-RrIn (Get-RrProp $R 'reason') $script:RrReasons)) { return $false }
-    if ((Test-JsonHas $R 'target_ref') -and -not (Test-RrStr (Get-RrProp $R 'target_ref') '^(os|and)-[0-7]$')) { return $false }
+    if ((Test-JsonHas $R 'target_ref') -and -not (Test-RrStr (Get-RrProp $R 'target_ref') '^(os|and|prn)-[0-7]$')) { return $false }
     if ((Test-JsonHas $R 'backup') -and $null -ne (Get-RrProp $R 'backup')) {
         $b = Get-RrProp $R 'backup'
         if (-not (Test-RrObj $b) -or -not (Test-RrInt (Get-RrProp $b 'size_bytes')) -or (Get-RrProp $b 'size_bytes') -lt 1 -or -not (Test-RrStr (Get-RrProp $b 'fingerprint_sha256') '^[a-f0-9]{64}$')) { return $false }

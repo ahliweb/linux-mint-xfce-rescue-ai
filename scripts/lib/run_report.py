@@ -22,7 +22,7 @@ REPORT_VERSION = '1.0'
 ZERO_HASH = '0' * 64
 MODES = ('live-linux', 'linux-host', 'windows-host', 'macos-host')
 STATUSES = ('pass', 'fail', 'warn', 'not_applicable', 'unknown')
-DOMAINS = ('hardware', 'os', 'software', 'malware', 'environment')
+DOMAINS = ('hardware', 'os', 'software', 'malware', 'printer', 'environment')
 OUTCOMES = ('completed', 'completed-with-failures', 'evidence-only', 'dry-run', 'preflight-failed', 'scan-failed',
             'evidence-invalid', 'no-key', 'network-error', 'provider-rejected', 'analysis-failed', 'analyzer-missing',
             'dependency-missing', 'repair-invalid', 'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
@@ -95,6 +95,8 @@ def domain_of(check_id):
         return 'software'
     if check_id.startswith('malware-'):
         return 'malware'
+    if check_id.startswith('printer-'):     # includes printer-target-* (the spooler of an installed OS: scope printer too)
+        return 'printer'
     if check_id in ENVIRONMENT_CHECKS:
         return 'environment'
     return 'os'
@@ -124,28 +126,29 @@ def check_key(check):
 
 RUN_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$')
 CHECK_ID_RE = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
-TARGET_RE = re.compile(r'^(os|and)-[0-7]$')
-ACTION_RE = re.compile(r'^(hw|os-linux|os-windows|os-macos|sw|mw|android)\.[a-z0-9]+(-[a-z0-9]+)*$')
+TARGET_RE = re.compile(r'^(os|and|prn)-[0-7]$')
+ACTION_RE = re.compile(r'^(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)\.[a-z0-9]+(-[a-z0-9]+)*$')
 MODEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$')
 SCOPE_VALUES = ('all', 'hardware', 'hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display',
                 'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'software.selected', 'malware',
-                'android')
+                'android', 'printer')
 POLICIES = ('detect-only', 'approve-each', 'auto-safe')
 TARGET_ENUMS = {
-    'family': ('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android'),
-    'architecture': ('x86_64', 'arm64', 'unknown'), 'detection': ('live-offline', 'host-native', 'usb-adb', 'usb-enumerated'),
+    'family': ('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android', 'printer'),
+    'architecture': ('x86_64', 'arm64', 'unknown'),
+    'detection': ('live-offline', 'host-native', 'usb-adb', 'usb-enumerated', 'usb-cups', 'usb-ipp', 'ipp-usb', 'network-ipp'),
     'encryption': ('none', 'bitlocker', 'filevault', 'luks', 'unknown'),
     'access': ('read-only-mounted', 'not-mounted-encrypted', 'not-mounted-unsupported', 'host-running', 'unknown',
-               'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only'),
+               'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only', 'ipp-read', 'cups-only', 'ipp-unavailable'),
 }
 ORIGINS = ('catalog-trigger', 'ai-proposal', 'operator')
-RISKS = ('safe', 'reversible', 'destructive')
+RISKS = ('safe', 'reversible', 'irreversible', 'destructive')
 STAGES = ('proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback')
 RECORD_OUTCOMES = ('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable')
 REASONS = ('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe',
            'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout',
            'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable',
-           'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch')
+           'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch', 'printer-absent', 'printer-mismatch', 'printer-ambiguous')
 
 
 def _is_str(value, pattern):

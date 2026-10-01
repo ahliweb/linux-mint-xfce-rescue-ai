@@ -1,0 +1,16 @@
+# Verify step of printer.accept-jobs (docs/printer.md).
+# Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
+#
+# Passes (ipptool exits 0) only when the queue answers IPP and printer-is-accepting-jobs is true. It asks for nothing
+# else. The printer URI is the only variable (ipp://localhost/printers/QUEUE, built by the repair engine).
+{
+	NAME "rescue verify queue accepts jobs"
+	OPERATION Get-Printer-Attributes
+	GROUP operation-attributes-tag
+	ATTR charset attributes-charset utf-8
+	ATTR language attributes-natural-language en
+	ATTR uri printer-uri $uri
+	ATTR keyword requested-attributes printer-is-accepting-jobs
+	STATUS successful-ok
+	EXPECT printer-is-accepting-jobs OF-TYPE boolean WITH-VALUE "true"
+}

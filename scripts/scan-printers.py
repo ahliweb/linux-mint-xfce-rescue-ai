@@ -19,10 +19,11 @@ IPP Get-Printer-Attributes request to a private/link-local address.
 
 Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 
-Usage: scan-printers.py (--list | --output FILE) [--network] [--source-platform live-linux|linux-host]
-                        [--printer prn-N] [--provider-ready]
+Usage: scan-printers.py (--list | --count | --output FILE) [--network] [--source-platform live-linux|linux-host]
+                        [--printer prn-N] [--provider-ready] [--repair-policy P]
   --list       print a bilingual table of the printers found and what to do about each; with --output the
                evidence is written as well
+  --count      print only the number of printers found (the launcher uses it to decide whether to offer a scan)
   --network    also look for network printers by mDNS/DNS-SD on the local link (opt-in, per run)
   --output     write validated evidence (exit 1 when it does not validate)
   --printer    only this printer (numbering is by USB port order, then queues, then network printers)
@@ -38,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
+import repair_catalog  # noqa: E402
 import scan_common  # noqa: E402
 from rescue_modules import printer, usb_devices  # noqa: E402
 
@@ -168,17 +170,17 @@ def guidance(printers, boot_ports, status, usb_known):
             out.append(('Printer offline: periksa kabel USB dan daya, nyalakan printer, tunggu siap, dan colok ulang. Printer jaringan: pastikan terhubung ke jaringan yang sama.',
                         'The printer is offline: check the USB cable and power, switch it on, wait until ready, and replug. Network printer: make sure it is on the same network.'))
         if p['state'] == 'stopped' or (tokens and set(tokens) & printer.PAUSED):
-            out.append(('Antrean berhenti atau dijeda: lanjutkan antrean dari Pengaturan Printer. Melanjutkan antrean otomatis adalah tindakan katalog fase 2 (Planned).',
-                        'The queue is stopped or paused: resume it from Printer Settings. Resuming the queue by the toolkit is a phase 2 catalog action (Planned).'))
+            out.append(('Antrean berhenti atau dijeda: lanjutkan dari Pengaturan Printer, atau setujui tindakan katalog printer.resume-queue di langkah perbaikan (perbaiki dulu penyebab fisiknya: kertas macet, penutup terbuka, kertas habis).',
+                        'The queue is stopped or paused: resume it from Printer Settings, or approve the catalog action printer.resume-queue in the repair step (fix the physical cause first: jam, open cover, out of paper).'))
         if p['accepting'] is False:
-            out.append(('Antrean menolak pekerjaan baru: aktifkan "Terima pekerjaan" di Pengaturan Printer (tindakan katalog fase 2, Planned).',
-                        'The queue is not accepting jobs: enable "Accept jobs" in Printer Settings (phase 2 catalog action, Planned).'))
+            out.append(('Antrean menolak pekerjaan baru: aktifkan "Terima pekerjaan" di Pengaturan Printer, atau setujui tindakan katalog printer.accept-jobs.',
+                        'The queue is not accepting jobs: enable "Accept jobs" in Printer Settings, or approve the catalog action printer.accept-jobs.'))
         if p['queued'] and p['state'] == 'stopped':
-            out.append(('Ada %d pekerjaan menumpuk di antrean yang berhenti: batalkan pekerjaan macet dari Pengaturan Printer (tindakan katalog fase 2, Planned).' % p['queued'],
-                        '%d job(s) are stuck in the stopped queue: cancel the stuck jobs from Printer Settings (phase 2 catalog action, Planned).' % p['queued']))
+            out.append(('Ada %d pekerjaan menumpuk di antrean yang berhenti: batalkan dari Pengaturan Printer, atau setujui printer.cancel-stuck-jobs yang membatalkan SEMUA pekerjaan antrean itu (selalu bertanya, tidak dapat dibatalkan). Melanjutkan antrean lebih dulu akan mencetak pekerjaan itu.' % p['queued'],
+                        '%d job(s) are stuck in the stopped queue: cancel them from Printer Settings, or approve printer.cancel-stuck-jobs, which cancels ALL jobs of that queue (always asks, cannot be undone). Resuming the queue first would print those jobs.' % p['queued']))
         if p['connection'] == 'usb' and p['driver'] is False:
-            out.append(('Printer terdeteksi tetapi belum ada antrean (driver): tambahkan di Pengaturan Printer (driverless/IPP Everywhere atau driver pabrikan); membuat antrean driverless adalah tindakan fase 2 (Planned).',
-                        'The printer is detected but has no queue (driver): add it in Printer Settings (driverless/IPP Everywhere or the vendor driver); creating a driverless queue is a phase 2 action (Planned).'))
+            out.append(('Printer terdeteksi tetapi belum ada antrean (driver): tambahkan di Pengaturan Printer (driverless/IPP Everywhere atau driver pabrikan); membuat antrean driverless oleh toolkit belum ada (Planned).',
+                        'The printer is detected but has no queue (driver): add it in Printer Settings (driverless/IPP Everywhere or the vendor driver); creating a driverless queue by the toolkit does not exist yet (Planned).'))
         if p['access'] in ('cups-only', 'usb-only') and status['ipptool'] and p['has_queue'] and not p['ipp_read']:
             out.append(('Antrean ada tetapi tidak menjawab IPP: status rinci (kertas, tinta, pintu) tidak diketahui.',
                         'The queue exists but did not answer IPP: detailed state (paper, ink, door) is unknown.'))
@@ -196,7 +198,8 @@ def guidance(printers, boot_ports, status, usb_known):
 
 # --------------------------------------------------------------------------- evidence
 
-def build_evidence(usb_list, printers, per_printer, count_total, now, platform_name, provider_ready=False):
+def build_evidence(usb_list, printers, per_printer, count_total, now, platform_name, provider_ready=False,
+                   policy='detect-only'):
     """Schema 1.3 evidence. *per_printer* maps ref -> [check dicts]."""
     stamp = scan_common.iso(now)
 
@@ -257,10 +260,24 @@ def build_evidence(usb_list, printers, per_printer, count_total, now, platform_n
         'verification': {'hashes_verified': False, 'read_back_verified': False, 'status': 'not_applicable'},
         'classification': 'confidential',
         'source_references': ['opencode-go:provider', 'nist:sp-800-86'],
-        'repair_policy': 'detect-only',
+        'scope': ['printer'],
+        'repair_policy': policy,
     }
     if usb_list is not None:
         report['usb_ports'] = scan_common.usb_ports_entries(usb_list)
+    return report
+
+
+def add_proposals(report, catalog_dir=None):
+    """Attach catalog-trigger proposals (action IDs only). A broken catalog never breaks the scan."""
+    try:
+        catalog = repair_catalog.load(catalog_dir or repair_catalog.CATALOG_DIR)
+    except (repair_catalog.CatalogError, OSError, ValueError) as exc:
+        print('warning: repair catalog unusable, no proposals added: %s' % exc, file=sys.stderr)
+        return report
+    proposals = repair_catalog.triggered(catalog, report, ('printer',))[:32]
+    if proposals:
+        report['repair_proposals'] = proposals
     return report
 
 
@@ -269,18 +286,23 @@ def build_evidence(usb_list, printers, per_printer, count_total, now, platform_n
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Read-only printer scan (USB, CUPS/IPP, opt-in local-link network).')
     parser.add_argument('--list', action='store_true', help='print the printers found and what to do about each')
+    parser.add_argument('--count', action='store_true', help='print only the number of printers found')
     parser.add_argument('--network', action='store_true',
                         help='also look for network printers by mDNS on the local link (opt-in; no subnet scan)')
     parser.add_argument('--output', metavar='FILE', help='write schema 1.3 evidence (0600, atomic, validated)')
     parser.add_argument('--source-platform', choices=('live-linux', 'linux-host'), default='live-linux')
     parser.add_argument('--printer', metavar='prn-N', help='scan only this printer (numbering by port order)')
+    parser.add_argument('--repair-policy', choices=('detect-only', 'approve-each', 'auto-safe'), default='detect-only',
+                        help='the repair policy of this run, recorded in the evidence (nothing is repaired by the scan)')
     parser.add_argument('--provider-ready', action='store_true',
                         help='the launcher has a usable OPENCODE_GO_API_KEY and will send this evidence')
     parser.add_argument('--fixture-root', metavar='DIR', help=argparse.SUPPRESS)
     parser.add_argument('--tool-path', metavar='DIR', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if not args.list and not args.output:
-        parser.error('give --list and/or --output FILE / beri --list dan/atau --output FILE')
+    if args.count and (args.list or args.output or args.printer):
+        parser.error('--count stands alone / --count berdiri sendiri')
+    if not args.list and not args.output and not args.count:
+        parser.error('give --list, --count and/or --output FILE / beri --list, --count dan/atau --output FILE')
     if args.printer is not None and not REF_RE.match(args.printer):
         parser.error('--printer must look like prn-0 / --printer harus berbentuk prn-0')
 
@@ -304,6 +326,10 @@ def main(argv=None):
     printers, status = printer.discover(usb_list, tools, network=args.network)
     boot_ports = {d['port'] for d in usb_list or [] if d['is_boot_media']}
 
+    if args.count:
+        print(len(printers))
+        return 0
+
     if args.list:
         if printers:
             print('\n'.join(render_table([printer.public_view(p) for p in printers], boot_ports)))
@@ -323,8 +349,8 @@ def main(argv=None):
     now = scan_common.utc_now()
     chosen_views = [printer.public_view(p) for p in chosen]
     per_printer = {p['ref']: printer.printer_checks(p, usb_list is not None) for p in chosen_views}
-    report = build_evidence(usb_list, chosen_views, per_printer, len(printers), now, args.source_platform,
-                            args.provider_ready)
+    report = add_proposals(build_evidence(usb_list, chosen_views, per_printer, len(printers), now, args.source_platform,
+                                          args.provider_ready, args.repair_policy))
     problems = scan_common.validation_problems(report)
     if problems:
         print('scan-printers: evidence did not validate, nothing written / evidence tidak valid, tidak ditulis:',
