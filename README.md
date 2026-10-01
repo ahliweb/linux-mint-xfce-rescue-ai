@@ -64,6 +64,7 @@ Legend: **Implemented** (source level, covered by `make check`), **Hardware-requ
 | Printers: USB and IPP-over-USB, CUPS/IPP state, installed-OS spooler, opt-in local-link network; queue repairs, consumables operator-only | Implemented; real printers are Hardware-required | [printer](docs/printer.md) |
 | Repair catalog, policy engine, hash-chained journal | Implemented; real repairs are Hardware-required | [repair framework](docs/repair-framework.md) |
 | Windows, macOS, and Linux host launchers with native repairs | Implemented; real Windows 10/11 and macOS runs are Hardware-required | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
+| Portable, credential-free Hermes runtime on the USB data partition for the host launchers (`build-hermes-portable.py`, `prepare-ventoy-usb.sh --hermes-portable`) | Implemented; the Windows build runs only in CI (Environment-blocked here) and a real Windows run is Hardware-required | [Hermes portabel](docs/hermes-portable.md) |
 | Run report on the USB | Implemented | [run report](docs/run-report.md) |
 | Candidate skill submission to GitHub Issues | Implemented; real GitHub calls are Environment-blocked | [skill submission](docs/skill-submission.md) |
 | Live cloud smoke test (`test-hermes-conversation.sh --live`) | Environment-blocked | [testing](docs/testing.md) |
