@@ -17,6 +17,7 @@ Status labels: **Implemented** (source level, `make check`), **Hardware-required
 | Target mount provider for offline OS repairs (`scripts/lib/target_mount.py`) | Implemented ([OS repair](os-repair.md)); real mounts are Hardware-required |
 | Run report from the journal, evidence, and analysis ([run report](run-report.md)) | Implemented (`scripts/rescue-report.py`, PowerShell, JXA); real Windows/macOS runs are Hardware-required |
 | Android target (phone/tablet over USB): USB inventory, `and-N` evidence 1.3, read-only ADB checks ([android](android.md)) | Implemented (detection only); Android catalog actions and the `android_device` parameter are **Planned**; real phones are Hardware-required |
+| Printers (USB, opt-in network, installed-OS spooler): `prn-N` evidence 1.3, `printer-*` checks ([printer](printer.md)) | Implemented (detection only); printer catalog actions, the `printer_ref` parameter, and the `printer` scope are **Planned**; real printers are Hardware-required |
 | Repair execution on Windows and macOS hosts | Implemented natively in the launchers ([host repair](host-repair.md)); real Windows/macOS execution is Hardware-required |
 
 ```mermaid
