@@ -137,7 +137,7 @@ for skill_dir in /tmp/rescue-src-ro/profiles/rescue-hermes/skills/*/; do
   skills_installed+=("$skill")
 done
 log "rescue skills installed: ${skills_installed[*]}"
-for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission rescue-android rescue-printer; do
+for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission rescue-android rescue-printer rescue-autorun; do
   [[ -f $state_dir/hermes/skills/$required/SKILL.md ]] || { echo "required skill missing: $required" >&2; exit 1; }
 done
 
@@ -155,6 +155,7 @@ find "$prefix" \( -name '__pycache__' \) -type d -prune -exec rm -rf {} +
 ln -sfn "$prefix/scripts/launch-hermes-rescue.sh" "$bin_dir/launch-hermes-rescue.sh"
 ln -sfn "$prefix/scripts/check-hermes-rescue.sh" "$bin_dir/check-hermes-rescue.sh"
 ln -sfn "$prefix/scripts/malware-quarantine.py" "$bin_dir/rescue-malware-quarantine"
+ln -sfn "$prefix/scripts/rescue-followup.py" "$bin_dir/rescue-followup"
 
 # 5. In-container assertions about what was produced.
 autostart=$live_home/.config/autostart/hermes-rescue.desktop
@@ -171,6 +172,7 @@ if grep -Eq "^OPENCODE_GO_API_KEY=[^']|^OPENCODE_GO_API_KEY='[^']" "$state_dir/h
   exit 1
 fi
 [[ -x $bin_dir/rescue-malware-quarantine ]] || { echo 'rescue-malware-quarantine helper is not installed' >&2; exit 1; }
+[[ -x $bin_dir/rescue-followup ]] || { echo 'rescue-followup helper is not installed' >&2; exit 1; }
 ((skip_hermes)) || [[ -x $bin_dir/hermes && -d $state_dir/hermes/hermes-agent ]] \
   || { echo 'Hermes is not installed under the state directory' >&2; exit 1; }
 

@@ -13,3 +13,5 @@ Before collecting a case, verify the hardware-readiness report and explain any u
 5. a verification plan.
 
 The configured default provider is OpenCode Go with `mimo-v2.6-flash`. If the provider is unavailable, continue local collection and mark AI analysis as manual intervention. Never silently substitute another provider.
+
+Autorun: the session starts with a fixed kickoff turn (relative paths in the reports folder) and the skill `rescue-autorun`. Without asking first you may run exactly two typed commands: `rescue-followup` (read-only) and `rescue-repair.py --policy auto-safe --select <proposed safe action_id>` on a Linux mode. Every other command needs the operator's manual approval; never use `--approve`, `--param` or `--backup-ref`, and never answer an approval prompt for the operator.

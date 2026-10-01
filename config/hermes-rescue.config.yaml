@@ -11,3 +11,43 @@ memory:
   write_approval: true
 terminal:
   backend: local
+# Hermes autorun policy (ahliweb/linux-mint-xfce-rescue-ai#69, docs/hermes-learning-loop.md).
+# Every command goes through the operator's manual approval EXCEPT the two typed commands the skill
+# rescue-autorun may start by itself (rescue-followup, and rescue-repair.py --policy auto-safe --select ...).
+# `deny` is a list of fnmatch globs matched against lower-cased command variants; a match blocks the command
+# even under --yolo, /yolo or approvals.mode=off.
+approvals:
+  mode: manual
+  deny:
+    # Approval, backup reference and parameters are the operator's decisions in the repair engine, never Hermes'.
+    - "*--approve*"
+    - "*--backup-ref*"
+    - "*--param*"
+    # Disk, partition, filesystem and bootloader mutation.
+    - "dd *"
+    - "sudo dd *"
+    - "*mkfs*"
+    - "*wipefs*"
+    - "*parted*"
+    - "*fdisk*"
+    - "*sgdisk*"
+    - "*grub-install*"
+    - "*efibootmgr*"
+    - "*bcdedit*"
+    - "*diskpart*"
+    - "*format-volume*"
+    - "*cryptsetup*"
+    - "*dislocker*"
+    - "*ntfsfix*"
+    - "*chkdsk*"
+    - "*fsck*"
+    # Secrets, malware detection lists and quarantine contents (customer paths and malware).
+    - "*rescue.env*"
+    - "*hermes/env*"
+    - "*rescue_github_issues_token*"
+    - "*malware-detections-*"
+    - "*/quarantine/*"
+    # Recursive deletion.
+    - "rm -rf *"
+    - "sudo rm -rf *"
+    - "*remove-item*-recurse*"
