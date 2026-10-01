@@ -1060,6 +1060,7 @@
               "action-not-run",
               "manual-rollback",
               "journal-invalid",
+              "repair-engine-failed",
               "escalate-encrypted-disk",
               "escalate-hardware-fault",
               "stale-signatures",

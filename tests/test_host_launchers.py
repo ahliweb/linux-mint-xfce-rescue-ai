@@ -163,9 +163,10 @@ class LinuxLauncherTests(unittest.TestCase):
         proc = self.run_launcher('--evidence-only')
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         evidence = one(self.reports('linux-*-evidence.json'), self)
-        # the evidence plus the run report (reports/run-<utc>/ and index.md, docs/run-report.md): all on the USB, nothing else
+        # the evidence, the launcher log, and the run report (reports/run-<utc>/ and index.md, docs/run-report.md): all on the USB, nothing else
         names = sorted(p.name for p in (self.bundle / 'reports').iterdir())
-        self.assertEqual([n for n in names if n != 'index.md' and not n.startswith('run-')], [evidence.name])
+        self.assertEqual([n for n in names if n != 'index.md' and not n.startswith('run-')],
+                         sorted([evidence.name, self.launcher_log().name]))
         self.assertEqual(len([n for n in names if n.startswith('run-')]), 1, names)
         self.assertIn('index.md', names)
         self.assertEqual(bundle_files(self.bundle), before)
@@ -256,9 +257,9 @@ class LinuxLauncherTests(unittest.TestCase):
         self.assertNotIn(DUMMY_KEY, proc.stdout + proc.stderr)
         self.assertNotIn(DUMMY_KEY, one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
 
-    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
-    def test_failed_repair_exits_1_like_the_windows_and_macos_launchers(self):
-        # Only a fixture catalog: auto-safe must never reach real actions on the test machine.
+    def _failing_catalog(self):
+        """Only a fixture catalog (auto-safe must never reach real actions on the test machine) whose action
+        always fails. Returns the fake program directory for RESCUE_REPAIR_TEST_PATH."""
         catalog = self.bundle / 'rescue-ai' / 'v1' / 'catalog'
         for f in catalog.glob('*.json'):
             f.unlink()
@@ -272,6 +273,11 @@ class LinuxLauncherTests(unittest.TestCase):
         fakebin.mkdir()
         (fakebin / 'rescue-test-failer').write_text('#!/bin/sh\nexit 3\n')
         (fakebin / 'rescue-test-failer').chmod(0o755)
+        return fakebin
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_failed_repair_exits_1_like_the_windows_and_macos_launchers(self):
+        fakebin = self._failing_catalog()
         base = self._serve(200)
         proc = self.run_launcher('--repair-policy', 'auto-safe', env=clean_env(
             RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY, RESCUE_REPAIR_TEST_PATH=str(fakebin)))
@@ -308,6 +314,157 @@ class LinuxLauncherTests(unittest.TestCase):
         proc = self.run_launcher('--dry-run')
         self.assertEqual(proc.returncode, 6, proc.stdout + proc.stderr)
         one(self.reports('linux-*-evidence.json'), self)
+
+    # ---- #49: diagnostics (log, one run id, catalog hash, outcome precedence) ----------------------
+    def last_report(self):
+        reports = sorted((self.bundle / 'reports').glob('run-*/report.json'))
+        return json.loads(one(reports, self).read_text(encoding='utf-8'))
+
+    def launcher_log(self):
+        return one(self.reports('launcher-linux-*.log'), self)
+
+    def break_catalog(self):
+        """A catalog file that is not JSON: the repair engine refuses it (exit 2, 'catalog INVALID')."""
+        (self.bundle / 'rescue-ai' / 'v1' / 'catalog' / 'zz-broken.json').write_text('{not json')
+
+    def no_jsonschema_env(self, **extra):
+        """PYTHONPATH with a jsonschema stub that cannot be imported: the host has no python3-jsonschema."""
+        stub = self.tmp / 'nojsonschema'
+        (stub / 'jsonschema').mkdir(parents=True, exist_ok=True)
+        (stub / 'jsonschema' / '__init__.py').write_text("raise ImportError('stub: python3-jsonschema is not installed')\n")
+        return clean_env(PYTHONPATH=str(stub) + os.pathsep + os.environ.get('PYTHONPATH', ''), **extra)
+
+    def open_items(self):
+        return [(i['kind'], i.get('ref')) for i in self.last_report()['open_items']]
+
+    def test_launcher_log_is_on_the_usb_private_complete_and_never_holds_the_key(self):
+        proc = self.run_launcher('--evidence-only', env=clean_env(OPENCODE_GO_API_KEY=DUMMY_KEY))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        log = self.launcher_log()
+        self.assertTrue(log.resolve().is_relative_to(self.bundle.resolve() / 'reports'))
+        self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+        text = log.read_text(encoding='utf-8')
+        self.assertIn('Rescue host launcher (Linux)', text)
+        self.assertIn('Evidence tersimpan / saved:', text)
+        self.assertIn('Laporan tersimpan / report saved:', text)   # the EXIT-trap report line is logged too
+        self.assertIn('Repair plan / rencana perbaikan:', text)    # a child tool's stdout
+        self.assertNotIn(DUMMY_KEY, text)
+        for path in (self.bundle / 'reports').rglob('*'):
+            if path.is_file():
+                self.assertNotIn(DUMMY_KEY, path.read_text(encoding='utf-8', errors='replace'), path)
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_launcher_log_has_stdout_and_stderr_of_the_children_but_not_the_key_or_response_body(self):
+        base = self._serve(400)
+        proc = self.run_launcher(env=clean_env(RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY))
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        text = self.launcher_log().read_text(encoding='utf-8')
+        self.assertIn('HTTP 400 (MissingSessionID)', text)           # analyzer stderr
+        self.assertIn('EN: OpenCode Go rejected the request', text)  # launcher stderr
+        self.assertIn('Repair plan / rencana perbaikan:', text)      # repair engine stdout (not a terminal)
+        self.assertNotIn(DUMMY_KEY, text)
+        self.assertNotIn('secret response text', text)
+
+    def test_one_run_id_for_the_report_and_the_evidence(self):
+        proc = self.run_launcher('--evidence-only')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        evidence = json.loads(one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
+        doc = self.last_report()
+        self.assertRegex(evidence['run_id'], r'^rescue-\d{8}-\d{6}-lh$')
+        self.assertEqual(doc['run_id'], evidence['run_id'])
+        self.assertEqual(doc['header']['evidence_run_id'], evidence['run_id'])
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_the_after_evidence_derives_its_run_id_from_the_same_base(self):
+        fakebin = self._failing_catalog()
+        base = self._serve(200)
+        proc = self.run_launcher('--repair-policy', 'auto-safe', env=clean_env(
+            RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY, RESCUE_REPAIR_TEST_PATH=str(fakebin)))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        before = json.loads(one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
+        after_path = one(self.reports('linux-*-evidence-after.json'), self)
+        after = json.loads(after_path.read_text(encoding='utf-8'))
+        self.assertEqual(after['run_id'], before['run_id'] + '-after')
+        validate_evidence(self, after_path)
+        self.assertEqual(self.last_report()['run_id'], before['run_id'])
+
+    def test_collector_only_accepts_the_launchers_own_run_id(self):
+        text = self.script.read_text(encoding='utf-8')
+        self.assertIn("^rescue-[0-9]{8}-[0-9]{6}-lh(-after)?$", text)
+        self.assertNotIn('run_suffix', text)
+
+    def test_report_header_has_the_catalog_hash_when_there_is_no_journal(self):
+        sys.path.insert(0, str(REPO / 'scripts' / 'lib'))
+        import repair_catalog
+        proc = self.run_launcher('--evidence-only')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse((self.bundle / 'reports' / 'repairs' / 'journal.jsonl').exists())
+        sha = self.last_report()['header']['catalog_sha256']
+        self.assertRegex(sha, r'^[0-9a-f]{64}$')
+        self.assertEqual(sha, repair_catalog.directory_sha256(self.bundle / 'rescue-ai' / 'v1' / 'catalog'))
+        if HAVE_JSONSCHEMA:
+            self.assertEqual(sha, repair_catalog.load(self.bundle / 'rescue-ai' / 'v1' / 'catalog').sha256)
+
+    def test_without_python3_jsonschema_the_run_is_analysis_failed_not_repair_invalid_and_keeps_the_catalog_hash(self):
+        # The field failure of #49: no python3-jsonschema on the host. The analyzer and the engine both exit 2.
+        sys.path.insert(0, str(REPO / 'scripts' / 'lib'))
+        import repair_catalog
+        base = self._serve(200)
+        proc = self.run_launcher(env=self.no_jsonschema_env(RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY))
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        doc = self.last_report()
+        self.assertEqual(doc['header']['outcome'], 'analysis-failed')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items())
+        self.assertEqual(doc['header']['catalog_sha256'],
+                         repair_catalog.directory_sha256(self.bundle / 'rescue-ai' / 'v1' / 'catalog'))
+        log = self.launcher_log().read_text(encoding='utf-8')
+        self.assertIn('jsonschema', log)  # the reason is on the USB now
+        self.assertNotIn(DUMMY_KEY, log)
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_a_repair_engine_failure_keeps_the_analyzer_outcome_and_exit_code(self):
+        for status, outcome in ((400, 'provider-rejected'), (500, 'network-error')):
+            with self.subTest(status=status):
+                shutil.rmtree(self.bundle / 'reports', True)
+                self.break_catalog()
+                base = self._serve(status)
+                proc = self.run_launcher(env=clean_env(RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY))
+                self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)  # the analyzer's code, not the engine's 2
+                doc = self.last_report()
+                self.assertEqual(doc['header']['outcome'], outcome)
+                self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items())
+                log = self.launcher_log().read_text(encoding='utf-8')
+                self.assertIn('catalog INVALID', log)
+                self.assertNotIn(DUMMY_KEY, log)
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_no_key_outcome_and_exit_survive_a_repair_engine_failure(self):
+        self.break_catalog()
+        proc = self.run_launcher(env=clean_env(RESCUE_TEST_BASE_URL='http://127.0.0.1:9'))
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertEqual(self.last_report()['header']['outcome'], 'no-key')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items())
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_a_repair_engine_failure_alone_is_repair_invalid_with_the_open_item(self):
+        self.break_catalog()
+        base = self._serve(200)
+        proc = self.run_launcher(env=clean_env(RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY))
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertEqual(self.last_report()['header']['outcome'], 'repair-invalid')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items())
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+    def test_an_unusable_journal_outranks_the_analyzer_outcome_and_exits_5(self):
+        fakebin = self._failing_catalog()
+        (self.bundle / 'reports').mkdir(exist_ok=True)
+        (self.bundle / 'reports' / 'repairs').write_text('not a directory')  # the journal cannot be opened
+        base = self._serve(500)
+        proc = self.run_launcher('--repair-policy', 'auto-safe', env=clean_env(
+            RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY, RESCUE_REPAIR_TEST_PATH=str(fakebin)))
+        self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+        self.assertEqual(self.last_report()['header']['outcome'], 'journal-unusable')
+        self.assertIn(('repair-engine-failed', 'exit-3'), self.open_items())
 
 
 # --------------------------------------------------------------------------------------

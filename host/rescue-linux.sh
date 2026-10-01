@@ -16,6 +16,14 @@
 #             401/403/408/429) | 5 bundle/reports dir or repair journal unusable | 6 analyzer script
 #             missing | 64 usage   (3 and 4 take precedence over 1 and 2, as in the Windows and macOS
 #             launchers)
+# Outcome precedence: the run outcome is the FIRST failure (scan, evidence, key, network, provider,
+#             analyzer); a repair-engine failure never replaces it. It is added to the report as the
+#             open item repair-engine-failed (exit-2 or exit-3) and the exit code stays the first
+#             failure's. A repair journal that cannot be used (engine exit 3) outranks everything,
+#             as in the macOS launcher: outcome journal-unusable and exit 5.
+# Launcher log: everything this launcher and its child tools print (none of them prints the API key)
+#             is also appended to reports/launcher-linux-<utc>.log on the USB (0600 where the
+#             filesystem has modes; never on the host disk).
 set -Eeuo pipefail
 umask 077
 
@@ -63,7 +71,7 @@ case $repair_policy in detect-only | approve-each | auto-safe) ;; *) usage ;; es
 [[ -z $packages || $packages =~ ^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$ ]] || usage
 
 run_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-run_id="rescue-$(date -u +%Y%m%d-%H%M%S)-lh"
+run_id="rescue-$(date -u +%Y%m%d-%H%M%S)-lh"   # the one run id: report and evidence share it (the re-scan adds -after)
 run_outcome=scan-failed
 report_ready=0 report_done=0
 run_evidence='' run_evidence_after='' run_analysis='' repair_rc=0
@@ -75,6 +83,7 @@ emit_report() {
   local -a rargs=(python3 "$bundle/scripts/rescue-report.py" --reports-dir "$reports" --run-id "$run_id" --mode linux-host
     --outcome "$run_outcome" --scope "$scope" --repair-policy "$repair_policy" --started-at "$run_started"
     --ended-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --env-file "$bundle/config/rescue.env")
+  ((repair_rc == 0)) || rargs+=(--repair-exit "$repair_rc")
   [[ -f $bundle/scripts/rescue-report.py ]] || return 0
   [[ -z $run_evidence || ! -s $run_evidence ]] || rargs+=(--evidence "$run_evidence")
   [[ -z $run_evidence_after || ! -s $run_evidence_after ]] || rargs+=(--evidence-after "$run_evidence_after")
@@ -126,6 +135,20 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 evidence="$reports/linux-$stamp-evidence.json"
 analysis="$reports/linux-$stamp-analysis.md"
 
+# Launcher log on the USB (never the host): everything printed from here on is also appended to it.
+# The tools never print the key. fd 3 keeps the real terminal for the interactive repair step.
+launcher_log="$reports/launcher-linux-$stamp.log"
+interactive_tty=0
+if [[ -t 0 && -t 1 ]]; then interactive_tty=1; fi
+if : >>"$launcher_log" 2>/dev/null; then
+  chmod 600 -- "$launcher_log" 2>/dev/null || true   # exFAT has no modes
+  exec 3>&1
+  exec > >(tee -a -- "$launcher_log") 2> >(tee -a -- "$launcher_log" >&2)
+else
+  printf 'PERINGATAN / WARNING: the launcher log could not be created on the USB; continuing without it.\n' >&2
+fi
+export PYTHONUNBUFFERED=1
+
 skip_network=0
 if ((evidence_only || dry_run)); then skip_network=1; fi
 # The analyzer's loopback test hook means no real network is wanted: skip the internet probe too.
@@ -134,14 +157,17 @@ if [[ ${RESCUE_TEST_BASE_URL:-} == http://127.0.0.1:* ]]; then skip_network=1; f
 printf 'Rescue host launcher (Linux) - read-only checks; output goes to the USB only.\n'
 
 # Collector: allowlisted read-only commands; only closed-set statuses, bounded numbers.
-# collect_evidence OUTPUT_FILE RUN_SUFFIX (also used for the post-repair re-scan).
+# collect_evidence OUTPUT_FILE RUN_ID (also used for the post-repair re-scan, with RUN_ID-after).
 collect_evidence() {
 python3 - "$1" "$skip_network" "$reports" "$bundle" "$scope" "$packages" "$repair_policy" "$2" <<'PY'
 import hashlib, json, os, platform, re, shutil, socket, subprocess, sys, tempfile
 from datetime import datetime, timezone
 
 out, skip_network, reports = sys.argv[1], sys.argv[2] == '1', sys.argv[3]
-bundle, scope_arg, packages_arg, policy, run_suffix = sys.argv[4:9]
+bundle, scope_arg, packages_arg, policy, run_id = sys.argv[4:9]
+if not re.match(r'^rescue-[0-9]{8}-[0-9]{6}-lh(-after)?$', run_id):  # only the launcher's own run id
+    print('invalid run id', file=sys.stderr)
+    raise SystemExit(2)
 sys.path[:0] = [os.path.join(bundle, 'scripts'), os.path.join(bundle, 'scripts', 'lib')]
 try:
     import repair_catalog
@@ -176,7 +202,6 @@ def provider_ready():
 ready = provider_ready()
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 REF = 'os-0'
-run_id = 'rescue-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + run_suffix
 
 
 def run(cmd, timeout=20):
@@ -468,7 +493,7 @@ except BaseException:
 PY
 }
 rc=0
-collect_evidence "$evidence" lh || rc=$?
+collect_evidence "$evidence" "$run_id" || rc=$?
 if ((rc == 64)); then usage; fi
 if ((rc != 0)); then
   printf 'ERROR: evidence gagal dibuat / evidence could not be created (exit %d).\n' "$rc" >&2
@@ -502,15 +527,23 @@ run_repair() {
   [[ ${1:-} != list ]] || rargs+=(--list)
   printf '\n'
   repair_rc=0
-  "${rargs[@]}" || repair_rc=$?
-  ((repair_rc == 0)) || printf 'PERINGATAN / WARNING: repair step reported a failure; see %s\n' "$reports/repairs/journal.jsonl" >&2
-  case $repair_rc in 2) run_outcome=repair-invalid ;; 3) run_outcome=journal-unusable ;; *) ;; esac
+  # The engine decides "interactive" from stdin AND stdout being a terminal: with a terminal its stdout
+  # bypasses the log tee (its journal is the record); its stderr (diagnostics) is always logged.
+  if ((interactive_tty)); then "${rargs[@]}" 1>&3 || repair_rc=$?; else "${rargs[@]}" || repair_rc=$?; fi
+  ((repair_rc == 0)) || printf 'PERINGATAN / WARNING: repair step reported a failure (exit %d); see %s\n' "$repair_rc" "$reports/repairs/journal.jsonl" >&2
+  # Outcome precedence: keep the first failure (scan/evidence/key/network/provider/analyzer). Only a run
+  # that has not failed yet takes repair-invalid; an unusable journal outranks everything (as in macOS).
+  case $repair_rc in
+    2) case $run_outcome in completed | evidence-only | dry-run) run_outcome=repair-invalid ;; *) ;; esac ;;
+    3) run_outcome=journal-unusable ;;
+    *) ;;
+  esac
   # Before/after: when an action executed in this run, re-collect with the same scope for the report.
   if [[ ${1:-} != list && -s $reports/repairs/journal.jsonl ]] &&
     ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
     grep -F -- "\"run_id\":\"$ev_run_id\"" "$reports/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
     printf 'Mengumpulkan ulang setelah perbaikan (scope sama) / re-collecting after repairs (same scope)...\n'
-    if collect_evidence "$reports/linux-$stamp-evidence-after.json" lh-after; then
+    if collect_evidence "$reports/linux-$stamp-evidence-after.json" "$run_id-after"; then
       run_evidence_after="$reports/linux-$stamp-evidence-after.json"
     else
       printf 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.\n' >&2
@@ -550,6 +583,13 @@ case $rc in
 esac
 if ((dry_run)); then run_repair list; else run_repair; fi
 
+# The analyzer failed first: its exit code stands (a repair-engine failure is only recorded in the
+# report), except that an unusable repair journal outranks it, as in the macOS launcher.
+finish_first_failure() {
+  if ((repair_rc == 3)); then finish 5; fi
+  finish "$1"
+}
+
 case $rc in
   0)
     if ((dry_run)); then
@@ -563,22 +603,22 @@ case $rc in
   3)
     printf '\nID: OPENCODE_GO_API_KEY tidak ditemukan di rescue-omes/config/rescue.env. Evidence tetap tersimpan di:\n    %s\n    Isi kunci pada file itu (satu baris KEY=..., jangan dibagikan) lalu jalankan ulang, atau kirim evidence dari PC lain.\n' "$evidence" >&2
     printf 'EN: OPENCODE_GO_API_KEY was not found in rescue-omes/config/rescue.env. The evidence is kept at the path above.\n    Add the key to that file (one KEY=... line, keep it private) and run again, or analyze the evidence from another PC.\n' >&2
-    finish 3
+    finish_first_failure 3
     ;;
   4)
     printf '\nID: Gagal menghubungi OpenCode Go (jaringan/HTTP). Evidence tetap tersimpan di:\n    %s\n    Periksa koneksi internet lalu jalankan ulang.\n' "$evidence" >&2
     printf 'EN: Could not reach OpenCode Go (network/HTTP error). The evidence is kept at the path above. Check the connection and run again.\n' >&2
-    finish 4
+    finish_first_failure 4
     ;;
   5)
     # The provider answered with an HTTP 4xx (not 401/403/408/429): the analyzer already printed the
     # status and the error type. Launcher exit code stays 4, the network/HTTP class.
     printf '\nID: OpenCode Go menolak permintaan (HTTP 4xx, bukan masalah jaringan). Evidence tetap tersimpan di:\n    %s\n    Lihat pesan di atas lalu jalankan ulang; bila berulang, laporkan kode HTTP dan tipe galatnya.\n' "$evidence" >&2
     printf 'EN: OpenCode Go rejected the request (HTTP 4xx, not a network problem). The evidence is kept at the path above.\n    See the message above and run again; if it repeats, report the HTTP status and error type.\n' >&2
-    finish 4
+    finish_first_failure 4
     ;;
   *)
     printf '\nID: Analyzer berhenti dengan kode %d. Evidence tetap tersimpan di %s\nEN: The analyzer exited with code %d. The evidence is kept at %s\n' "$rc" "$evidence" "$rc" "$evidence" >&2
-    finish "$rc"
+    finish_first_failure "$rc"
     ;;
 esac

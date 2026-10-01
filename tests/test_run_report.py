@@ -684,6 +684,46 @@ class CliTests(unittest.TestCase):
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 3, proc.stderr)
 
+    def test_repair_exit_2_or_3_adds_the_repair_engine_failed_open_item(self):
+        for code in (2, 3):
+            with self.subTest(code=code):
+                shutil.rmtree(self.reports, True)
+                proc = self.run_cli('--mode', 'linux-host', '--outcome', 'network-error', '--repair-exit', str(code))
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                run = self.only_run()
+                doc = json.loads((run / 'report.json').read_text())
+                validate(self, doc)
+                self.assertEqual(doc['header']['outcome'], 'network-error')  # the engine failure does not replace it
+                self.assertIn({'kind': 'repair-engine-failed', 'ref': 'exit-%d' % code}, doc['open_items'])
+                self.assertIn('repair-engine-failed exit-%d' % code, (run / 'report.md').read_text(encoding='utf-8'))
+        for code in ('0', '1'):  # 0 = fine, 1 = an action failed (already an action-failed item)
+            shutil.rmtree(self.reports, True)
+            self.assertEqual(self.run_cli('--mode', 'linux-host', '--repair-exit', code).returncode, 0)
+            doc = json.loads((self.only_run() / 'report.json').read_text())
+            self.assertNotIn('repair-engine-failed', [i['kind'] for i in doc['open_items']])
+
+    def test_catalog_hash_is_recorded_without_python3_jsonschema_and_with_an_unloadable_catalog(self):
+        self.assertRegex(rc.directory_sha256(), r'^[0-9a-f]{64}$')
+        self.assertEqual(rc.directory_sha256(), SHIPPED.sha256)  # same bytes, same hash as the validating loader
+        stub = self.tmp / 'stub'
+        (stub / 'jsonschema').mkdir(parents=True)
+        (stub / 'jsonschema' / '__init__.py').write_text("raise ImportError('stub')\n")
+        self.assertEqual(self.run_cli('--mode', 'linux-host', env={'PYTHONPATH': str(stub)}).returncode, 0)
+        doc = json.loads((self.only_run() / 'report.json').read_text())
+        self.assertEqual(doc['header']['catalog_sha256'], SHIPPED.sha256)
+        shutil.rmtree(self.reports)
+        broken = self.tmp / 'catalog'
+        broken.mkdir()
+        (broken / 'x.json').write_text('{not json')
+        self.assertEqual(self.run_cli('--mode', 'linux-host', '--catalog-dir', str(broken)).returncode, 0)
+        self.assertEqual(json.loads((self.only_run() / 'report.json').read_text())['header']['catalog_sha256'],
+                         rc.directory_sha256(broken))
+        shutil.rmtree(self.reports)
+        empty = self.tmp / 'empty'
+        empty.mkdir()
+        self.assertEqual(self.run_cli('--mode', 'linux-host', '--catalog-dir', str(empty)).returncode, 0)
+        self.assertIsNone(json.loads((self.only_run() / 'report.json').read_text())['header']['catalog_sha256'])  # "unavailable"
+
     def test_a_tampered_journal_shows_invalid_through_the_cli(self):
         path = self.tmp / 'journal.jsonl'
         lines = path.read_bytes().split(b'\n')
@@ -1126,8 +1166,9 @@ class LinuxHostReportTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(HL.bundle_files(self.bundle), before)
         names = sorted(p.name for p in self.reports.iterdir())
-        self.assertEqual(len(names), 3, names)
+        self.assertEqual(len(names), 4, names)  # evidence, launcher log, run folder, index.md
         self.assertIn('index.md', names)
+        self.assertEqual(len([n for n in names if n.startswith('launcher-linux-') and n.endswith('.log')]), 1, names)
         doc, md = load_report(self.reports)
         validate(self, doc)
         self.assertEqual((doc['header']['mode'], doc['header']['outcome']), ('linux-host', 'evidence-only'))
