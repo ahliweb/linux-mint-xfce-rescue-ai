@@ -236,7 +236,10 @@ class CatalogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.catalog = rc.load()
-        cls.actions = {a: v for a, v in cls.catalog.actions.items() if v['_domain'] == 'android'}
+        cls.all_actions = {a: v for a, v in cls.catalog.actions.items() if v['_domain'] == 'android'}
+        # the adb actions of phase 2; the fastboot and Heimdall actions are covered by tests/test_android_flash.py
+        cls.actions = {a: v for a, v in cls.all_actions.items()
+                       if any(p['type'] == 'android_device' for p in v['params'])}
 
     def test_shipped_android_actions(self):
         self.assertEqual({a: (v['risk'], len(v['triggers'])) for a, v in self.actions.items()},
@@ -860,18 +863,18 @@ def jxa_plan(catalog_dir, evidence, select='', scope='all', analysis=None, tmp=N
 class HostEngineTests(unittest.TestCase):
     def test_powershell_engine_knows_the_android_names_statically(self):
         text = (REPO / 'host/rescue-windows.ps1').read_text(encoding='utf-8')
-        self.assertIn("'detection_ref', 'state_dir', 'android_device') -cnotcontains $pt", text)
+        self.assertIn("'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256') -cnotcontains $pt", text)
         self.assertIn("'software', 'malware', 'android') -cnotcontains $domain", text)
         self.assertIn('(hw|os-linux|os-windows|os-macos|sw|mw|android)', text)
         self.assertRegex(text, r"\$unsupported = @\(\$action\.params \| Where-Object \{[^}]*android_device")
-        self.assertIn("-or $_.type -ceq 'android_device' }).Count -gt 0", text)
+        self.assertIn("-or $_.type -ceq 'sha256' }).Count -gt 0", text)
 
     def test_macos_engine_knows_the_android_names_statically(self):
         text = (REPO / 'host/RESCUE-MACOS.command').read_text(encoding='utf-8')
-        self.assertIn("'detection_ref', 'state_dir', 'android_device'].indexOf(p.type)", text)
+        self.assertIn("'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256'].indexOf(p.type)", text)
         self.assertIn("'software', 'malware', 'android'].indexOf(doc.domain)", text)
         self.assertIn('(hw|os-linux|os-windows|os-macos|sw|mw|android)', text)
-        self.assertIn('[[ ${P_type[$pk]} == (block_device|target_root|android_device) ]] && unsupported=1', text)
+        self.assertIn('[[ ${P_type[$pk]} == (block_device|target_root|android_device|fastboot_device|fastboot_slot|firmware_file|sha256) ]] && unsupported=1', text)
         self.assertIn('hardware.usb|os|software|software.selected|malware|android) ;;', text)
 
     def test_every_host_catalog_parameter_type_is_in_the_closed_lists_of_both_engines(self):
@@ -879,8 +882,8 @@ class HostEngineTests(unittest.TestCase):
         types = set(schema['$defs']['param']['properties']['type']['enum'])
         ps = (REPO / 'host/rescue-windows.ps1').read_text(encoding='utf-8')
         mac = (REPO / 'host/RESCUE-MACOS.command').read_text(encoding='utf-8')
-        ps_types = set(re.findall(r"'([a-z_]+)'", re.search(r"@\('enum', 'integer'[^)]*\) -cnotcontains \$pt", ps).group(0)))
-        mac_types = set(re.findall(r"'([a-z_]+)'", re.search(r"\['enum', 'integer'[^\]]*\]\.indexOf\(p\.type\)", mac).group(0)))
+        ps_types = set(re.findall(r"'([a-z0-9_]+)'", re.search(r"@\('enum', 'integer'[^)]*\) -cnotcontains \$pt", ps).group(0)))
+        mac_types = set(re.findall(r"'([a-z0-9_]+)'", re.search(r"\['enum', 'integer'[^\]]*\]\.indexOf\(p\.type\)", mac).group(0)))
         self.assertEqual(ps_types, types)
         self.assertEqual(mac_types, types)
 

@@ -145,7 +145,7 @@ RECORD_OUTCOMES = ('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable'
 REASONS = ('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe',
            'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout',
            'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable',
-           'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch')
+           'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch')
 
 
 def _is_str(value, pattern):

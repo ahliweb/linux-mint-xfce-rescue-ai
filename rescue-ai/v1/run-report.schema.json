@@ -849,7 +849,11 @@
                       "device-absent",
                       "device-not-authorized",
                       "device-ambiguous",
-                      "device-mismatch"
+                      "device-mismatch",
+                      "bootloader-locked",
+                      "identity-mismatch",
+                      "firmware-invalid",
+                      "firmware-hash-mismatch"
                     ]
                   }
                 }
@@ -932,7 +936,11 @@
                         "device-absent",
                         "device-not-authorized",
                         "device-ambiguous",
-                        "device-mismatch"
+                        "device-mismatch",
+                        "bootloader-locked",
+                        "identity-mismatch",
+                        "firmware-invalid",
+                        "firmware-hash-mismatch"
                       ]
                     },
                     "exit_code": {

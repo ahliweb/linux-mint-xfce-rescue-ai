@@ -839,7 +839,7 @@ process_proposal() {
   fi
   for p in ${=A_params[$aid]}; do
     pk=$aid'|'$p
-    [[ ${P_type[$pk]} == (block_device|target_root|android_device) ]] && unsupported=1
+    [[ ${P_type[$pk]} == (block_device|target_root|android_device|fastboot_device|fastboot_slot|firmware_file|sha256) ]] && unsupported=1
   done
   if (( unsupported )) || [[ ${A_trw[$aid]} == 1 ]]; then
     print -r -- "  $aid needs a block device or a mounted target, which host launchers do not support; not run." >&2
@@ -986,7 +986,7 @@ function toAction(raw) {
   if (rb.kind === 'step' && rbStep === null) { problems.push(id + ' rollback step'); }
   var params = [];
   (raw.params || []).forEach(function (p) {
-    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device'].indexOf(p.type) < 0 ||
+    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256'].indexOf(p.type) < 0 ||
         typeof p.name !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(p.name)) { problems.push(id + ' param'); return; }
     params.push({ name: p.name, type: p.type, values: has(p, 'values') ? p.values.map(String) : [],
       minimum: has(p, 'minimum') ? Number(p.minimum) : 0, maximum: has(p, 'maximum') ? Number(p.maximum) : 0,
@@ -1283,7 +1283,7 @@ var ORIGINS = ['catalog-trigger', 'ai-proposal', 'operator'];
 var RISKS = ['safe', 'reversible', 'destructive'];
 var STAGES = ['proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback'];
 var RECORD_OUTCOMES = ['ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable'];
-var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch'];
+var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch'];
 var TARGET_ENUMS = {
   family: ['linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android'], architecture: ['x86_64', 'arm64', 'unknown'],
   detection: ['live-offline', 'host-native', 'usb-adb', 'usb-enumerated'], encryption: ['none', 'bitlocker', 'filevault', 'luks', 'unknown'],
