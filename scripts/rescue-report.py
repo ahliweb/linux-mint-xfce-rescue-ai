@@ -129,6 +129,7 @@ def main(argv=None):
     ap.add_argument('--evidence-after', metavar='FILE')
     ap.add_argument('--analysis', metavar='FILE')
     ap.add_argument('--journal', metavar='FILE')
+    ap.add_argument('--repair-exit', type=int, metavar='N', help='exit code of the repair engine (2 or 3 adds the open item repair-engine-failed)')
     ap.add_argument('--readiness', metavar='FILE')
     ap.add_argument('--scope', default='', help='fallback scope when there is no evidence')
     ap.add_argument('--repair-policy', choices=rr.POLICIES, help='fallback policy when there is no evidence')
@@ -184,6 +185,9 @@ def main(argv=None):
         info = action_info(catalog)
     except (rc.CatalogError, Exception):  # catalog problems never block the report
         catalog = None
+    # The header hash is a plain hash of the catalog files: it does not need the schema validation (and
+    # python3-jsonschema) that load() does, so a host without it still records which catalog the run shipped.
+    catalog_sha = catalog.sha256 if catalog is not None else rc.directory_sha256(args.catalog_dir)
 
     counts = None
     if not analysis_text or not analysis_text.strip():
@@ -198,11 +202,11 @@ def main(argv=None):
 
     inp = {
         'run_id': args.run_id, 'mode': args.mode, 'outcome': args.outcome, 'started_at': started, 'ended_at': ended,
-        'version': version, 'catalog_sha256': catalog.sha256 if catalog is not None else None,
+        'version': version, 'catalog_sha256': catalog_sha,
         'scope': scope or None, 'repair_policy': args.repair_policy, 'key_present': key_present,
         'evidence': evidence, 'evidence_sha256': hashlib.sha256(evidence_raw).hexdigest() if evidence_raw else None,
         'evidence_after': after, 'analysis_text': analysis_text, 'ai_counts': counts,
-        'journal_lines': lines, 'readiness': readiness, 'action_info': info or {}, 'secrets': secrets,
+        'journal_lines': lines, 'repair_exit': args.repair_exit, 'readiness': readiness, 'action_info': info or {}, 'secrets': secrets,
     }
     if lines is not None:
         inp['journal_extra_problems'] = schema_problems(args.journal, lines)

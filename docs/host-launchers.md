@@ -84,7 +84,9 @@ Launcher tidak memerlukan Python; hanya alat bawaan macOS (`sw_vers`, `fdesetup`
 /media/$USER/<USB>/rescue-omes/host/rescue-linux.sh
 ```
 
-Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tambahkan `--pause` bila dijalankan lewat "Run in terminal". Launcher memanggil `scripts/opencode-go-analyze.py` dari bundle (validasi schema dan panggilan cloud dilakukan di sana) dan memerlukan `python3` serta `python3-jsonschema`.
+Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tambahkan `--pause` bila dijalankan lewat "Run in terminal". Launcher memanggil `scripts/opencode-go-analyze.py` dari bundle (validasi schema dan panggilan cloud dilakukan di sana) dan memerlukan `python3` serta `python3-jsonschema` di komputer host.
+
+**Tanpa `python3-jsonschema`** (diperiksa sekali di awal): launcher **tidak memasang apa pun** di host. Ia mencetak catatan dwibahasa (ID/EN) bahwa validasi schema, analisis AI, dan perbaikan katalog membutuhkannya; evidence tetap dikumpulkan (hanya pemeriksaan struktur internal), disimpan di USB, dan tidak ada panggilan jaringan. Analyzer dan engine perbaikan tidak dijalankan (bahkan `--list` tidak). Hasil run `dependency-missing`, kode keluar `6`, dan laporan memuat penanda Kejujuran `host-dependency-missing`. Analisis evidence itu dengan boot dari live USB rescue, atau dari PC lain yang punya `python3-jsonschema`. Dengan `--evidence-only` hasilnya tetap `evidence-only` dan kode `0` (daftar perbaikan dilewati).
 
 ### Opsi
 
@@ -109,10 +111,12 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `3` | `OPENCODE_GO_API_KEY` tidak ditemukan; evidence tetap tersimpan, panduan dwibahasa dicetak |
 | `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak. Hasil di laporan proses: `network-error` (tanpa jawaban yang dapat dipakai, atau HTTP 401/403/408/429/5xx) atau `provider-rejected` (provider menjawab HTTP 4xx lain, mis. 400 `MissingSessionID`; pesan memuat kode HTTP dan tipe galat bila berupa token pendek, tidak pernah isi respons) |
 | `5` | Bundle tidak ditemukan, `reports/` di USB tidak bisa ditulis (USB write-protect?), atau journal perbaikan tidak bisa ditulis |
-| `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle; evidence tetap tersimpan |
+| `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle (`analyzer-missing`), atau `python3-jsonschema` tidak ada di host (`dependency-missing`); evidence tetap tersimpan |
 | `64` | Argumen salah (termasuk `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
 
 Kode `3` dan `4` didahulukan atas `1` dan `2`: bila analisis gagal, kode analisis yang dilaporkan, dan hasil perbaikan tetap ada di journal dan laporan proses.
+
+**Urutan hasil (launcher Linux).** Hasil run di laporan adalah kegagalan **pertama** (pemindaian, evidence, kunci, jaringan, provider, analyzer). Kegagalan engine perbaikan (kode `2` dari `rescue-repair.py`: evidence, katalog, atau pilihan tidak valid) tidak lagi menimpa hasil itu: ia dicatat tambahan sebagai butir terbuka `repair-engine-failed` (`exit-2`) di laporan, dan kode keluar tetap kode kegagalan pertama. Bila tidak ada kegagalan sebelumnya, hasilnya `repair-invalid` dengan kode `2`. Journal yang tidak bisa dipakai (engine kode `3`) mengalahkan semuanya, seperti di launcher macOS: hasil `journal-unusable`, butir `repair-engine-failed` (`exit-3`), dan kode keluar `5`. Launcher Windows dan macOS belum memakai urutan ini (hasil `repair-invalid` di sana masih menimpa).
 
 ## Output (semuanya di USB)
 
@@ -121,6 +125,7 @@ Semua output ada di `rescue-omes/reports/`; stempel waktu adalah UTC `YYYYMMDDTH
 | File | Isi |
 |---|---|
 | `windows-<utc>-evidence.json`, `macos-<utc>-evidence.json`, `linux-<utc>-evidence.json` | Evidence schema 1.2 (`source_platform` `windows-host` / `macos-host` / `linux-host`) |
+| `launcher-linux-<utc>.log` | Hanya Linux: semua yang dicetak launcher dan alat anak (stdout dan stderr) ditambahkan ke sini, `0600` bila sistem file mendukung mode (exFAT tidak), tidak pernah di disk host. Alat-alat itu tidak mencetak kunci API (diuji). Bila engine perbaikan berjalan interaktif (terminal), stdout-nya tampil di terminal saja (journal adalah catatannya); stderr-nya, tempat pesan galat, tetap masuk log |
 | `reports/repairs/journal.jsonl`, `reports/malware-detections-<run>.json` | Journal perbaikan berantai hash; daftar deteksi malware LOKAL (`0600`, berisi path; jangan dibagikan) |
 | `windows-<utc>-analysis.md`, `macos-<utc>-analysis.md`, `linux-<utc>-analysis.md` | Analisis model (Bahasa Indonesia) dengan catatan bahwa isinya hanya untuk dibaca |
 | `*-evidence-after.json` | Evidence pemindaian ulang setelah minimal satu aksi perbaikan dieksekusi (untuk perbandingan sebelum/sesudah) |
@@ -156,7 +161,7 @@ Launcher tidak memasang apa pun dan tidak menulis file ke disk host: tidak ada f
 
 `make check` menjalankan `tests/test_host_launchers.py`. Yang **sudah** diverifikasi di level source:
 
-- Linux: evidence valid terhadap schema, tidak memuat hostname/username, `--dry-run` lewat `opencode-go-analyze.py` yang asli, kode keluar 3/4/5/6, server loopback palsu (tanpa jaringan nyata).
+- Linux: evidence valid terhadap schema, tidak memuat hostname/username, `--dry-run` lewat `opencode-go-analyze.py` yang asli, kode keluar 3/4/5/6, server loopback palsu (tanpa jaringan nyata); log launcher (ada, `0600`, tanpa kunci), satu `run_id` untuk evidence dan laporan (evidence sesudah perbaikan memakai `<run_id>-after`), SHA-256 katalog di header laporan (juga tanpa `python3-jsonschema`), dan urutan hasil di atas (analyzer 4/5 dan `no-key` dengan engine kode 2, `journal-unusable` mengalahkan); tanpa `python3-jsonschema` (stub yang gagal diimpor): catatan ID/EN, tidak ada permintaan ke server palsu, engine tidak jalan, hasil `dependency-missing`.
 - PowerShell (bila `pwsh` ada): parse, parser env-file sama dengan `rescue-env.sh` pada 22 kasus, serializer JSON, evidence yang dibangun valid terhadap schema, `-EvidenceOnly` end-to-end di Linux (semua check khusus Windows menjadi `unknown`).
 - zsh (bila `zsh` ada): `zsh -n`, eksekusi penuh dengan shim untuk perintah macOS, kunci hanya di stdin `curl`, isi request JSON benar, parser kunci sama dengan bash.
 - Statis: tidak ada `python3`/`source`/`eval`/`sudo` di launcher macOS, tidak ada file sementara di host, tidak ada Invoke-Expression atau elevasi.

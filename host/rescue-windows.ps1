@@ -2304,7 +2304,7 @@ function Get-RrHonesty {
     $table = @{ 'no-key' = 'provider-key-missing'; 'network-error' = 'network-unreachable'; 'provider-rejected' = 'provider-rejected-request'; 'evidence-only' = 'analysis-not-run-offline-mode'
         'dry-run' = 'analysis-not-run-offline-mode'; 'analysis-failed' = 'analysis-failed'; 'scan-failed' = 'scan-not-completed'
         'evidence-invalid' = 'scan-not-completed'; 'scan-skipped' = 'scan-not-completed'; 'interrupted' = 'scan-not-completed'
-        'preflight-failed' = 'hardware-preflight-failed'; 'analyzer-missing' = 'analysis-failed' }
+        'preflight-failed' = 'hardware-preflight-failed'; 'analyzer-missing' = 'analysis-failed'; 'dependency-missing' = 'host-dependency-missing' }
     if ($table.ContainsKey($Outcome)) { $blocked.Add($table[$Outcome]) }
     if (-not $KeyPresent -and $blocked -cnotcontains 'provider-key-missing' -and $Outcome -cne 'preflight-failed') { $blocked.Add('provider-key-missing') }
     if ($Comparison['reason'] -ceq 'rescan-missing') { $blocked.Add('rescan-not-completed') }
@@ -2469,6 +2469,7 @@ $script:RrHonestyText = @{
     'analysis-failed' = 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.'
     'scan-not-completed' = 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.'
     'hardware-preflight-failed' = 'Environment-blocked: preflight perangkat keras gagal; pemindaian tidak dijalankan.'
+    'host-dependency-missing' = 'Environment-blocked: paket Python jsonschema tidak ada di komputer host (tidak dipasang oleh launcher); validasi schema, analisis AI, dan perbaikan katalog tidak dijalankan. Analisis evidence dari live USB rescue atau PC lain.'
     'rescan-not-completed' = 'Environment-blocked: pemindaian ulang setelah perbaikan tidak selesai; hasil perbaikan belum dibandingkan.'
 }
 

@@ -246,6 +246,23 @@ class Catalog:
         return self.actions.get(action_id)
 
 
+def directory_sha256(catalog_dir=CATALOG_DIR):
+    """The catalog SHA-256 (every file name + content, sorted) WITHOUT validating it (no python3-jsonschema needed).
+
+    None when the directory has no catalog files. Equals load(...).sha256 for a catalog that loads.
+    """
+    paths = sorted(Path(catalog_dir).glob('*.json'))
+    if not paths:
+        return None
+    digest = hashlib.sha256()
+    try:
+        for path in paths:
+            digest.update(path.name.encode('utf-8') + b'\0' + path.read_bytes() + b'\0')
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def load(catalog_dir=CATALOG_DIR, schema_path=CATALOG_SCHEMA, evidence_schema=EVIDENCE_SCHEMA):
     """Load and validate every *.json catalog; raise CatalogError with all problems."""
     jsonschema = _jsonschema()

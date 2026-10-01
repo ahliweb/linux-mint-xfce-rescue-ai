@@ -25,7 +25,7 @@ STATUSES = ('pass', 'fail', 'warn', 'not_applicable', 'unknown')
 DOMAINS = ('hardware', 'os', 'software', 'malware', 'environment')
 OUTCOMES = ('completed', 'completed-with-failures', 'evidence-only', 'dry-run', 'preflight-failed', 'scan-failed',
             'evidence-invalid', 'no-key', 'network-error', 'provider-rejected', 'analysis-failed', 'analyzer-missing',
-            'repair-invalid', 'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
+            'dependency-missing', 'repair-invalid', 'journal-unusable', 'scan-skipped', 'interrupted', 'report-privacy-refused')
 READINESS_IDS = ('cpu', 'ram', 'vga-display', 'internet-connectivity', 'usb-boot-media')
 MAX_ANALYSIS_CHARS = 32768
 ENVIRONMENT_CHECKS = frozenset('''network-connectivity iso-integrity block-device-discovery filesystem-discovery
@@ -437,7 +437,7 @@ def build_readiness(readiness):
             'checks': checks}
 
 
-def build_open_items(detection, actions, comparison, chain):
+def build_open_items(detection, actions, comparison, chain, repair_exit=None):
     items = []
     for action in actions:
         aid = action['action_id']
@@ -458,6 +458,8 @@ def build_open_items(detection, actions, comparison, chain):
             if action['manual_rollback_doc']:
                 entry['doc'] = action['manual_rollback_doc']
             items.append(entry)
+    if repair_exit in (2, 3):  # the repair engine itself failed (invalid input/catalog, or an unusable journal)
+        items.append({'kind': 'repair-engine-failed', 'ref': 'exit-%d' % repair_exit})
     if chain == 'INVALID':
         items.append({'kind': 'journal-invalid'})
     if any(t.get('access') == 'not-mounted-encrypted' or t.get('encryption') in ('bitlocker', 'filevault', 'luks')
@@ -497,7 +499,7 @@ def build_honesty(mode, outcome, key_present, actions, comparison, scope):
              'analysis-failed': 'analysis-failed', 'scan-failed': 'scan-not-completed',
              'evidence-invalid': 'scan-not-completed', 'scan-skipped': 'scan-not-completed',
              'interrupted': 'scan-not-completed', 'preflight-failed': 'hardware-preflight-failed',
-             'analyzer-missing': 'analysis-failed'}
+             'analyzer-missing': 'analysis-failed', 'dependency-missing': 'host-dependency-missing'}
     if outcome in table:
         blocked.append(table[outcome])
     if not key_present and 'provider-key-missing' not in blocked and outcome not in ('preflight-failed',):
@@ -580,7 +582,7 @@ def build_report(inp):
         },
         'comparison': comparison,
     }
-    report['open_items'] = build_open_items(detection, actions, comparison, chain)
+    report['open_items'] = build_open_items(detection, actions, comparison, chain, inp.get('repair_exit'))
     report['honesty'] = build_honesty(inp['mode'], outcome, bool(inp.get('key_present')), actions, comparison, scope)
     report['summary'] = build_summary(detection, actions, comparison)
     report['privacy_check'] = {'status': 'passed', 'findings': []}
@@ -628,6 +630,8 @@ OPEN_TEXT = {
     'action-skipped': 'Aksi dilewati (prasyarat, parameter, atau backup tidak terpenuhi).',
     'action-not-run': 'Aksi hanya diusulkan (kebijakan detect-only); belum dijalankan.',
     'manual-rollback': 'Rollback MANUAL diperlukan; ikuti dokumen yang ditautkan.',
+    'repair-engine-failed': 'Mesin perbaikan sendiri gagal (exit-2: evidence, katalog, atau pilihan tidak valid; exit-3: journal tidak dapat dipakai); '
+                            'tidak ada aksi yang dianggap selesai, periksa log launcher di folder reports USB.',
     'journal-invalid': 'Rantai hash journal TIDAK VALID; jangan percaya bagian remediasi sebelum diperiksa.',
     'escalate-encrypted-disk': 'Disk terenkripsi tidak dapat dipindai penuh; buka kunci dengan kunci pemulihan milik pemilik, lalu jalankan ulang.',
     'escalate-hardware-fault': 'Indikasi kerusakan perangkat keras; cadangkan data sekarang dan bawa ke teknisi.',
@@ -647,6 +651,7 @@ HONESTY_TEXT = {
     'analysis-failed': 'Environment-blocked: analisis AI gagal atau analyzer tidak tersedia.',
     'scan-not-completed': 'Environment-blocked: pemindaian tidak selesai, dilewati, atau evidence tidak valid.',
     'hardware-preflight-failed': 'Environment-blocked: preflight perangkat keras gagal; pemindaian tidak dijalankan.',
+    'host-dependency-missing': 'Environment-blocked: paket Python jsonschema tidak ada di komputer host (tidak dipasang oleh launcher); validasi schema, analisis AI, dan perbaikan katalog tidak dijalankan. Analisis evidence dari live USB rescue atau PC lain.',
     'rescan-not-completed': 'Environment-blocked: pemindaian ulang setelah perbaikan tidak selesai; hasil perbaikan belum dibandingkan.',
 }
 
