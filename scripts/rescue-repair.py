@@ -28,6 +28,15 @@ and-N target of the proposal, requires it to be adb-authorized and to have the o
 the evidence, and only then renders the integer transport id for ``adb -t``. The id is never read from
 evidence, model output or the command line and is never journaled.
 
+Flashing (docs/android.md) adds three more engine-provided pieces, all for the Python engine only.
+fastboot_device is resolved like android_device and rendered as the ``usb:<port>`` selector that
+``fastboot -s`` accepts (never the serial). firmware_file is an operator-supplied absolute path that the
+engine opens without following a final symlink, size-bounds, hashes (it must equal the operator-supplied
+firmware_sha256) and hands to the child as an inherited file descriptor (/dev/fd/N), so the bytes that were
+hashed are the bytes that are flashed; only the SHA-256 reaches the journal, never the path. Catalog
+``guards`` (bootloader-unlocked, image-matches-device, single-download-mode-device) are native checks that
+run after approval and refuse with a typed reason before anything is sent to the phone.
+
 This Python engine executes on the live-linux and linux-host platforms. Windows and macOS
 evidence can be planned here (--list) but is executed by the host launchers' own engines.
 
@@ -50,6 +59,7 @@ import stat
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,7 +68,7 @@ sys.path.insert(0, str(HERE / 'lib'))
 sys.path.insert(0, str(HERE))
 import repair_catalog as rc  # noqa: E402
 import malware_detections as md  # noqa: E402
-from rescue_modules import android, usb_devices  # noqa: E402
+from rescue_modules import android, android_flash, usb_devices  # noqa: E402
 
 SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 EXECUTING_PLATFORMS = {'live-linux', 'linux-host'}
@@ -72,6 +82,14 @@ CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
 ANDROID_WAIT_SECONDS = 150
 ANDROID_POLL_SECONDS = 3
 ANDROID_CHILD_ENV = ('HOME', 'USER', 'TMPDIR')   # adb keeps its RSA key in ~/.android; fastboot needs nothing
+# Firmware files (docs/android.md): size bounds per kind, and what a fastboot update zip may not carry.
+FIRMWARE_BYTES = {'image': (4096, 2 << 30), 'zip': (1 << 20, 16 << 30)}
+MAX_ANDROID_INFO = 64 * 1024
+MAX_ZIP_MEMBERS = 2000
+OUTER_FACTORY_SCRIPTS = ('flash-all.sh', 'flash-all.bat', 'flash-base.sh')
+FORBIDDEN_IMAGE_STEMS = frozenset({'bootloader', 'radio', 'modem', 'persist', 'efs', 'frp', 'devinfo', 'fsg',
+                                   'modemst1', 'modemst2', 'userdata'})
+ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot')
 
 
 def utc_now():
@@ -202,7 +220,15 @@ def resolve_argv(argv, requires_root, path):
     return full
 
 
-def run_step(step, values, requires_root, path, default_timeout, android=False):
+def output_has_line(output, expected):
+    """Does the combined output contain a line exactly equal to *expected* (control characters stripped)?"""
+    for line in output.decode('utf-8', 'replace').splitlines():
+        if CONTROL.sub('', line).strip() == expected:
+            return True
+    return False
+
+
+def run_step(step, values, requires_root, path, default_timeout, android=False, pass_fds=()):
     """Run one catalog step; returns a result dict (never raises for the command itself)."""
     argv = rc.render(step['argv'], values)
     full = resolve_argv(argv, requires_root, path)
@@ -216,7 +242,7 @@ def run_step(step, values, requires_root, path, default_timeout, android=False):
     started = time.monotonic()
     try:
         proc = subprocess.run(full, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              env=env, timeout=timeout, check=False)
+                              env=env, timeout=timeout, check=False, pass_fds=pass_fds)
         output, code = proc.stdout, proc.returncode
     except subprocess.TimeoutExpired as exc:
         output = exc.output or b''
@@ -225,6 +251,9 @@ def run_step(step, values, requires_root, path, default_timeout, android=False):
     except OSError:
         return {'outcome': 'unavailable', 'reason': 'program-not-found', 'argv': argv}
     ok = code in step.get('expect_exit', [0])
+    if ok and step.get('expect_line') is not None and not output_has_line(output, rc.render_expect_line(step['expect_line'], values)):
+        return {'outcome': 'fail', 'reason': 'verify-failed', 'argv': argv, 'exit_code': max(-255, min(255, code)),
+                'output': output, 'duration': time.monotonic() - started}
     return {'outcome': 'ok' if ok else 'fail', 'reason': None if ok else 'exit-code', 'argv': argv,
             'exit_code': max(-255, min(255, code)), 'output': output, 'duration': time.monotonic() - started}
 
@@ -316,6 +345,10 @@ class Engine:
         self.state_root = state_root(args)
         self._detections = None
         self._adb = None
+        self._fastboot = None
+        self.fds = []                # open firmware files handed to the child as /dev/fd/N (closed after each action)
+        self.firmware = {}           # param name -> {'kind', 'android_info'} of the bound firmware files
+        self.fb_port = None          # USB port of the fastboot device bound for the current action
         self.android_wait = ANDROID_WAIT_SECONDS
         self.apply_test_hooks()
 
@@ -356,10 +389,7 @@ class Engine:
 
         Nothing but the proposal's and-N reference and the evidence's opaque id are used; the phone is looked up
         again right now (USB sysfs + ``adb devices -l``), so a swapped, unplugged or re-numbered phone is caught."""
-        ref = proposal.get('target_ref')
-        target = next((t for t in self.evidence.get('target_systems') or []
-                       if t.get('ref') == ref and t.get('family') == 'android'), None)
-        expected = (target or {}).get('opaque_id')
+        ref, expected = proposal.get('target_ref'), self.evidence_opaque_id(proposal)
         if not ref or not expected:
             return None, 'device-mismatch'
         usb_list = usb_devices.list_usb_devices()
@@ -381,21 +411,261 @@ class Engine:
             return None, 'device-absent'
         return transport, None
 
-    def bind_android(self, action, proposal, values, wait=0):
-        """(values with the android_device transport id, None) or (None, reason).
+    @staticmethod
+    def device_param(action):
+        """(name, type) of the action's android_device or fastboot_device parameter, or (None, None)."""
+        return next(((p['name'], p['type']) for p in action.get('params') or []
+                     if p['type'] in ('android_device', 'fastboot_device')), (None, None))
 
-        *wait* (seconds) keeps polling while the phone is absent or not authorized yet (verify after a reboot)."""
-        name = self.android_param(action)
+    def evidence_opaque_id(self, proposal):
+        """The opaque id the evidence recorded for the proposal's and-N target, or None."""
+        ref = proposal.get('target_ref')
+        target = next((t for t in self.evidence.get('target_systems') or []
+                       if t.get('ref') == ref and t.get('family') == 'android'), None)
+        return (target or {}).get('opaque_id') if ref else None
+
+    def fastboot(self):
+        if self._fastboot is None:
+            program = shutil.which('fastboot', path=self.path)
+            self._fastboot = android_flash.Fastboot(program, search_path=self.path) if program else False
+        return self._fastboot or None
+
+    def current_targets(self):
+        """(usb_list, targets) seen right now from the USB inventory alone (fastboot and download-mode phones need no adb)."""
+        usb_list = usb_devices.list_usb_devices()
+        return None if usb_list is None else (usb_list, android.discover(usb_list, None, False))
+
+    def resolve_fastboot(self, proposal):
+        """(selector 'usb:<port>', reason): the phone the proposal names, in fastboot mode and usable by this user."""
+        ref, expected = proposal.get('target_ref'), self.evidence_opaque_id(proposal)
+        if not expected:
+            return None, 'device-mismatch'
+        seen, fb = self.current_targets(), self.fastboot()
+        if seen is None or fb is None:
+            return None, 'device-absent'
+        found = seen[1]
+        current = next((t for t in found if t['ref'] == ref), None)
+        if current is None:
+            return None, 'device-absent'
+        if sum(1 for t in found if t['opaque_id'] == expected) > 1:
+            return None, 'device-ambiguous'
+        if current['opaque_id'] != expected:
+            return None, 'device-mismatch'
+        res = fb.devices()
+        listing = android_flash.parse_devices(res[1]) if res and res[0] == 0 else None
+        port = current['port']
+        if 'fastboot' not in current['modes'] or listing is None or port not in listing['ports'] or port in listing['denied']:
+            return None, 'device-absent'
+        if self.fb_value(port, 'product') is None:       # the selector must really reach the device
+            return None, 'device-absent'
+        self.fb_port = port
+        return 'usb:' + port, None
+
+    def fb_value(self, port, name):
+        """A fastboot variable of the bound device: a closed value for the status variables, the product string for
+        ``product`` (kept in memory only, never printed or journaled), or None."""
+        fb = self.fastboot()
+        text = fb.getvar(port, name) if fb else None
+        if name == 'product':
+            m = next((re.match(r'^product: ([A-Za-z0-9._-]{1,64})$', ln.strip()) for ln in (text or '').splitlines()
+                      if ln.strip().startswith('product: ')), None)
+            return m.group(1) if m else None
+        return android_flash.parse_getvar(text, name)
+
+    def bind_device(self, action, proposal, values, wait=0):
+        """(values with the device parameter rendered, None) or (None, reason).
+
+        android_device becomes the adb transport id, fastboot_device the ``usb:<port>`` selector. *wait* (seconds)
+        keeps polling while the phone is absent or not authorized yet (verify after a reboot)."""
+        name, kind = self.device_param(action)
         if name is None:
             return values, None
         deadline = time.monotonic() + wait
         while True:
-            transport, reason = self.resolve_android(proposal)
+            got, reason = self.resolve_android(proposal) if kind == 'android_device' else self.resolve_fastboot(proposal)
             if reason is None:
-                return dict(values, **{name: str(transport)}), None
+                return dict(values, **{name: str(got)}), None
             if reason not in ('device-absent', 'device-not-authorized') or time.monotonic() >= deadline:
                 return None, reason
             time.sleep(min(ANDROID_POLL_SECONDS, max(0.05, deadline - time.monotonic())))
+
+    @staticmethod
+    def step_uses_device(action, step):
+        name, _ = Engine.device_param(action)
+        return name is not None and any('{%s}' % name in element for element in step['argv'])
+
+    # ------------------------------------------------------------ guards, firmware, slot
+
+    def run_guards(self, action, proposal, phase):
+        """A typed refusal reason, or None. phase 'device' runs before the firmware is read, 'image' after."""
+        for guard in action.get('guards') or []:
+            if guard == 'bootloader-unlocked' and phase == 'device':
+                if self.fb_value(self.fb_port, 'unlocked') != 'yes':
+                    say('  Bootloader terkunci atau status kunci tidak terbaca. Toolkit TIDAK membuka kunci (menghapus semua data); '
+                        'buka kunci sendiri dengan prosedur resmi pabrikan lalu ulangi: docs/android.md#bootloader-terkunci')
+                    say('  The bootloader is locked or its state cannot be read. This toolkit NEVER unlocks it (it wipes all data); '
+                        "unlock it yourself with the manufacturer's official procedure, then run again: docs/android.md#bootloader-terkunci")
+                    return 'bootloader-locked'
+            elif guard == 'single-download-mode-device' and phase == 'device':
+                reason = self.single_download_device(proposal)
+                if reason:
+                    return reason
+            elif guard == 'image-matches-device' and phase == 'image':
+                reason = self.image_matches_device(action)
+                if reason:
+                    return reason
+        return None
+
+    def single_download_device(self, proposal):
+        """Heimdall addresses whatever download-mode device it finds: exactly one may be attached, and it must be
+        the proposal's and-N with the evidence's opaque id."""
+        expected, seen = self.evidence_opaque_id(proposal), self.current_targets()
+        if seen is None:
+            return 'device-absent'
+        if not expected:
+            return 'device-mismatch'
+        download = [t for t in seen[1] if 'samsung-download' in t['modes']]
+        if not download:
+            return 'device-absent'
+        if len(download) > 1:
+            return 'device-ambiguous'
+        if download[0]['ref'] != proposal.get('target_ref') or download[0]['opaque_id'] != expected:
+            return 'device-mismatch'
+        return None
+
+    def image_matches_device(self, action):
+        """android-info.txt ``require board=`` / ``require product=`` lines against ``fastboot getvar product``."""
+        info = next((v['android_info'] for v in self.firmware.values() if v['kind'] == 'zip'), None)
+        product = self.fb_value(self.fb_port, 'product')
+        if info is None or product is None:
+            return 'identity-mismatch'
+        required = 0
+        for line in info.splitlines():
+            m = re.match(r'^\s*require\s+(board|product)\s*=\s*(\S.*?)\s*$', line)
+            if m:
+                required += 1
+                if product not in [alt.strip() for alt in m.group(2).split('|')]:
+                    warn('  %s: the image says it is not for this device (android-info.txt require %s); refusing'
+                         % (action['action_id'], m.group(1)))
+                    return 'identity-mismatch'
+        if not required:
+            warn('  %s: android-info.txt has no require board/product line, so the image cannot be matched to the device; refusing'
+                 % action['action_id'])
+            return 'identity-mismatch'
+        return None
+
+    def bind_firmware(self, action, values):
+        """(values with every firmware_file replaced by /dev/fd/N, None) or (None, reason).
+
+        The file is opened once without following a final symlink, must be a regular file inside the size bounds,
+        is hashed through that descriptor (it must equal the operator's SHA-256), and the child later reads the
+        same open file. Zips must be a fastboot update image: android-info.txt at the root, no outer factory
+        script (flash-all), and no bootloader/radio/modem/persist/efs/frp/devinfo/fsg/userdata member."""
+        out = dict(values)
+        for p in action.get('params') or []:
+            if p['type'] != 'firmware_file':
+                continue
+            aid, kind, path = action['action_id'], p['values'][0], values[p['name']]
+            expected = values[p['name'] + '_sha256']
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            except OSError as exc:
+                warn('  %s %s: cannot open the firmware file (%s)' % (aid, p['name'], exc.strerror or 'error'))
+                return None, 'firmware-invalid'
+            self.fds.append(fd)
+            low, high = FIRMWARE_BYTES[kind]
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or not low <= st.st_size <= high:
+                warn('  %s %s: the firmware must be a regular file (no symlink) of %d..%d bytes' % (aid, p['name'], low, high))
+                return None, 'firmware-invalid'
+            digest, head = hashlib.sha256(), b''
+            with os.fdopen(os.dup(fd), 'rb', closefd=True) as handle:
+                while True:
+                    chunk = handle.read(1 << 20)
+                    if not chunk:
+                        break
+                    head = head or chunk[:4]
+                    digest.update(chunk)
+            if digest.hexdigest() != expected:
+                warn('  %s %s: the SHA-256 of the file is not the one you supplied; refusing' % (aid, p['name']))
+                return None, 'firmware-hash-mismatch'
+            after = os.fstat(fd)
+            if (after.st_size, after.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+                warn('  %s %s: the firmware file changed while it was being hashed; refusing' % (aid, p['name']))
+                return None, 'firmware-invalid'
+            info = None
+            if kind == 'zip':
+                info = self.read_android_info(fd)
+                if info is None:
+                    warn('  %s %s: not a fastboot update image (needs android-info.txt at the root, no flash-all script, no '
+                         'bootloader/radio/modem/persist/efs/frp/userdata image). Use the inner image-*.zip of a factory image.'
+                         % (aid, p['name']))
+                    return None, 'firmware-invalid'
+            elif head == b'PK\x03\x04':
+                warn('  %s %s: this is a zip, not a partition image; refusing' % (aid, p['name']))
+                return None, 'firmware-invalid'
+            self.firmware[p['name']] = {'kind': kind, 'android_info': info}
+            out[p['name']] = '/dev/fd/%d' % fd
+        return out, None
+
+    @staticmethod
+    def read_android_info(fd):
+        """The text of android-info.txt of a fastboot update zip (read as data: nothing is extracted or run), or None."""
+        try:
+            with os.fdopen(os.dup(fd), 'rb', closefd=True) as handle, zipfile.ZipFile(handle) as archive:
+                members = archive.infolist()
+                names = [m.filename for m in members]
+                if len(members) > MAX_ZIP_MEMBERS or 'android-info.txt' not in names:
+                    return None
+                if any(n.lower() in OUTER_FACTORY_SCRIPTS for n in names):
+                    return None
+                for n in names:
+                    stem = os.path.basename(n).lower().split('.', 1)[0]
+                    stem = re.sub(r'[-_][0-9][A-Za-z0-9._-]*$', '', stem)
+                    if stem in FORBIDDEN_IMAGE_STEMS or stem.startswith(('bootloader-', 'radio-', 'modem-')):
+                        return None
+                member = archive.getinfo('android-info.txt')
+                if member.file_size > MAX_ANDROID_INFO:
+                    return None
+                return archive.read(member).decode('utf-8', 'replace')
+        except (zipfile.BadZipFile, OSError, ValueError, RuntimeError, NotImplementedError):
+            return None
+
+    def bind_slot(self, action, values):
+        """(values with fastboot_slot = the active slot read now, None) or (None, reason)."""
+        out = dict(values)
+        for p in action.get('params') or []:
+            if p['type'] == 'fastboot_slot':
+                slot = self.fb_value(self.fb_port, 'current-slot')
+                if slot is None:
+                    warn('  %s: the active slot cannot be read (not an A/B device?); not run.' % action['action_id'])
+                    return None, 'identity-mismatch'
+                out[p['name']] = slot
+        return out, None
+
+    def bind_all(self, action, proposal, values):
+        """Device, guards, firmware and slot, in the cheapest-first order: (values, None) or (None, reason)."""
+        values, refusal = self.bind_device(action, proposal, values)
+        if refusal:
+            return None, refusal
+        refusal = self.run_guards(action, proposal, 'device')
+        if refusal:
+            return None, refusal
+        values, refusal = self.bind_firmware(action, values)
+        if refusal:
+            return None, refusal
+        refusal = self.run_guards(action, proposal, 'image')
+        if refusal:
+            return None, refusal
+        return self.bind_slot(action, values)
+
+    def release_fds(self):
+        for fd in self.fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self.fds, self.firmware, self.fb_port = [], {}, None
 
     def close(self):
         """Stop the adb server this run started (live session only; on a host the operator's server is theirs)."""
@@ -453,7 +723,7 @@ class Engine:
         values, aid = {}, action['action_id']
         proposal = proposal or {}
         for p in action.get('params') or []:
-            if p['type'] in ('target_root', 'state_dir', 'android_device'):
+            if p['type'] in ENGINE_TYPES:
                 continue  # filled by the mount provider / the engine
             raw = proposal.get('detection') if p['type'] == 'detection_ref' and proposal.get('detection') else None
             if raw is None:
@@ -497,6 +767,12 @@ class Engine:
                 shown[p['name']] = '<USB state>/' + p['values'][0]
             elif p['type'] == 'android_device':
                 shown[p['name']] = '<android %s>' % proposal.get('target_ref', '?')
+            elif p['type'] == 'fastboot_device':
+                shown[p['name']] = '<fastboot %s>' % proposal.get('target_ref', '?')
+            elif p['type'] == 'fastboot_slot':
+                shown[p['name']] = '<active slot>'
+            elif p['type'] == 'firmware_file':
+                shown[p['name']] = '<firmware %s file>' % p['values'][0]
             elif p['type'] == 'detection_ref':
                 entry = self.detection_entry(values.get(p['name']), action, proposal)
                 if entry is not None:
@@ -506,6 +782,8 @@ class Engine:
         rb = action['rollback']
         say('   rollback: %s' % (rb['kind'] if rb['kind'] != 'manual' and rb['kind'] != 'restore-backup'
                                  else '%s (%s)' % (rb['kind'], rb.get('doc'))))
+        if action.get('guards'):
+            say('   guards: %s (checked after approval, before anything is sent)' % ', '.join(action['guards']))
         if action.get('requires_target_rw'):
             say('   PERINGATAN / WARNING: target akan di-mount read-write / the target will be mounted read-write')
         if action['backup']['required']:
@@ -572,12 +850,14 @@ class Engine:
         values, reason = self.approve(action, proposal)
         if values is None:
             return 'declined'
-        journal_params = {k: v for k, v in values.items()}
+        kinds = {p['name']: p['type'] for p in action.get('params') or []}
+        # a firmware path is never journaled; its SHA-256 is (it is the sha256 parameter)
+        journal_params = {k: v for k, v in values.items() if kinds.get(k) != 'firmware_file'}
         self.log(action, proposal, 'approval', 'ok', reason=reason, params=journal_params or None)
         values = self.engine_values(action, values)
-        values, refusal = self.bind_android(action, proposal, values)
+        values, refusal = self.bind_all(action, proposal, values)
         if refusal:
-            warn('  %s: the phone %s cannot be used now (%s); not run.' % (aid, proposal.get('target_ref', '?'), refusal))
+            warn('  %s: refused before anything was sent (%s); not run.' % (aid, refusal))
             self.log(action, proposal, 'precondition', 'fail', reason=refusal)
             return 'skipped'
         if needs_target:
@@ -651,15 +931,17 @@ class Engine:
     def step(self, action, proposal, stage, step, values):
         base = stage.split('/')[0]
         is_android = self.android_param(action) is not None
-        if is_android and base in ('verify', 'rollback'):
+        if base in ('verify', 'rollback') and self.step_uses_device(action, step):
             # The phone may have restarted (new transport id) or been unplugged since the last step: look again.
-            values, refusal = self.bind_android(action, proposal, values, self.android_wait if base == 'verify' else 0)
+            values, refusal = self.bind_device(action, proposal, values,
+                                               self.android_wait if base == 'verify' and is_android else 0)
             if refusal:
                 outcome = 'fail' if base == 'verify' else 'unavailable'
                 self.log(action, proposal, base, outcome, reason=refusal)
                 say('  %-12s %s (%s)' % (stage, outcome, refusal))
                 return {'outcome': outcome, 'reason': refusal}
-        result = run_step(step, values, action.get('requires_root', False), self.path, DEFAULT_TIMEOUT[base], is_android)
+        result = run_step(step, values, action.get('requires_root', False), self.path, DEFAULT_TIMEOUT[base], is_android,
+                          tuple(self.fds))
         self.log(action, proposal, base, result['outcome'], **{
             k: v for k, v in result_fields(result).items() if k not in ('outcome',)})
         say('  %-12s %s' % (stage, result['outcome']))
@@ -828,7 +1110,10 @@ def main(argv=None):
         outcomes = []
         try:
             for proposal in proposals:
-                outcome = engine.process(proposal)
+                try:
+                    outcome = engine.process(proposal)
+                finally:
+                    engine.release_fds()
                 outcomes.append((proposal, outcome))
         finally:
             engine.close()

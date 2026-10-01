@@ -29,7 +29,7 @@
       "triggers": [{"check_id": "android-play-protect", "status": ["warn"]}],
       "params": [{"name": "device", "type": "android_device"}],
       "execute": {"argv": ["adb", "-t", "{device}", "shell", "settings", "put", "global", "package_verifier_enable", "1"], "timeout_seconds": 30},
-      "verify": {"argv": ["adb", "-t", "{device}", "shell", "settings", "get", "global", "package_verifier_enable"], "timeout_seconds": 30},
+      "verify": {"argv": ["adb", "-t", "{device}", "shell", "settings", "get", "global", "package_verifier_enable"], "expect_line": "1", "timeout_seconds": 30},
       "rollback": {"kind": "step", "step": {"argv": ["adb", "-t", "{device}", "shell", "settings", "delete", "global", "package_verifier_enable"], "timeout_seconds": 30}},
       "backup": {"required": false},
       "doc": "docs/android.md#android-enable-package-verifier"
@@ -49,6 +49,110 @@
       "rollback": {"kind": "none"},
       "backup": {"required": false},
       "doc": "docs/android.md#android-reboot"
+    },
+    {
+      "action_id": "android.fastboot-set-active-slot",
+      "title": "Switch the active A/B slot (fastboot --set-active)",
+      "title_id": "Pindahkan slot A/B aktif (fastboot --set-active)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "reversible",
+      "triggers": [],
+      "params": [
+        {"name": "device", "type": "fastboot_device"},
+        {"name": "slot", "type": "enum", "values": ["a", "b"]},
+        {"name": "previous_slot", "type": "fastboot_slot"}
+      ],
+      "execute": {"argv": ["fastboot", "-s", "{device}", "--set-active={slot}"], "timeout_seconds": 60},
+      "verify": {"argv": ["fastboot", "-s", "{device}", "getvar", "current-slot"], "expect_line": "current-slot: {slot}", "timeout_seconds": 30},
+      "rollback": {"kind": "step", "step": {"argv": ["fastboot", "-s", "{device}", "--set-active={previous_slot}"], "timeout_seconds": 60}},
+      "backup": {"required": false},
+      "doc": "docs/android.md#android-fastboot-set-active-slot"
+    },
+    {
+      "action_id": "android.fastboot-reboot",
+      "title": "Restart the phone out of fastboot (fastboot reboot)",
+      "title_id": "Mulai ulang ponsel dari fastboot (fastboot reboot)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "safe",
+      "triggers": [],
+      "params": [{"name": "device", "type": "fastboot_device"}],
+      "execute": {"argv": ["fastboot", "-s", "{device}", "reboot"], "timeout_seconds": 60},
+      "verify": {"argv": ["fastboot", "devices"], "timeout_seconds": 30},
+      "rollback": {"kind": "none"},
+      "backup": {"required": false},
+      "doc": "docs/android.md#android-fastboot-reboot"
+    },
+    {
+      "action_id": "android.fastboot-flash-partition",
+      "title": "Flash one allowlisted partition image (fastboot flash, unlocked bootloader)",
+      "title_id": "Flash satu image partisi dalam allowlist (fastboot flash, bootloader terbuka)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "destructive",
+      "triggers": [],
+      "guards": ["bootloader-unlocked"],
+      "params": [
+        {"name": "device", "type": "fastboot_device"},
+        {"name": "partition", "type": "enum", "values": ["boot", "init_boot", "vendor_boot", "dtbo", "vbmeta", "vbmeta_system", "recovery"]},
+        {"name": "firmware", "type": "firmware_file", "values": ["image"]},
+        {"name": "firmware_sha256", "type": "sha256"}
+      ],
+      "execute": {"argv": ["fastboot", "-s", "{device}", "flash", "{partition}", "{firmware}"], "timeout_seconds": 1800},
+      "verify": {"argv": ["fastboot", "-s", "{device}", "getvar", "product"], "timeout_seconds": 30},
+      "rollback": {"kind": "manual", "doc": "docs/android.md#rollback-flash"},
+      "backup": {"required": true, "what": "partition-image"},
+      "doc": "docs/android.md#android-fastboot-flash-partition"
+    },
+    {
+      "action_id": "android.fastboot-update-image",
+      "title": "Flash an official image zip, keep user data (fastboot update, no -w)",
+      "title_id": "Flash zip image resmi, data pengguna dipertahankan (fastboot update, tanpa -w)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "destructive",
+      "triggers": [],
+      "guards": ["bootloader-unlocked", "image-matches-device"],
+      "params": [
+        {"name": "device", "type": "fastboot_device"},
+        {"name": "firmware", "type": "firmware_file", "values": ["zip"]},
+        {"name": "firmware_sha256", "type": "sha256"}
+      ],
+      "execute": {"argv": ["fastboot", "-s", "{device}", "update", "{firmware}"], "timeout_seconds": 3600},
+      "verify": {"argv": ["fastboot", "-s", "{device}", "getvar", "product"], "timeout_seconds": 30},
+      "rollback": {"kind": "manual", "doc": "docs/android.md#rollback-flash"},
+      "backup": {"required": true, "what": "disk-image"},
+      "doc": "docs/android.md#android-fastboot-update-image"
+    },
+    {
+      "action_id": "android.heimdall-flash-partition",
+      "title": "EXPERIMENTAL: flash one partition in Samsung download mode (Heimdall)",
+      "title_id": "EKSPERIMENTAL: flash satu partisi di mode download Samsung (Heimdall)",
+      "scope": "android",
+      "platforms": ["live-linux", "linux-host"],
+      "target_families": ["android"],
+      "risk": "destructive",
+      "triggers": [],
+      "guards": ["single-download-mode-device"],
+      "params": [
+        {"name": "partition", "type": "enum", "values": ["BOOT", "RECOVERY", "VBMETA", "DTBO"]},
+        {"name": "firmware", "type": "firmware_file", "values": ["image"]},
+        {"name": "firmware_sha256", "type": "sha256"}
+      ],
+      "preconditions": [
+        {"argv": ["heimdall", "detect"], "timeout_seconds": 30},
+        {"argv": ["heimdall", "print-pit", "--no-reboot"], "expect_line": "Partition Name: {partition}", "timeout_seconds": 60}
+      ],
+      "execute": {"argv": ["heimdall", "flash", "--{partition}", "{firmware}", "--no-reboot"], "timeout_seconds": 900},
+      "verify": {"argv": ["heimdall", "detect"], "timeout_seconds": 30},
+      "rollback": {"kind": "manual", "doc": "docs/android.md#rollback-flash"},
+      "backup": {"required": true, "what": "partition-image"},
+      "doc": "docs/android.md#android-heimdall-flash-partition"
     }
   ]
 }

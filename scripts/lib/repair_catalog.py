@@ -18,7 +18,12 @@ Placeholders inside argv elements take exactly one of three forms:
 Engine-provided parameter types (never operator input): ``target_root`` (mount point of the target
 OS), ``state_dir`` (one fixed subdirectory, ``clamav`` or ``quarantine``, of the USB state) and
 ``android_device`` (the integer ``adb -t`` transport id of the phone named by the proposal's ``and-N``
-target_ref, resolved by the engine at execution time; see docs/android.md).
+target_ref, resolved by the engine at execution time; see docs/android.md), ``fastboot_device`` (the same
+phone in fastboot mode, rendered as the ``usb:<port>`` selector of ``fastboot -s``) and ``fastboot_slot``
+(the active A/B slot read from the phone right before the action, for rollback). ``firmware_file`` (an
+operator-supplied absolute path, hashed by the engine and passed as an inherited file descriptor) and
+``sha256`` (the operator's expected SHA-256 of that file) are operator input, validated by the engine.
+Placeholders may also take the form ``--{name}`` for an enum parameter (Heimdall partition options).
 ``detection_ref`` (``d-N``) is an operator-chosen opaque reference to one entry of the local
 malware detection list; the engine resolves it to a verified regular-file path.
 """
@@ -26,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -43,12 +49,23 @@ DOMAIN_PLATFORMS = {'os-linux': {'live-linux', 'linux-host'}, 'os-windows': {'li
 # Parameter types only the Python engine can resolve: such actions never apply to the Windows/macOS host
 # launchers (they list the types as unsupported), so they are limited to the Python engine's platforms.
 PYTHON_ENGINE_PLATFORMS = {'live-linux', 'linux-host'}
-ENGINE_ONLY_PARAMS = frozenset({'android_device'})
+ENGINE_ONLY_PARAMS = frozenset({'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256'})
+GUARDS = ('bootloader-unlocked', 'image-matches-device', 'single-download-mode-device')
 # What an Android action may send to the phone (docs/android.md). adb is always addressed with
 # ``-t {android_device}``; the sub-command and the on-device program are closed lists, so a catalog change
 # cannot add root, install, push/pull, sideload, remount, reboot into bootloader/recovery, or a wipe.
 ADB_NO_ARGS = ('reboot', 'get-state')
 ADB_SHELL = {'pm': ('trim-caches',), 'settings': ('get', 'put', 'delete'), 'df': None}
+# Flashing (docs/android.md). fastboot is always ``fastboot -s {fastboot_device} ...`` (or ``fastboot devices``) with
+# a closed list of sub-commands: no erase, format, -w, flashing unlock/lock, oem, slot or verity switches, and the
+# partition parameter of ``flash`` is an enum whose values must come from this allowlist (never bootloader, radio,
+# modem, persist, efs, frp, devinfo, userdata). Heimdall (Samsung download mode, experimental) likewise.
+FASTBOOT_GETVARS = ('product', 'unlocked', 'current-slot', 'slot-count', 'is-userspace')
+FASTBOOT_FLASH_PARTITIONS = frozenset({'boot', 'init_boot', 'vendor_boot', 'dtbo', 'vbmeta', 'vbmeta_system', 'recovery'})
+HEIMDALL_PARTITIONS = frozenset({'BOOT', 'RECOVERY', 'VBMETA', 'DTBO'})
+SLOTS = frozenset({'a', 'b'})
+SHA256_RE = re.compile(r'^[A-Fa-f0-9]{64}\Z')       # \Z: a trailing newline must not slip through
+FIRMWARE_KINDS = ('image', 'zip')
 DETECTION_RE = re.compile(r'^d-[0-9]{1,4}$')
 LIVE_PLATFORMS = {'linux-mint-xfce-live': 'live-linux', 'systemrescue-live': 'live-linux',
                   'other-live-linux': 'live-linux', 'linux-host': 'linux-host',
@@ -72,6 +89,7 @@ dd ssh scp curl wget nc ncat socat docker podman
 PLACEHOLDER = re.compile(r'\{([a-z][a-z0-9_]{0,31})\}')
 WHOLE = re.compile(r'^\{([a-z][a-z0-9_]{0,31})\}$')
 PREFIXED = re.compile(r'^(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*=)\{([a-z][a-z0-9_]{0,31})\}$')
+OPTION = re.compile(r'^--\{([a-z][a-z0-9_]{0,31})\}$')          # --{name}: the value (an enum) is the option name
 ROOTED = re.compile(r'^\{([a-z][a-z0-9_]{0,31})\}((?:/[A-Za-z0-9._+-]+)+)$')
 
 PACKAGE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9+._:@-]{0,127}$')
@@ -121,10 +139,12 @@ def _placeholder_errors(where, argv, params):
     for i, element in enumerate(argv):
         if '{' not in element and '}' not in element:
             continue
-        m = WHOLE.match(element) or PREFIXED.match(element)
+        m = WHOLE.match(element) or PREFIXED.match(element) or OPTION.match(element)
         name = None
         if m:
             name = m.group(m.lastindex)
+            if OPTION.match(element) and params.get(name, {}).get('type') != 'enum':
+                errors.append('%s argv[%d]: --{name} is only allowed for an enum parameter' % (where, i))
         else:
             r = ROOTED.match(element)
             if r and '..' not in r.group(2).split('/'):
@@ -133,7 +153,7 @@ def _placeholder_errors(where, argv, params):
                     errors.append('%s argv[%d]: a path suffix is only allowed after a target_root parameter'
                                   % (where, i))
             else:
-                errors.append('%s argv[%d]: placeholders must be {name}, --opt={name}, or {target_root}/path'
+                errors.append('%s argv[%d]: placeholders must be {name}, --opt={name}, --{enum}, or {target_root}/path'
                               % (where, i))
                 continue
         if i == 0:
@@ -171,6 +191,80 @@ def android_command_errors(where, argv, android_params):
     return []
 
 
+def _param_of(params, element):
+    m = WHOLE.match(element)
+    return params.get(m.group(1)) if m else None
+
+
+def fastboot_command_errors(where, argv, params):
+    """fastboot is ``fastboot devices`` or ``fastboot -s {fastboot_device} <closed sub-command>``."""
+    if argv[0] != 'fastboot':
+        return []
+    if argv == ['fastboot', 'devices']:
+        return []
+    device = [p['name'] for p in params.values() if p['type'] == 'fastboot_device']
+    if len(device) != 1:
+        return ['%s: fastboot needs exactly one fastboot_device parameter' % where]
+    if len(argv) < 4 or argv[1:3] != ['-s', '{%s}' % device[0]]:
+        return ['%s: fastboot must be addressed as -s {%s} followed by a sub-command' % (where, device[0])]
+    sub, rest = argv[3], argv[4:]
+    if sub == 'getvar':
+        if len(rest) == 1 and rest[0] in FASTBOOT_GETVARS:
+            return []
+        return ['%s: fastboot getvar may only read: %s' % (where, ', '.join(FASTBOOT_GETVARS))]
+    if sub == 'reboot':
+        return [] if not rest else ['%s: fastboot reboot takes no arguments (never reboot-bootloader)' % where]
+    m = PREFIXED.match(sub)
+    if m and m.group(1) == '--set-active=' and not rest:
+        slot = params.get(m.group(2)) or {}
+        if slot.get('type') == 'fastboot_slot' or (slot.get('type') == 'enum' and set(slot['values']) <= SLOTS):
+            return []
+        return ['%s: --set-active takes an enum limited to a/b or a fastboot_slot parameter' % where]
+    if sub == 'flash' and len(rest) == 2:
+        part, fw = _param_of(params, rest[0]), _param_of(params, rest[1])
+        if not part or part['type'] != 'enum' or not set(part['values']) <= FASTBOOT_FLASH_PARTITIONS:
+            return ['%s: fastboot flash partitions must be an enum within %s' % (where, ', '.join(sorted(FASTBOOT_FLASH_PARTITIONS)))]
+        if not fw or fw['type'] != 'firmware_file' or fw.get('values') != ['image']:
+            return ['%s: fastboot flash takes a firmware_file parameter of kind image' % where]
+        return []
+    if sub == 'update' and len(rest) == 1:
+        fw = _param_of(params, rest[0])
+        if not fw or fw['type'] != 'firmware_file' or fw.get('values') != ['zip']:
+            return ['%s: fastboot update takes a firmware_file parameter of kind zip (and never -w)' % where]
+        return []
+    return ['%s: fastboot sub-command %r is not allowed (allowed: getvar, reboot, --set-active=, flash, update)' % (where, sub)]
+
+
+def heimdall_command_errors(where, argv, params):
+    """heimdall: detect, print-pit --no-reboot (read-only), or flash --{PARTITION} {firmware} --no-reboot."""
+    if argv[0] != 'heimdall':
+        return []
+    if argv in (['heimdall', 'detect'], ['heimdall', 'print-pit', '--no-reboot']):
+        return []
+    if len(argv) == 5 and argv[1] == 'flash' and argv[4] == '--no-reboot':
+        opt = OPTION.match(argv[2])
+        part = params.get(opt.group(1)) if opt else None
+        fw = _param_of(params, argv[3])
+        if not part or part['type'] != 'enum' or not set(part['values']) <= HEIMDALL_PARTITIONS:
+            return ['%s: heimdall flash partitions must be an enum within %s' % (where, ', '.join(sorted(HEIMDALL_PARTITIONS)))]
+        if not fw or fw['type'] != 'firmware_file' or fw.get('values') != ['image']:
+            return ['%s: heimdall flash takes a firmware_file parameter of kind image' % where]
+        return []
+    return ['%s: heimdall may only run detect, print-pit --no-reboot, or flash --{PARTITION} {file} --no-reboot' % where]
+
+
+def _expect_line_errors(where, step, params):
+    line = step.get('expect_line')
+    if line is None:
+        return []
+    m = re.match(r'^[^{}]*(?:\{([a-z][a-z0-9_]{0,31})\})?$', line)
+    if not m:
+        return ['%s: expect_line allows one trailing {enum_param} placeholder only' % where]
+    if m.group(1) and params.get(m.group(1), {}).get('type') != 'enum':
+        return ['%s: expect_line placeholder {%s} must be a declared enum parameter' % (where, m.group(1))]
+    return []
+
+
 def action_errors(action, domain, check_ids):
     """Cross-field rules the JSON Schema cannot express for one action."""
     aid = action['action_id']
@@ -193,8 +287,11 @@ def action_errors(action, domain, check_ids):
         elif kind == 'state_dir':
             if p.get('values') not in (['clamav'], ['quarantine']):
                 say('%s: state_dir parameter %s needs exactly one value: clamav or quarantine' % (aid, p['name']))
+        elif kind == 'firmware_file':
+            if p.get('values') not in (['image'], ['zip']):
+                say('%s: firmware_file parameter %s needs exactly one value: image or zip' % (aid, p['name']))
         elif 'values' in p:
-            say('%s: only enum and state_dir parameters take values (%s)' % (aid, p['name']))
+            say('%s: only enum, state_dir and firmware_file parameters take values (%s)' % (aid, p['name']))
         if kind == 'integer':
             lo, hi = p.get('minimum'), p.get('maximum')
             if lo is None or hi is None or lo > hi:
@@ -203,26 +300,55 @@ def action_errors(action, domain, check_ids):
                 say('%s: default of %s is outside minimum..maximum' % (aid, p['name']))
         elif 'minimum' in p or 'maximum' in p:
             say('%s: only integer parameters take minimum/maximum (%s)' % (aid, p['name']))
-        if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir', 'android_device') and 'default' in p:
+        if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device',
+                    'fastboot_slot', 'firmware_file', 'sha256') and 'default' in p:
             say('%s: %s parameters cannot have a default (%s)' % (aid, kind, p['name']))
         if kind in ENGINE_ONLY_PARAMS and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
             say('%s: %s parameters exist only on %s (the host launchers cannot resolve them)'
                 % (aid, kind, ' and '.join(sorted(PYTHON_ENGINE_PLATFORMS))))
-        if kind == 'android_device' and action.get('target_families') != ['android']:
-            say('%s: android_device parameters need target_families ["android"]' % aid)
+        if kind in ('android_device', 'fastboot_device', 'fastboot_slot') and action.get('target_families') != ['android']:
+            say('%s: %s parameters need target_families ["android"]' % (aid, kind))
+        if kind == 'firmware_file' and not any(q['name'] == p['name'] + '_sha256' and q['type'] == 'sha256'
+                                               for q in action.get('params') or []):
+            say('%s: firmware_file %s needs a sha256 parameter named %s_sha256' % (aid, p['name'], p['name']))
+        if kind == 'sha256' and not any(q['name'] + '_sha256' == p['name'] and q['type'] == 'firmware_file'
+                                        for q in action.get('params') or []):
+            say('%s: sha256 parameter %s must be named <firmware_file name>_sha256' % (aid, p['name']))
         if kind == 'target_root' and set(action['platforms']) != {'live-linux'}:
             say('%s: target_root parameters exist only on the live-linux platform' % aid)
 
     android_params = [p for p in params.values() if p['type'] == 'android_device']
+    fastboot_params = [p for p in params.values() if p['type'] == 'fastboot_device']
+    guards = action.get('guards') or []
     if len(android_params) > 1:
         say('%s: at most one android_device parameter' % aid)
-    if domain == 'android' and len(android_params) != 1:
-        say('%s: android actions are addressed to one phone and need exactly one android_device parameter' % aid)
+    if len(fastboot_params) > 1:
+        say('%s: at most one fastboot_device parameter' % aid)
+    if sum(1 for p in params.values() if p['type'] == 'fastboot_slot') > 1:
+        say('%s: at most one fastboot_slot parameter' % aid)
+    if domain == 'android' and len(android_params) + len(fastboot_params) != 1 and 'single-download-mode-device' not in guards:
+        say('%s: android actions are addressed to one phone and need exactly one android_device (adb) or fastboot_device '
+            '(fastboot) parameter, or the single-download-mode-device guard (heimdall)' % aid)
+    if guards and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
+        say('%s: guards exist only on %s (the host launchers cannot run them)' % (aid, ' and '.join(sorted(PYTHON_ENGINE_PLATFORMS))))
+    firmware = [p for p in params.values() if p['type'] == 'firmware_file']
+    if 'bootloader-unlocked' in guards and not fastboot_params:
+        say('%s: the bootloader-unlocked guard needs a fastboot_device parameter' % aid)
+    if 'image-matches-device' in guards and not (fastboot_params and any(p.get('values') == ['zip'] for p in firmware)):
+        say('%s: the image-matches-device guard needs a fastboot_device and a firmware_file of kind zip' % aid)
+    if 'single-download-mode-device' in guards and (android_params or fastboot_params):
+        say('%s: the single-download-mode-device guard replaces a device parameter' % aid)
 
     used = set()
     for where, step in _steps(action):
         argv = step['argv']
         errors.extend(android_command_errors('%s %s' % (aid, where), argv, android_params))
+        errors.extend(fastboot_command_errors('%s %s' % (aid, where), argv, params))
+        errors.extend(heimdall_command_errors('%s %s' % (aid, where), argv, params))
+        errors.extend(_expect_line_errors('%s %s' % (aid, where), step, params))
+        if step.get('expect_line') is not None and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
+            say('%s %s: expect_line exists only on %s (the host launchers do not check output)'
+                % (aid, where, ' and '.join(sorted(PYTHON_ENGINE_PLATFORMS))))
         if argv[0].lower() in FORBIDDEN_PROGRAMS:
             say('%s %s: program %r is not allowed in the catalog' % (aid, where, argv[0]))
         if argv[0] == 'chroot' and (action['risk'] == 'safe' or not action.get('requires_root')):
@@ -231,8 +357,27 @@ def action_errors(action, domain, check_ids):
         errors.extend(errs)
         used |= names
     for name in params:
-        if name not in used:
+        if name not in used and params[name]['type'] != 'sha256':   # a sha256 is consumed by the engine with its firmware_file
             say('%s: parameter %s is declared but never used' % (aid, name))
+    for p in params.values():
+        if p['type'] == 'fastboot_slot' and not any(
+                (m := PREFIXED.match(e)) and m.group(1) == '--set-active=' and m.group(2) == p['name']
+                for _, st in _steps(action) for e in st['argv']):
+            say('%s: a fastboot_slot parameter is only for --set-active=' % aid)
+    flashing = any(st['argv'][:2] == ['fastboot', '-s'] and len(st['argv']) > 3 and st['argv'][3] in ('flash', 'update')
+                   or st['argv'][:2] == ['heimdall', 'flash'] for _, st in _steps(action))
+    if flashing:
+        if action['risk'] != 'destructive':
+            say('%s: flashing actions are destructive' % aid)
+        if action['triggers']:
+            say('%s: flashing actions are never proposed by a trigger (operator --select only)' % aid)
+        wanted = {'fastboot': ['bootloader-unlocked'], 'heimdall': ['single-download-mode-device']}
+        program = action['execute']['argv'][0]
+        for guard in wanted.get(program, []):
+            if guard not in guards:
+                say('%s: %s flashing needs the %s guard' % (aid, program, guard))
+        if action['execute']['argv'][3:4] == ['update'] and 'image-matches-device' not in guards:
+            say('%s: fastboot update needs the image-matches-device guard' % aid)
 
     risk, rollback, backup = action['risk'], action['rollback'], action['backup']
     kind = rollback['kind']
@@ -531,6 +676,17 @@ def validate_param(param, value, packages=None):
         raise ValueError('is provided by the engine (the USB state directory), never by the operator')
     if kind == 'android_device':
         raise ValueError('is resolved by the engine from the USB inventory and adb, never by the operator')
+    if kind in ('fastboot_device', 'fastboot_slot'):
+        raise ValueError('is resolved by the engine from the phone in fastboot mode, never by the operator')
+    if kind == 'sha256':
+        if not SHA256_RE.match(text):
+            raise ValueError('must be the 64 hexadecimal characters of the official SHA-256')
+        return text.lower()
+    if kind == 'firmware_file':
+        if (not text.startswith('/') or len(text) > 1024 or os.path.normpath(text) != text
+                or re.search(r'[\x00-\x1f\x7f]', text)):
+            raise ValueError('must be an absolute, normalized path without control characters')
+        return text
     raise ValueError('unknown parameter type %s' % kind)
 
 
@@ -538,12 +694,17 @@ def render(argv, values):
     """Substitute validated *values* into a catalog argv; every element stays one argument."""
     out = []
     for element in argv:
-        m = WHOLE.match(element) or PREFIXED.match(element) or ROOTED.match(element)
+        m = WHOLE.match(element) or PREFIXED.match(element) or ROOTED.match(element) or OPTION.match(element)
         if m is None:
             out.append(element)
             continue
         out.append(PLACEHOLDER.sub(lambda mm: str(values[mm.group(1)]), element, count=1))
     return out
+
+
+def render_expect_line(line, values):
+    """The exact output line a step must print: *line* with its one trailing {enum_param} replaced by the value."""
+    return re.sub(r'\{([a-z][a-z0-9_]{0,31})\}$', lambda m: str(values[m.group(1)]), line)
 
 
 def _main(argv=None):

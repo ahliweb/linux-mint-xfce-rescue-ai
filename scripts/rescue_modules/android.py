@@ -105,11 +105,13 @@ def _environment(search_path):
     return env
 
 
-def _bounded(argv, timeout, env):
-    """(returncode, text) of one command with a deadline and an output cap, or None."""
+def _bounded(argv, timeout, env, merge_stderr=False):
+    """(returncode, text) of one command with a deadline and an output cap, or None.
+
+    *merge_stderr* is for fastboot and heimdall, which print their answers on stderr."""
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, env=env)
+                                stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL, env=env)
     except OSError:
         return None
     chunks, total, ok = [], 0, False

@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
-from rescue_modules import android, usb_devices  # noqa: E402
+from rescue_modules import android, android_flash, usb_devices  # noqa: E402
 import repair_catalog  # noqa: E402
 
 SOURCE = 'collector-allowlist'
@@ -189,6 +189,22 @@ def render_table(usb_list, refs):
     return lines
 
 
+def low_level_guidance(mode, label):
+    """(id, en) for a phone that is not a running Android (docs/android.md, "Flashing dan unbrick")."""
+    head_id = 'Ponsel berada di mode tingkat rendah (%s), bukan Android yang berjalan. ' % label
+    head_en = 'The phone is in a low-level mode (%s), not a running Android. ' % label
+    if mode == 'fastboot':
+        return (head_id + 'Pemindaian ini membaca status kunci bootloader dan slot; flashing hanya lewat rescue-repair.py atas perintah operator (docs/android.md). Membuka kunci bootloader TIDAK dilakukan toolkit dan menghapus semua data.',
+                head_en + 'This scan reads the bootloader lock state and slot; flashing happens only through rescue-repair.py on the operator\'s command (docs/android.md). Unlocking the bootloader is NOT done by this toolkit and wipes all data.')
+    if mode == 'samsung-download':
+        return (head_id + 'Mode Download Samsung: flashing lewat Heimdall bersifat EKSPERIMENTAL dan hanya lewat rescue-repair.py (docs/android.md).',
+                head_en + 'Samsung Download mode: flashing through Heimdall is EXPERIMENTAL and only through rescue-repair.py (docs/android.md).')
+    if mode in ('qualcomm-edl', 'mediatek-brom'):
+        return (head_id + 'Berhenti: toolkit ini TIDAK berbicara dengan EDL/BROM (tanpa programmer firehose atau exploit). Bawa ke pusat servis resmi; lepas baterai/tombol bila ponsel mati total.',
+                head_en + 'Stop: this toolkit does NOT talk to EDL/BROM (no firehose programmers or exploits). Take it to an authorized service center. (MediaTek shows the preloader for a few seconds on every normal start.)')
+    return (head_id + 'Toolkit ini hanya mendeteksi mode ini.', head_en + 'This toolkit only detects this mode.')
+
+
 def guidance(usb_list, targets, adb_available):
     """List of (bahasa_indonesia, english) operator messages about the Android target(s)."""
     out = []
@@ -232,8 +248,7 @@ def guidance(usb_list, targets, adb_available):
             out.append(('Status ADB "%s": cabut dan colok ulang kabel, buka kunci layar, dan pilih boot Android normal (bukan recovery/bootloader).' % t['adb_state'],
                         'ADB state "%s": replug the cable, unlock the screen and boot Android normally (not recovery/bootloader).' % t['adb_state']))
         elif t['mode'] in usb_devices.LOW_LEVEL_MODES:
-            out.append(('Ponsel berada di mode tingkat rendah (%s), bukan Android yang berjalan. Toolkit ini hanya mendeteksi; tidak melakukan flashing atau unbrick.' % label,
-                        'The phone is in a low-level mode (%s), not a running Android. This toolkit only detects it; it never flashes or unbricks.' % label))
+            out.append(low_level_guidance(t['mode'], label))
         elif not adb_available:
             out.append(('adb belum terpasang (paket "adb"), sehingga pemeriksaan ADB dilewati.',
                         'adb is not installed (package "adb"), so the ADB checks are skipped.'))
@@ -415,9 +430,16 @@ def main(argv=None):
             return 1
         now = utc_now()
         per_target = {}
+        fb_program, heimdall = android_flash.find_tool('fastboot'), android_flash.find_tool('heimdall')
+        fb = android_flash.Fastboot(fb_program) if fb_program else None
+        listing = None
+        if fb is not None and any('fastboot' in (t.get('modes') or []) for t in chosen):
+            res = fb.devices()
+            listing = android_flash.parse_devices(res[1]) if res and res[0] == 0 else None
         for t in chosen:
-            per_target[t['ref']] = android.collect_target_checks(adb, t, adb is not None,
-                                                                 today=now.date())
+            t_checks, props = android.collect_target_checks(adb, t, adb is not None, today=now.date())
+            t_checks = t_checks + android_flash.mode_checks(t, usb_list, fb, listing, heimdall)
+            per_target[t['ref']] = (t_checks, props)
         report = add_proposals(build_evidence(usb_list, chosen, per_target, now, args.source_platform,
                                               args.provider_ready, args.repair_policy))
         problems = validation_problems(report)

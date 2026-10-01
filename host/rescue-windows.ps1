@@ -852,7 +852,7 @@ function ConvertTo-CatalogAction {
     foreach ($p in @(Get-JsonProp $Raw 'params')) {
         if ($null -eq $p) { continue }
         $pt = [string]$p.type
-        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
+        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
             $Problems.Add("$id param"); continue
         }
         $entry = @{ name = [string]$p.name; type = $pt; values = @(); minimum = 0; maximum = 0; has_default = $false; default = $null }
@@ -1655,7 +1655,7 @@ function Invoke-RepairProposal {
         Write-RepairLog -Action $action -Proposal $Proposal -Stage 'approval' -Outcome 'unavailable' -Extra @{ reason = 'not-applicable' }
         return 'skipped'
     }
-    $unsupported = @($action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' }).Count -gt 0
+    $unsupported = @($action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' -or $_.type -ceq 'fastboot_device' -or $_.type -ceq 'fastboot_slot' -or $_.type -ceq 'firmware_file' -or $_.type -ceq 'sha256' }).Count -gt 0
     if ($unsupported -or $action.requires_target_rw) {
         Write-Host ('  ' + $aid + ' needs a block device or a mounted target, which host launchers do not support; not run.') -ForegroundColor Yellow
         Write-RepairLog -Action $action -Proposal $Proposal -Stage 'target-rw' -Outcome 'unavailable' -Extra @{ reason = 'provider-unavailable' }
@@ -1810,7 +1810,7 @@ $script:RrOrigins = @('catalog-trigger', 'ai-proposal', 'operator')
 $script:RrRisks = @('safe', 'reversible', 'destructive')
 $script:RrStages = @('proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback')
 $script:RrRecordOutcomes = @('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable')
-$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch')
+$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch')
 $script:RrTargetEnums = @{
     family = @('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android')
     architecture = @('x86_64', 'arm64', 'unknown')
