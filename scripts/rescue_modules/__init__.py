@@ -56,6 +56,11 @@ class Context:
     # state_dir/quarantine); detections: LOCAL findings (paths, never evidence) collected during the run.
     state_dir: str | None = None
     malware_full_disk: bool = False
+    # Time budget sharing (docs/malware.md): malware_pending = targets still to scan in this run, the current one
+    # included (the scanner sets it before each partition); malware_target = 'os-N' restricts the scan to that
+    # target (the others report malware-scan unknown), None scans every target. Target dicts carry 'os_ref'.
+    malware_target: str | None = None
+    malware_pending: int = 1
     detections: list = field(default_factory=list)
     cache: dict = field(default_factory=dict)
 

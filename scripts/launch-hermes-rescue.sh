@@ -42,6 +42,7 @@ scope=${RESCUE_SCOPE:-all}
 packages=${RESCUE_PACKAGES:-}
 repair_policy=${RESCUE_REPAIR_POLICY:-approve-each}
 malware_full=0
+malware_target=
 while (($#)); do
   case "$1" in
     --state-dir) state_dir=${2:?missing state directory}; state_dir_set=1; shift 2 ;;
@@ -54,9 +55,11 @@ while (($#)); do
     --packages) packages=${2:?missing package list}; shift 2 ;;
     --repair-policy) repair_policy=${2:?missing repair policy}; shift 2 ;;
     --malware-full-disk) malware_full=1; shift ;;
-    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe] [--malware-full-disk]\n' "$0" >&2; exit 2 ;;
+    --malware-target) malware_target=${2:?missing target (os-N)}; shift 2 ;;
+    *) printf 'usage: %s [--state-dir DIR] [--hardware-mode auto|wizard] [--min-cpu N] [--min-ram-gib N] [--min-usb-gib N] [--no-target-scan] [--scope LIST] [--packages LIST] [--repair-policy detect-only|approve-each|auto-safe] [--malware-full-disk] [--malware-target os-N]\n' "$0" >&2; exit 2 ;;
   esac
 done
+[[ -z $malware_target || $malware_target =~ ^os-[0-9]{1,2}$ ]] || { printf 'Invalid --malware-target (os-N required): %s\n' "$malware_target" >&2; exit 2; }
 case $repair_policy in detect-only | approve-each | auto-safe) ;; *) printf 'Invalid --repair-policy: %s\n' "$repair_policy" >&2; exit 2 ;; esac
 [[ $scope =~ ^[a-z.,]+$ ]] || { printf 'Invalid --scope: %s\n' "$scope" >&2; exit 2; }
 [[ -z $packages || $packages =~ ^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$ ]] || { printf 'Invalid --packages: %s\n' "$packages" >&2; exit 2; }
@@ -168,6 +171,7 @@ scan_once() {
   # The malware scan has its own budget (780 s default areas, 3300 s full disk, for all targets);
   # the rest of the scan (mounts, OS/hardware/software checks) gets the remaining margin.
   if ((malware_full)); then scan_args+=(--malware-full-disk); scan_timeout=4200; fi
+  [[ -z $malware_target ]] || scan_args+=(--malware-target "$malware_target")
   [[ -z $packages ]] || scan_args+=(--packages "$packages")
   [[ -z $OPENCODE_GO_API_KEY ]] || scan_args+=(--provider-ready)  # presence only; the key is never passed
   timeout "$scan_timeout" sudo -n python3 "$root/scripts/scan-target-os.py" "${scan_args[@]}" && [[ -s $out ]] || return 1
