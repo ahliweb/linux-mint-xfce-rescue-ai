@@ -237,6 +237,25 @@ def resolve_endpoint():
     return ENDPOINT, False
 
 
+def _budget_bar(timeout):
+    """Terminal-only spinner/bar for the wait (scripts/lib/progress.py); None if the helper is missing."""
+    try:
+        sys.path.insert(0, str(ROOT / 'scripts' / 'lib'))
+        import progress
+        return progress.Budget('Menganalisis dengan OpenCode Go / Analyzing with OpenCode Go', timeout)
+    except Exception:
+        return None
+
+
+def request_with_progress(timeout, *args):
+    bar = _budget_bar(timeout)
+    try:
+        return request_analysis(*args)
+    finally:
+        if bar is not None:
+            bar.close()
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
@@ -382,8 +401,8 @@ def main(argv=None):
     evidence_text = json.dumps(evidence, indent=2, sort_keys=True)
 
     try:
-        payload = request_analysis(endpoint, loopback, key, system_prompt, evidence_text, timeout,
-                                   catalog_text(evidence))
+        payload = request_with_progress(timeout, endpoint, loopback, key, system_prompt, evidence_text, timeout,
+                                        catalog_text(evidence))
         text = strip_control(extract_text(payload))
     except urllib.error.HTTPError as exc:
         if is_provider_rejection(exc.code):
