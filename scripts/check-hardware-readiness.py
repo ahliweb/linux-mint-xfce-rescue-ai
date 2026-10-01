@@ -13,6 +13,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+import sys
 
 UTC = dt.timezone.utc
 DEFAULT_URL = "https://opencode.ai"
@@ -371,6 +372,24 @@ def ask(step: dict, mode: str) -> bool:
     return answer in ("", "y", "yes", "ya")
 
 
+class _NoBar:
+    def advance(self, *_a, **_k):
+        pass
+
+    set = close = advance
+
+
+def _make_progress(total):
+    """Terminal-only progress bar (scripts/lib/progress.py); a no-op when the helper is missing (old bundles)."""
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "lib"))
+        import progress
+
+        return progress.Progress(total, "hardware readiness")
+    except Exception:
+        return _NoBar()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("auto", "wizard"), default="auto")
@@ -393,12 +412,17 @@ def main() -> int:
          lambda: check_network(args.internet_url)),
         ("usb-boot-media", f"USB transport and >= {args.min_usb_gib:.1f} GiB", lambda: check_usb(args.min_usb_gib)),
     ]
+    bar = _NoBar() if args.mode == "wizard" else _make_progress(len(definitions))  # a bar would clash with the prompts
     for check_id, minimum_text, fn in definitions:
         preview = {"check_id": check_id, "minimum": minimum_text}
         if not ask(preview, args.mode):
             checks.append(check_result(check_id, "warn", "skipped by operator", "not skipped", note="wizard skip"))
+            bar.set(len(checks), check_id + " skipped")
             continue
+        bar.set(len(checks), "checking " + check_id)
         checks.append(fn())
+        bar.set(len(checks), check_id + " done")
+    bar.close("hardware checks done")
 
     failures = [c for c in checks if c["required"] and c["status"] == "fail"]
     unknown_required = [c for c in checks if c["required"] and c["status"] == "unknown"]

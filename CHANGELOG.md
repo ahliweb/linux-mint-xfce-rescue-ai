@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Terminal progress for every long phase (ahliweb/linux-mint-xfce-rescue-ai#67): `scripts/lib/progress.py` (`Progress`, `Budget`, `step`) and `scripts/lib/progress.sh` (`rescue_progress_step`, `rescue_progress_run`) draw only on `/dev/tty` (never stdout/stderr or the launcher log; off with `RESCUE_PROGRESS=0`, `TERM=dumb` or no terminal; `RESCUE_PROGRESS_TTY` is a test hook). `scan-target-os.py` shows five phase headers, a bar per target and the real ClamAV time budget as a bar; `opencode-go-analyze.py` shows the wait for the provider; `check-hardware-readiness.py` shows a bar over its checks. Modules get optional `Context.progress_budget`/`progress_note` hooks. Evidence, statuses, privacy rules and exit codes are unchanged; `tests/test_progress.py` covers it.
+- `rescue_modules.collect_offline_target` runs the short read-only offline modules on helper threads while the ClamAV pass runs on the calling thread; results keep the fixed domain order (ahliweb/linux-mint-xfce-rescue-ai#67).
+
 - `scripts/migrate-persistence-state.py` carries the provider key, Hermes state, field-learned skills and case history from an old persistence image into a new one with `debugfs` (no mount, no root), keeping mode/uid/gid/mtime and taking program files and bundled skills from the new image; `e2fsck -fn` and a per-file SHA-256 read-back must pass. `docs/persistence.md` gains the procedure "Upgrade USB dengan mempertahankan kunci dan state Hermes" (backup, migrate, `prepare-ventoy-usb.sh --replace-persistence`, restore host reports, read back) and `docs/security-model.md` a row. Used to upgrade the field USB from 0.5.0 to 0.6.0 (ahliweb/linux-mint-xfce-rescue-ai#65).
 
 ## [0.6.0] - 2026-10-01

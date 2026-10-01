@@ -64,6 +64,11 @@ class Context:
     malware_pending: int = 1
     detections: list = field(default_factory=list)
     cache: dict = field(default_factory=dict)
+    # Optional terminal progress hooks (docs/target-os-scan.md); both default to None and never change what is scanned.
+    # progress_budget(label, seconds) -> object with .close(): a bar for an opaque long step (the ClamAV pass);
+    # progress_note(label) -> None: a status label for the bar of the target being inspected.
+    progress_budget: object = None
+    progress_note: object = None
 
     def wants(self, domain, item=None):
         """Is *domain* (hardware/os/software), or hardware *item*, in the operator's scope?"""
@@ -136,13 +141,38 @@ def collect_system(ctx):
     return out
 
 
+def _note(ctx, label):
+    hook = getattr(ctx, 'progress_note', None)
+    if hook is not None:
+        try:
+            hook(label)
+        except Exception:
+            pass
+
+
 def collect_offline_target(ctx, root, target):
+    """Offline checks for one mounted OS, in DOMAINS order.
+
+    The long ClamAV pass (malware) stays on the calling thread, so a termination signal still interrupts it exactly
+    as before and the caller can unmount; the short read-only modules run on helper threads at the same time and are
+    always joined before returning. They share no mutable state with malware except ``ctx.warnings`` (list append).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = [(name, getattr(module, 'collect_offline_target', None)) for name, module in _modules(ctx)]
+    jobs = [(name, fn) for name, fn in jobs if fn is not None]
+    results = {}
+    side = [(name, fn) for name, fn in jobs if name != 'malware']
+    with ThreadPoolExecutor(max_workers=max(1, len(side))) as pool:
+        futures = {name: pool.submit(_call, ctx, name, fn, root, dict(target)) for name, fn in side}
+        for name, fn in jobs:
+            if name == 'malware':
+                _note(ctx, 'malware scan')
+                results[name] = _call(ctx, name, fn, root, dict(target))
+        for name, future in futures.items():
+            results[name] = future.result()
     out = []
-    for name, module in _modules(ctx):
-        fn = getattr(module, 'collect_offline_target', None)
-        if fn is not None:
-            out += sanitize(_call(ctx, name, fn, root, dict(target)), 'rescue_modules.%s' % name, ctx,
-                            allow_target_ref=False)
+    for name, _fn in jobs:
+        out += sanitize(results.get(name), 'rescue_modules.%s' % name, ctx, allow_target_ref=False)
     return out
 
 

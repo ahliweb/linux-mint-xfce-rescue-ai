@@ -61,11 +61,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
 import repair_catalog  # noqa: E402
 import rescue_modules  # noqa: E402
 
+try:  # progress bars on the terminal only (docs/target-os-scan.md); an old bundle without the helper still scans
+    import progress as _progress  # noqa: E402
+except Exception:  # pragma: no cover - exercised only on bundles that lack scripts/lib/progress.py
+    class _progress:  # noqa: N801
+        class Progress:
+            def __init__(self, *a, **k): self.done = 0
+            def advance(self, *a, **k): pass
+            def set(self, *a, **k): pass
+            def close(self, *a, **k): pass
+
+        Budget = Progress
+
+        @staticmethod
+        def step(*a, **k):
+            pass
+
 SOURCE = 'offline-target-scan'
 ENV_SOURCE = 'collector-allowlist'
 MODEL_ID = 'mimo-v2.6-flash'
 MAX_TARGETS = 8
 MAX_CHECKS = 160
+STEPS = 5  # progress headers (terminal only)
 MIN_UNMOUNTABLE_BYTES = 8 * 1024 ** 3
 
 LSBLK_COLUMNS = 'PATH,TYPE,FSTYPE,PARTTYPE,LABEL,SIZE,MOUNTPOINTS,RM,TRAN,PKNAME,UUID,PARTUUID,PARTLABEL'
@@ -905,6 +922,7 @@ def encrypted_target(kind, part):
 
 MODULE_CTX = None  # rescue_modules.Context set by main(); None disables the module hooks
 MODULE_SEQ = 0
+TARGET_BAR = None  # the per-target progress bar of the partition being inspected (terminal only)
 OS_INDEX = 0       # os-N index the target being inspected will get in the evidence (set by main())
 MALWARE_TARGET_RE = re.compile(r'^os-[0-9]{1,2}$')
 MALWARE_MIN_OS_BYTES = 2 * 1024 ** 3  # smaller partitions (recovery, utility) are not counted as likely scan targets
@@ -920,6 +938,16 @@ def likely_malware_target(part):
     return 1 if kind in ('ntfs', 'linuxfs', 'apfs') and part['size'] >= MALWARE_MIN_OS_BYTES else 0
 
 
+def _bar_set(done, label):
+    if TARGET_BAR is not None:
+        TARGET_BAR.set(done, label)
+
+
+def _bar_note(label):
+    if TARGET_BAR is not None:
+        TARGET_BAR.set(TARGET_BAR.done, label)
+
+
 def module_checks(root, info):
     """Checks from the domain modules for one target mounted read-only at *root*."""
     if MODULE_CTX is None:
@@ -930,6 +958,7 @@ def module_checks(root, info):
     target = {k: info.get(k) for k in ('family', 'release')}
     target['target_ref'] = info['module_key']
     target['os_ref'] = 'os-%d' % OS_INDEX
+    _bar_set(2, 'os-%d modules (OS, software, malware, printers)' % OS_INDEX)
     return [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
             for c in rescue_modules.collect_offline_target(MODULE_CTX, root, target)]
 
@@ -942,6 +971,7 @@ def inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boo
         return enc
 
     result = mounter.mount(part, kind)
+    _bar_set(1, 'os-%d OS checks' % OS_INDEX)
     try:
         if kind == 'apfs':
             if result.status == 'encrypted':
@@ -1168,12 +1198,16 @@ def main(argv=None):
                                         state_dir=args.state_dir, malware_full_disk=args.malware_full_disk,
                                         malware_target=args.malware_target)
 
+    MODULE_CTX.progress_budget = lambda label, seconds: _progress.Budget(label, seconds)
+    MODULE_CTX.progress_note = _bar_note
+
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, _on_signal)
 
     now = utc_now()
     boot_mode = 'uefi' if os.path.exists('/sys/firmware/efi') else 'legacy-bios'
 
+    _progress.step(1, STEPS, 'Mendeteksi disk dan target / Detecting disks and targets')
     if args.fixture_root:
         try:
             parts = load_fixtures(args.fixture_root)
@@ -1223,6 +1257,10 @@ def main(argv=None):
 
         global OS_INDEX
         likely = [likely_malware_target(p) for p in candidates]
+        work_total = sum(1 for p in candidates if classify(p) not in (None, 'esp'))
+        _progress.step(2, STEPS, 'Memeriksa %d target (OS, perangkat lunak, malware, printer) / Inspecting %d target(s) '
+                       '(OS, software, malware, printers)' % (work_total, work_total))
+        global TARGET_BAR
         for pos, part in enumerate(candidates):
             kind = classify(part)
             if kind in (None, 'esp'):
@@ -1230,7 +1268,12 @@ def main(argv=None):
             # Fair share of the malware budget: this partition plus the likely targets after it (docs/malware.md).
             MODULE_CTX.malware_pending = 1 + sum(likely[pos + 1:])
             OS_INDEX = len(targets)
-            target = inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boot_mode)
+            TARGET_BAR = _progress.Progress(3, 'os-%d mount (target %d)' % (OS_INDEX, pos + 1))
+            try:
+                target = inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boot_mode)
+            finally:
+                TARGET_BAR.close('os-%d done' % OS_INDEX)
+                TARGET_BAR = None
             if target is not None:
                 target.setdefault('encryption', 'none')
                 targets.append(target)
@@ -1246,15 +1289,18 @@ def main(argv=None):
         if not targets[index].get('module_key'):
             MODULE_CTX.warnings.append('rescue_modules.malware: the selected target was not mounted, nothing was scanned')
 
+    _progress.step(3, STEPS, 'Memeriksa perangkat keras dan sistem / Checking hardware and system')
     env_checks = [check('block-device-discovery', discovery), check('network-connectivity', network_status())]
     if not targets:
         env_checks.append(check('os-detection', 'warn'))
     env_checks += [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
                    for c in rescue_modules.collect_system(MODULE_CTX)]
     rescue_modules.flush_warnings(MODULE_CTX)
+    _progress.step(4, STEPS, 'Menyusun bukti dan usulan perbaikan / Building evidence and repair proposals')
     report = add_proposals(build_evidence(targets, env_checks, now, boot_mode, scope, args.repair_policy,
                                           args.provider_ready),
                            scope, args.catalog_dir)
+    _progress.step(5, STEPS, 'Menulis bukti / Writing evidence')
     write_atomic(report, args.output)
     write_malware_list(report, targets)
     print(args.output)

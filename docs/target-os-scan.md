@@ -77,6 +77,31 @@ Deteksi:
 
 Partisi data biasa (tanpa OS), partisi Windows Recovery/MSR, dan container recovery Apple diabaikan. Partisi NTFS/Linux besar (minimal 8 GiB) yang gagal dimount dilaporkan sebagai `family: unknown`.
 
+## Progress dan kecepatan (Implemented, issue #67)
+
+Operator melihat kemajuan di terminal, tidak hanya satu baris per fase. Semua gambar progres hanya ditulis ke terminal pengendali (`/dev/tty`), tidak pernah ke stdout/stderr, sehingga log launcher (yang di-`tee`) tidak berisi bar. Dinonaktifkan oleh `RESCUE_PROGRESS=0`, `TERM=dumb`, atau jika `/dev/tty` tidak bisa dibuka (mis. dipipa). `RESCUE_PROGRESS_TTY=/path/file` adalah hook uji saja yang menggantikan `/dev/tty`; operator tidak memakainya.
+
+```mermaid
+flowchart LR
+    A[1 Disk dan target] --> B[2 Per target: mount, OS, perangkat lunak, malware, printer]
+    B --> C[3 Perangkat keras dan sistem]
+    C --> D[4 Bukti dan usulan]
+    D --> E[5 Tulis bukti]
+    B -. Budget bar ClamAV .-> B
+```
+
+| Bagian | Perilaku |
+|---|---|
+| `scripts/lib/progress.py` | `Progress(total, label)` (`advance`, `set`, `close`), `Budget(label, budget_seconds)` (bar waktu terpakai terhadap anggaran, maksimal 99% sampai `close()`), `step(n, total, label)`; ASCII, selebar kolom terminal, tidak pernah melempar exception |
+| `scripts/lib/progress.sh` | `rescue_progress_step N TOTAL LABEL` (header ke terminal dan baris `[N/TOTAL] LABEL` biasa ke stdout agar masuk log) dan `rescue_progress_run LABEL BUDGET_SECONDS -- CMD...` (menjalankan CMD apa adanya, menggambar waktu/anggaran di terminal, mengembalikan kode keluar CMD) |
+| `scan-target-os.py` | Lima header fase, satu `Progress` per target (mount, pemeriksaan OS, modul) dan `Budget` dengan anggaran waktu ClamAV sebenarnya (`docs/malware.md`) selama pemindaian malware |
+| `opencode-go-analyze.py` | `Budget` "Menganalisis dengan OpenCode Go / Analyzing with OpenCode Go" selama menunggu respons (anggaran = timeout permintaan) |
+| `check-hardware-readiness.py` | `Progress` di seluruh pemeriksaan (tidak dalam mode `wizard`, agar tidak bentrok dengan pertanyaan) |
+
+Bundel lama tanpa `scripts/lib/progress.py` tetap berjalan: impor gagal berarti tidak ada progres.
+
+Kecepatan: di satu target, modul offline yang singkat dan read-only (OS, perangkat lunak, printer) berjalan di thread pembantu selagi ClamAV berjalan di thread utama; hasil digabung dalam urutan `DOMAINS` yang tetap, jadi urutan check pada evidence tidak berubah. ClamAV sengaja tetap di thread utama agar sinyal SIGTERM/SIGINT tetap menghentikannya dan target di-unmount seperti sebelumnya. Antar-target tidak diparalelkan: mount, pembagian anggaran malware yang adil (`pending`/`spent`) dan unmount saat sinyal bergantung pada urutan serial; menjalankan dua ClamAV bersamaan juga hanya berebut I/O disk yang sama. Anggaran waktu dan cakupan pemindaian tidak berubah. Pemindaian ClamAV (780 s area bawaan, 3300 s dengan `--malware-full-disk`) tetap penentu waktu; keuntungan thread terbatas pada pekerjaan non-malware yang kecil. Tidak ditemukan pemanggilan `lsblk`/`smartctl` ganda dalam satu run (satu `lsblk` di pemindai, satu per modul perangkat keras).
+
 ## Check yang dihasilkan
 
 Semua check per target memakai source `offline-target-scan` dan `target_ref` `os-0`..`os-7` (maksimal 8 target; total maksimal 160 check, target yang tidak muat dibuang seluruhnya).
