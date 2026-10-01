@@ -102,7 +102,8 @@
               "software",
               "software.selected",
               "malware",
-              "android"
+              "android",
+              "printer"
             ]
           }
         },
@@ -279,7 +280,7 @@
             "properties": {
               "ref": {
                 "type": "string",
-                "pattern": "^(os|and)-[0-7]$"
+                "pattern": "^(os|and|prn)-[0-7]$"
               },
               "family": {
                 "enum": [
@@ -288,7 +289,8 @@
                   "windows",
                   "macos",
                   "unknown",
-                  "android"
+                  "android",
+                  "printer"
                 ]
               },
               "architecture": {
@@ -303,7 +305,11 @@
                   "live-offline",
                   "host-native",
                   "usb-adb",
-                  "usb-enumerated"
+                  "usb-enumerated",
+                  "usb-cups",
+                  "usb-ipp",
+                  "ipp-usb",
+                  "network-ipp"
                 ]
               },
               "encryption": {
@@ -325,7 +331,10 @@
                   "adb-authorized",
                   "adb-unauthorized",
                   "adb-unavailable",
-                  "usb-only"
+                  "usb-only",
+                  "ipp-read",
+                  "cups-only",
+                  "ipp-unavailable"
                 ]
               }
             }
@@ -339,6 +348,7 @@
             "os",
             "software",
             "malware",
+            "printer",
             "environment"
           ],
           "properties": {
@@ -369,7 +379,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^(os|and)-[0-7]$"
+                    "pattern": "^(os|and|prn)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -426,7 +436,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^(os|and)-[0-7]$"
+                    "pattern": "^(os|and|prn)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -483,7 +493,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^(os|and)-[0-7]$"
+                    "pattern": "^(os|and|prn)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -540,7 +550,64 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^(os|and)-[0-7]$"
+                    "pattern": "^(os|and|prn)-[0-7]$"
+                  },
+                  "value": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "number"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "percent",
+                          "count",
+                          "bytes",
+                          "days",
+                          "seconds",
+                          "celsius"
+                        ]
+                      },
+                      "number": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1000000000000000.0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "printer": {
+              "type": "array",
+              "maxItems": 160,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "check_id",
+                  "status"
+                ],
+                "properties": {
+                  "check_id": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+                  },
+                  "status": {
+                    "enum": [
+                      "pass",
+                      "fail",
+                      "warn",
+                      "not_applicable",
+                      "unknown"
+                    ]
+                  },
+                  "target_ref": {
+                    "type": "string",
+                    "pattern": "^(os|and|prn)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -597,7 +664,7 @@
                   },
                   "target_ref": {
                     "type": "string",
-                    "pattern": "^(os|and)-[0-7]$"
+                    "pattern": "^(os|and|prn)-[0-7]$"
                   },
                   "value": {
                     "type": "object",
@@ -766,7 +833,7 @@
               "action_id": {
                 "type": "string",
                 "maxLength": 64,
-                "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw|android)\\.[a-z0-9]+(-[a-z0-9]+)*$"
+                "pattern": "^(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)\\.[a-z0-9]+(-[a-z0-9]+)*$"
               },
               "origin": {
                 "enum": [
@@ -779,12 +846,13 @@
                 "enum": [
                   "safe",
                   "reversible",
+                  "irreversible",
                   "destructive"
                 ]
               },
               "target_ref": {
                 "type": "string",
-                "pattern": "^(os|and)-[0-7]$"
+                "pattern": "^(os|and|prn)-[0-7]$"
               },
               "policy": {
                 "enum": [
@@ -853,7 +921,10 @@
                       "bootloader-locked",
                       "identity-mismatch",
                       "firmware-invalid",
-                      "firmware-hash-mismatch"
+                      "firmware-hash-mismatch",
+                      "printer-absent",
+                      "printer-mismatch",
+                      "printer-ambiguous"
                     ]
                   }
                 }
@@ -940,7 +1011,10 @@
                         "bootloader-locked",
                         "identity-mismatch",
                         "firmware-invalid",
-                        "firmware-hash-mismatch"
+                        "firmware-hash-mismatch",
+                        "printer-absent",
+                        "printer-mismatch",
+                        "printer-ambiguous"
                       ]
                     },
                     "exit_code": {
@@ -1041,7 +1115,7 @@
               },
               "target_ref": {
                 "type": "string",
-                "pattern": "^(os|and)-[0-7]$"
+                "pattern": "^(os|and|prn)-[0-7]$"
               },
               "before": {
                 "enum": [
@@ -1101,7 +1175,7 @@
           },
           "target_ref": {
             "type": "string",
-            "pattern": "^(os|and)-[0-7]$"
+            "pattern": "^(os|and|prn)-[0-7]$"
           },
           "doc": {
             "type": "string",

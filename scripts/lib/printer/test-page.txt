@@ -1,0 +1,27 @@
+RESCUE TEST PAGE / HALAMAN UJI RESCUE
+=====================================
+
+Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
+
+Halaman ini dicetak oleh USB rescue atas persetujuan operator untuk memeriksa
+bahwa printer menerima dan mencetak pekerjaan. Isinya tetap: tidak memuat nama
+pengguna, nama komputer, alamat jaringan, atau nomor seri.
+
+This page was printed by the rescue USB with the operator's approval to check
+that the printer accepts and prints a job. Its content is fixed: it carries no
+user name, computer name, network address or serial number.
+
+Karakter / Characters
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+abcdefghijklmnopqrstuvwxyz
+0123456789 !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+
+Garis / Lines
+--------------------------------------------------------------------------------
+================================================================================
+################################################################################
+
+Jika halaman ini kabur, bergaris, atau pucat: bersihkan head (aksi
+printer.clean-print-heads, memakai tinta) atau ganti kartrid.
+If this page is blurry, streaked or faded: clean the print heads (action
+printer.clean-print-heads, uses ink) or replace the cartridge.

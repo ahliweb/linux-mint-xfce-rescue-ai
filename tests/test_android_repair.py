@@ -827,7 +827,7 @@ class GeneratorStaticTests(unittest.TestCase):
         for key, values in rr.TARGET_ENUMS.items():
             line = re.search(r'%s = @\((.*?)\)' % key, m.group(1)).group(1)
             self.assertEqual(re.findall(r"'([^']+)'", line), list(values), key)
-        self.assertIn("'^(os|and)-[0-7]$'", text)
+        self.assertIn("'^(os|and|prn)-[0-7]$'", text)
         self.assertIn("$script:RrActionRe = '%s'" % rr.ACTION_RE.pattern, text)
 
     def test_javascript_lists_match_the_python_generator(self):
@@ -863,19 +863,19 @@ def jxa_plan(catalog_dir, evidence, select='', scope='all', analysis=None, tmp=N
 class HostEngineTests(unittest.TestCase):
     def test_powershell_engine_knows_the_android_names_statically(self):
         text = (REPO / 'host/rescue-windows.ps1').read_text(encoding='utf-8')
-        self.assertIn("'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256') -cnotcontains $pt", text)
-        self.assertIn("'software', 'malware', 'android') -cnotcontains $domain", text)
-        self.assertIn('(hw|os-linux|os-windows|os-macos|sw|mw|android)', text)
+        self.assertIn("'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root') -cnotcontains $pt", text)
+        self.assertIn("'software', 'malware', 'android', 'printer') -cnotcontains $domain", text)
+        self.assertIn('(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)', text)
         self.assertRegex(text, r"\$unsupported = @\(\$action\.params \| Where-Object \{[^}]*android_device")
-        self.assertIn("-or $_.type -ceq 'sha256' }).Count -gt 0", text)
+        self.assertIn("-or $_.type -ceq 'sha256' -or $_.type -ceq 'printer_ref' -or $_.type -ceq 'bundle_root' }).Count -gt 0", text)
 
     def test_macos_engine_knows_the_android_names_statically(self):
         text = (REPO / 'host/RESCUE-MACOS.command').read_text(encoding='utf-8')
-        self.assertIn("'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256'].indexOf(p.type)", text)
-        self.assertIn("'software', 'malware', 'android'].indexOf(doc.domain)", text)
-        self.assertIn('(hw|os-linux|os-windows|os-macos|sw|mw|android)', text)
-        self.assertIn('[[ ${P_type[$pk]} == (block_device|target_root|android_device|fastboot_device|fastboot_slot|firmware_file|sha256) ]] && unsupported=1', text)
-        self.assertIn('hardware.usb|os|software|software.selected|malware|android) ;;', text)
+        self.assertIn("'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root'].indexOf(p.type)", text)
+        self.assertIn("'software', 'malware', 'android', 'printer'].indexOf(doc.domain)", text)
+        self.assertIn('(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)', text)
+        self.assertIn('[[ ${P_type[$pk]} == (block_device|target_root|android_device|fastboot_device|fastboot_slot|firmware_file|sha256|printer_ref|bundle_root) ]] && unsupported=1', text)
+        self.assertIn('hardware.usb|os|software|software.selected|malware|android|printer) ;;', text)
 
     def test_every_host_catalog_parameter_type_is_in_the_closed_lists_of_both_engines(self):
         schema = json.loads((REPO / 'rescue-ai/v1/repair-catalog.schema.json').read_text())

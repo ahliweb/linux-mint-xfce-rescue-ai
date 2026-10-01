@@ -26,6 +26,11 @@ operator-supplied absolute path, hashed by the engine and passed as an inherited
 Placeholders may also take the form ``--{name}`` for an enum parameter (Heimdall partition options).
 ``detection_ref`` (``d-N``) is an operator-chosen opaque reference to one entry of the local
 malware detection list; the engine resolves it to a verified regular-file path.
+Printer actions (docs/printer.md) add two more engine-provided types, Python engine only: ``printer_ref`` (the
+CUPS queue name of the printer named by the proposal's ``prn-N`` target_ref, resolved by the engine at execution
+time by running the printer discovery again; it exists only inside the child argv) and ``bundle_root`` (the
+rescue bundle directory, used only as ``{name}/scripts/lib/...`` for a closed list of shipped fixed files).
+A ``printer_ref`` may also appear as ``ipp://localhost/printers/{name}``, the only URI an action may build.
 """
 from __future__ import annotations
 
@@ -41,15 +46,17 @@ CATALOG_SCHEMA = ROOT / 'rescue-ai/v1/repair-catalog.schema.json'
 EVIDENCE_SCHEMA = ROOT / 'rescue-ai/v1/rescue-evidence.schema.json'
 
 DOMAIN_PREFIX = {'hardware': 'hw', 'os-linux': 'os-linux', 'os-windows': 'os-windows',
-                 'os-macos': 'os-macos', 'software': 'sw', 'malware': 'mw', 'android': 'android'}
+                 'os-macos': 'os-macos', 'software': 'sw', 'malware': 'mw', 'android': 'android', 'printer': 'printer'}
 DOMAIN_FAMILIES = {'os-linux': {'linuxmint', 'linux-other'}, 'os-windows': {'windows'}, 'os-macos': {'macos'},
-                   'android': {'android'}}
+                   'android': {'android'}, 'printer': {'printer', 'windows', 'linuxmint', 'linux-other'}}
 DOMAIN_PLATFORMS = {'os-linux': {'live-linux', 'linux-host'}, 'os-windows': {'live-linux', 'windows-host'},
-                    'os-macos': {'live-linux', 'macos-host'}, 'android': {'live-linux', 'linux-host'}}
+                    'os-macos': {'live-linux', 'macos-host'}, 'android': {'live-linux', 'linux-host'},
+                    'printer': {'live-linux', 'linux-host'}}
 # Parameter types only the Python engine can resolve: such actions never apply to the Windows/macOS host
 # launchers (they list the types as unsupported), so they are limited to the Python engine's platforms.
 PYTHON_ENGINE_PLATFORMS = {'live-linux', 'linux-host'}
-ENGINE_ONLY_PARAMS = frozenset({'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256'})
+ENGINE_ONLY_PARAMS = frozenset({'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256',
+                                'printer_ref', 'bundle_root'})
 GUARDS = ('bootloader-unlocked', 'image-matches-device', 'single-download-mode-device')
 # What an Android action may send to the phone (docs/android.md). adb is always addressed with
 # ``-t {android_device}``; the sub-command and the on-device program are closed lists, so a catalog change
@@ -67,12 +74,23 @@ SLOTS = frozenset({'a', 'b'})
 SHA256_RE = re.compile(r'^[A-Fa-f0-9]{64}\Z')       # \Z: a trailing newline must not slip through
 FIRMWARE_KINDS = ('image', 'zip')
 DETECTION_RE = re.compile(r'^d-[0-9]{1,4}$')
+# What a printer action may run (docs/printer.md). Every program is addressed to the one printer the engine resolved
+# from the proposal's prn-N (``{printer_ref}``), and the only files an action may name are the fixed ones shipped in
+# the bundle (``{bundle_root}/...``). No firmware, no vendor tool, no credential, no URI other than the local queue.
+PRINTER_PROGRAMS = ('cupsenable', 'cupsaccept', 'cancel', 'lp', 'ipptool', 'lpstat')
+SPOOL_HELPER = 'rescue-malware-quarantine'
+SPOOL_COMMANDS = ('spool-check', 'spool-quarantine', 'spool-verify', 'spool-restore')
+IPP_TEST_FILES = ('scripts/lib/ipp/identify-printer.test', 'scripts/lib/ipp/verify-queue-ready.test',
+                  'scripts/lib/ipp/verify-accepting.test', 'scripts/lib/ipp/verify-no-jobs.test')
+LP_FILES = ('scripts/lib/printer/test-page.txt', 'scripts/lib/printer/clean-heads.cupscmd')
+BUNDLE_FILES = frozenset(IPP_TEST_FILES + LP_FILES)
+LP_TITLES = ('rescue-test-page',)
 LIVE_PLATFORMS = {'linux-mint-xfce-live': 'live-linux', 'systemrescue-live': 'live-linux',
                   'other-live-linux': 'live-linux', 'linux-host': 'linux-host',
                   'windows-host': 'windows-host', 'macos-host': 'macos-host'}
 SCOPE_ITEMS = ('hardware.cpu', 'hardware.memory', 'hardware.disk', 'hardware.gpu', 'hardware.display',
-               'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'malware', 'android')
-SCOPE_VALUES = ('all', 'hardware') + SCOPE_ITEMS[:10] + ('software.selected', 'malware', 'android')
+               'hardware.network', 'hardware.battery', 'hardware.usb', 'os', 'software', 'malware', 'android', 'printer')
+SCOPE_VALUES = ('all', 'hardware') + SCOPE_ITEMS[:10] + ('software.selected', 'malware', 'android', 'printer')
 
 # Programs that would turn a fixed argv back into "run anything": shells,
 # interpreters, privilege wrappers (the engine adds `sudo -n` itself), command
@@ -91,6 +109,7 @@ WHOLE = re.compile(r'^\{([a-z][a-z0-9_]{0,31})\}$')
 PREFIXED = re.compile(r'^(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*=)\{([a-z][a-z0-9_]{0,31})\}$')
 OPTION = re.compile(r'^--\{([a-z][a-z0-9_]{0,31})\}$')          # --{name}: the value (an enum) is the option name
 ROOTED = re.compile(r'^\{([a-z][a-z0-9_]{0,31})\}((?:/[A-Za-z0-9._+-]+)+)$')
+QUEUE_URI = re.compile(r'^(ipp://localhost/printers/)\{([a-z][a-z0-9_]{0,31})\}$')   # printer_ref only: the local queue
 
 PACKAGE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9+._:@-]{0,127}$')
 SERVICE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9@._:-]{0,127}$')
@@ -145,16 +164,25 @@ def _placeholder_errors(where, argv, params):
             name = m.group(m.lastindex)
             if OPTION.match(element) and params.get(name, {}).get('type') != 'enum':
                 errors.append('%s argv[%d]: --{name} is only allowed for an enum parameter' % (where, i))
+        elif QUEUE_URI.match(element):
+            name = QUEUE_URI.match(element).group(2)
+            if params.get(name, {}).get('type') != 'printer_ref':
+                errors.append('%s argv[%d]: ipp://localhost/printers/{name} is only allowed for a printer_ref parameter'
+                              % (where, i))
         else:
             r = ROOTED.match(element)
             if r and '..' not in r.group(2).split('/'):
                 name = r.group(1)
-                if params.get(name, {}).get('type') != 'target_root':
-                    errors.append('%s argv[%d]: a path suffix is only allowed after a target_root parameter'
+                kind = params.get(name, {}).get('type')
+                if kind not in ('target_root', 'bundle_root'):
+                    errors.append('%s argv[%d]: a path suffix is only allowed after a target_root or bundle_root parameter'
                                   % (where, i))
+                elif kind == 'bundle_root' and r.group(2).lstrip('/') not in BUNDLE_FILES:
+                    errors.append('%s argv[%d]: %s is not one of the shipped fixed files (%s)'
+                                  % (where, i, r.group(2).lstrip('/'), ', '.join(sorted(BUNDLE_FILES))))
             else:
-                errors.append('%s argv[%d]: placeholders must be {name}, --opt={name}, --{enum}, or {target_root}/path'
-                              % (where, i))
+                errors.append('%s argv[%d]: placeholders must be {name}, --opt={name}, --{enum}, {target_root}/path, '
+                              'or {bundle_root}/path' % (where, i))
                 continue
         if i == 0:
             errors.append('%s argv[0] must be a literal program name' % where)
@@ -253,6 +281,70 @@ def heimdall_command_errors(where, argv, params):
     return ['%s: heimdall may only run detect, print-pit --no-reboot, or flash --{PARTITION} {file} --no-reboot' % where]
 
 
+def _printer_param(params, element):
+    """True when *element* is exactly ``{name}`` of a printer_ref parameter."""
+    p = _param_of(params, element)
+    return bool(p) and p['type'] == 'printer_ref'
+
+
+def _bundle_file(params, element, allowed):
+    """The shipped file named by ``{bundle_root}/path`` when it is one of *allowed*, else None."""
+    r = ROOTED.match(element)
+    p = params.get(r.group(1)) if r else None
+    if p and p['type'] == 'bundle_root' and r.group(2).lstrip('/') in allowed:
+        return r.group(2).lstrip('/')
+    return None
+
+
+def printer_command_errors(where, argv, params, domain):
+    """Printer actions (docs/printer.md): a closed list of programs, each in one fixed form, addressed to the one
+    printer the engine resolved (``{printer_ref}``) and naming only the fixed files shipped in the bundle."""
+    program = argv[0]
+    if domain != 'printer':
+        if program in PRINTER_PROGRAMS:
+            return ['%s: %s is only allowed in the printer domain' % (where, program)]
+        return []
+    if program == SPOOL_HELPER:
+        # the spool quarantine of an installed OS: fixed sub-commands, only the engine-provided root and state directory
+        sub = argv[1] if len(argv) > 1 else ''
+        roots = [p['name'] for p in params.values() if p['type'] == 'target_root']
+        states = [p['name'] for p in params.values() if p['type'] == 'state_dir']
+        want = ['--target-root={%s}' % roots[0]] if len(roots) == 1 else None
+        if sub not in SPOOL_COMMANDS or want is None:
+            return ['%s: %s in the printer domain may only run %s with the target_root parameter'
+                    % (where, SPOOL_HELPER, ', '.join(SPOOL_COMMANDS))]
+        if sub != 'spool-check':
+            if len(states) != 1:
+                return ['%s: %s needs one state_dir parameter' % (where, sub)]
+            want.append('--quarantine-dir={%s}' % states[0])
+        return [] if argv[2:] == want else ['%s: %s must be exactly: %s' % (where, sub, ' '.join(argv[:2] + want))]
+    if program not in PRINTER_PROGRAMS:
+        return ['%s: program %r is not allowed in the printer domain (allowed: %s)'
+                % (where, program, ', '.join(PRINTER_PROGRAMS + (SPOOL_HELPER,)))]
+    printers = [p['name'] for p in params.values() if p['type'] == 'printer_ref']
+    if len(printers) != 1:
+        return ['%s: %s needs exactly one printer_ref parameter' % (where, program)]
+    q = '{%s}' % printers[0]
+    rest = argv[1:]
+    if program in ('cupsenable', 'cupsaccept'):
+        ok = rest == [q]
+    elif program == 'cancel':
+        ok = rest == ['-a', q]
+    elif program == 'lpstat':
+        ok = len(rest) == 2 and rest[0] in ('-p', '-a', '-o') and rest[1] == q
+    elif program == 'lp':
+        ok = bool(rest[:2] == ['-d', q] and len(rest) >= 3 and _bundle_file(params, rest[-1], LP_FILES))
+        tail = rest[2:-1] if ok else []
+        ok = ok and (tail == [] or (len(tail) == 2 and tail[0] == '-t' and tail[1] in LP_TITLES) or tail == ['-o', 'raw'])
+    else:   # ipptool
+        ok = bool(len(rest) == 5 and rest[:3] == ['-q', '-T', rest[2]] and re.match(r'^[1-9][0-9]?$', rest[2])
+                  and QUEUE_URI.match(rest[3]) and QUEUE_URI.match(rest[3]).group(2) == printers[0]
+                  and _bundle_file(params, rest[4], IPP_TEST_FILES))
+    if not ok:
+        return ['%s: %s is not one of the fixed printer forms (docs/printer.md): %s' % (where, ' '.join(argv[:3]), program)]
+    return []
+
+
 def _expect_line_errors(where, step, params):
     line = step.get('expect_line')
     if line is None:
@@ -301,13 +393,17 @@ def action_errors(action, domain, check_ids):
         elif 'minimum' in p or 'maximum' in p:
             say('%s: only integer parameters take minimum/maximum (%s)' % (aid, p['name']))
         if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device',
-                    'fastboot_slot', 'firmware_file', 'sha256') and 'default' in p:
+                    'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root') and 'default' in p:
             say('%s: %s parameters cannot have a default (%s)' % (aid, kind, p['name']))
         if kind in ENGINE_ONLY_PARAMS and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
             say('%s: %s parameters exist only on %s (the host launchers cannot resolve them)'
                 % (aid, kind, ' and '.join(sorted(PYTHON_ENGINE_PLATFORMS))))
         if kind in ('android_device', 'fastboot_device', 'fastboot_slot') and action.get('target_families') != ['android']:
             say('%s: %s parameters need target_families ["android"]' % (aid, kind))
+        if kind == 'printer_ref' and (domain != 'printer' or action.get('target_families') != ['printer']):
+            say('%s: printer_ref parameters need the printer domain and target_families ["printer"]' % aid)
+        if kind == 'bundle_root' and domain != 'printer':
+            say('%s: bundle_root parameters exist only in the printer domain' % aid)
         if kind == 'firmware_file' and not any(q['name'] == p['name'] + '_sha256' and q['type'] == 'sha256'
                                                for q in action.get('params') or []):
             say('%s: firmware_file %s needs a sha256 parameter named %s_sha256' % (aid, p['name'], p['name']))
@@ -320,6 +416,12 @@ def action_errors(action, domain, check_ids):
     android_params = [p for p in params.values() if p['type'] == 'android_device']
     fastboot_params = [p for p in params.values() if p['type'] == 'fastboot_device']
     guards = action.get('guards') or []
+    printer_params = [p for p in params.values() if p['type'] == 'printer_ref']
+    if len(printer_params) > 1:
+        say('%s: at most one printer_ref parameter' % aid)
+    if domain == 'printer' and (len(printer_params) == 1) == any(p['type'] == 'target_root' for p in params.values()):
+        say('%s: printer actions are addressed to one printer (printer_ref) or to the spooler of an installed OS '
+            '(target_root), never both or neither' % aid)
     if len(android_params) > 1:
         say('%s: at most one android_device parameter' % aid)
     if len(fastboot_params) > 1:
@@ -345,6 +447,7 @@ def action_errors(action, domain, check_ids):
         errors.extend(android_command_errors('%s %s' % (aid, where), argv, android_params))
         errors.extend(fastboot_command_errors('%s %s' % (aid, where), argv, params))
         errors.extend(heimdall_command_errors('%s %s' % (aid, where), argv, params))
+        errors.extend(printer_command_errors('%s %s' % (aid, where), argv, params, domain))
         errors.extend(_expect_line_errors('%s %s' % (aid, where), step, params))
         if step.get('expect_line') is not None and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
             say('%s %s: expect_line exists only on %s (the host launchers do not check output)'
@@ -364,6 +467,11 @@ def action_errors(action, domain, check_ids):
                 (m := PREFIXED.match(e)) and m.group(1) == '--set-active=' and m.group(2) == p['name']
                 for _, st in _steps(action) for e in st['argv']):
             say('%s: a fastboot_slot parameter is only for --set-active=' % aid)
+    if any(st['argv'][0] == 'lp' for _, st in _steps(action)):
+        if action['risk'] != 'irreversible':
+            say('%s: lp actions consume paper or ink and are irreversible' % aid)
+        if action['triggers']:
+            say('%s: lp actions are never proposed by a trigger (operator --select only)' % aid)
     flashing = any(st['argv'][:2] == ['fastboot', '-s'] and len(st['argv']) > 3 and st['argv'][3] in ('flash', 'update')
                    or st['argv'][:2] == ['heimdall', 'flash'] for _, st in _steps(action))
     if flashing:
@@ -402,6 +510,10 @@ def action_errors(action, domain, check_ids):
             say('%s: destructive actions require a backup' % aid)
         if kind not in ('restore-backup', 'manual'):
             say('%s: destructive actions roll back by restore-backup or a manual procedure' % aid)
+    elif risk == 'irreversible':
+        if kind != 'none' or backup['required'] or action.get('requires_target_rw'):
+            say('%s: irreversible actions have no rollback and no backup (nothing stored is lost) and need no '
+                'read-write target' % aid)
     if action.get('requires_target_rw'):
         if set(action['platforms']) != {'live-linux'}:
             say('%s: requires_target_rw exists only on the live-linux platform' % aid)
@@ -417,7 +529,8 @@ def action_errors(action, domain, check_ids):
     else:
         if not families and domain != 'malware':  # malware actions may be about the scanner, not one OS
             say('%s: %s actions need target_families' % (aid, domain))
-        expected_scope = {'software': 'software', 'malware': 'malware', 'android': 'android'}.get(domain, 'os')
+        expected_scope = {'software': 'software', 'malware': 'malware', 'android': 'android',
+                          'printer': 'printer'}.get(domain, 'os')
         if action['scope'] != expected_scope:
             say('%s: %s actions use scope %r' % (aid, domain, expected_scope))
     if domain in DOMAIN_FAMILIES and families and not set(families) <= DOMAIN_FAMILIES[domain]:
@@ -571,6 +684,12 @@ def triggered(catalog, evidence, scope):
     return out
 
 
+def ai_proposable(action):
+    """May a model name this action? Not an irreversible action that no evidence check can trigger (a test page, a
+    print-head cleaning): it uses paper or ink and is the operator's own decision (--select), never a suggestion."""
+    return not (action['risk'] == 'irreversible' and not action['triggers'])
+
+
 def parse_ai_proposals(text, catalog, evidence, scope):
     """Extract the last ```rescue-proposals block from model *text*.
 
@@ -599,7 +718,7 @@ def parse_ai_proposals(text, catalog, evidence, scope):
             continue
         aid, ref = item.get('action_id'), item.get('target_ref')
         action = catalog.get(aid) if isinstance(aid, str) else None
-        if action is None or (ref is not None and (not isinstance(ref, str) or ref not in families)):
+        if action is None or not ai_proposable(action) or (ref is not None and (not isinstance(ref, str) or ref not in families)):
             rejected += 1
             continue
         if not action.get('target_families'):
@@ -623,7 +742,7 @@ def prompt_summary(catalog, evidence, scope):
     rows = []
     for aid in sorted(catalog.actions):
         a = catalog.actions[aid]
-        if platform not in a['platforms'] or not in_scope(scope, a['scope']):
+        if platform not in a['platforms'] or not in_scope(scope, a['scope']) or not ai_proposable(a):
             continue
         rows.append({'action_id': aid, 'title': a['title'], 'scope': a['scope'], 'risk': a['risk'],
                      'target_families': a.get('target_families', []),
@@ -678,6 +797,10 @@ def validate_param(param, value, packages=None):
         raise ValueError('is resolved by the engine from the USB inventory and adb, never by the operator')
     if kind in ('fastboot_device', 'fastboot_slot'):
         raise ValueError('is resolved by the engine from the phone in fastboot mode, never by the operator')
+    if kind == 'printer_ref':
+        raise ValueError('is resolved by the engine from the printer discovery, never by the operator')
+    if kind == 'bundle_root':
+        raise ValueError('is the rescue bundle directory, provided by the engine, never by the operator')
     if kind == 'sha256':
         if not SHA256_RE.match(text):
             raise ValueError('must be the 64 hexadecimal characters of the official SHA-256')
@@ -694,7 +817,8 @@ def render(argv, values):
     """Substitute validated *values* into a catalog argv; every element stays one argument."""
     out = []
     for element in argv:
-        m = WHOLE.match(element) or PREFIXED.match(element) or ROOTED.match(element) or OPTION.match(element)
+        m = (WHOLE.match(element) or PREFIXED.match(element) or ROOTED.match(element) or OPTION.match(element)
+             or QUEUE_URI.match(element))
         if m is None:
             out.append(element)
             continue

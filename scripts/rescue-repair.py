@@ -37,6 +37,14 @@ hashed are the bytes that are flashed; only the SHA-256 reaches the journal, nev
 ``guards`` (bootloader-unlocked, image-matches-device, single-download-mode-device) are native checks that
 run after approval and refuse with a typed reason before anything is sent to the phone.
 
+Printer actions (docs/printer.md) address one printer through the engine-resolved printer_ref parameter: at
+execution time the engine runs the printer discovery again (USB sysfs, ``lpstat``, ``ipptool``; network printers
+only with ``--printer-network``), finds the prn-N target of the proposal, requires the opaque id recorded in the
+evidence, and only then renders the CUPS queue name into the child argv. The queue name is never read from evidence,
+model output or the command line, is never shown (the approval card says ``<printer prn-N>``, the output of a printer
+tool is not echoed) and is never journaled. The risk class ``irreversible`` (a test page, a head cleaning, cancelled
+jobs: nothing stored is lost but it cannot be undone) always asks, like every class but ``safe``.
+
 This Python engine executes on the live-linux and linux-host platforms. Windows and macOS
 evidence can be planned here (--list) but is executed by the host launchers' own engines.
 
@@ -68,7 +76,7 @@ sys.path.insert(0, str(HERE / 'lib'))
 sys.path.insert(0, str(HERE))
 import repair_catalog as rc  # noqa: E402
 import malware_detections as md  # noqa: E402
-from rescue_modules import android, android_flash, usb_devices  # noqa: E402
+from rescue_modules import android, android_flash, printer, usb_devices  # noqa: E402
 
 SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 EXECUTING_PLATFORMS = {'live-linux', 'linux-host'}
@@ -89,7 +97,7 @@ MAX_ZIP_MEMBERS = 2000
 OUTER_FACTORY_SCRIPTS = ('flash-all.sh', 'flash-all.bat', 'flash-base.sh')
 FORBIDDEN_IMAGE_STEMS = frozenset({'bootloader', 'radio', 'modem', 'persist', 'efs', 'frp', 'devinfo', 'fsg',
                                    'modemst1', 'modemst2', 'userdata'})
-ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot')
+ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'printer_ref', 'bundle_root')
 
 
 def utc_now():
@@ -350,6 +358,7 @@ class Engine:
         self.firmware = {}           # param name -> {'kind', 'android_info'} of the bound firmware files
         self.fb_port = None          # USB port of the fastboot device bound for the current action
         self.android_wait = ANDROID_WAIT_SECONDS
+        self.printer_network = bool(getattr(args, 'printer_network', False))   # opt-in for this run (docs/printer.md)
         self.apply_test_hooks()
 
     def apply_test_hooks(self):
@@ -364,6 +373,8 @@ class Engine:
                 usb_devices.SYS_ROOT = base / 'sys'
                 usb_devices.MOUNTINFO = base / 'proc/self/mountinfo'
                 usb_devices.BY_LABEL = base / 'dev/disk/by-label'
+                printer.IPP_USB_STATE = base / 'var/ipp-usb/dev'
+                printer.FIB_TRIE = base / 'proc/net/fib_trie'
             else:
                 warn('rescue-repair: ignoring invalid RESCUE_REPAIR_TEST_USB_ROOT')
         wait = os.environ.get('RESCUE_REPAIR_TEST_ANDROID_WAIT', '')
@@ -417,12 +428,63 @@ class Engine:
         return next(((p['name'], p['type']) for p in action.get('params') or []
                      if p['type'] in ('android_device', 'fastboot_device')), (None, None))
 
-    def evidence_opaque_id(self, proposal):
-        """The opaque id the evidence recorded for the proposal's and-N target, or None."""
+    def evidence_target_id(self, proposal, family):
+        """The opaque id the evidence recorded for the proposal's target of *family*, or None."""
         ref = proposal.get('target_ref')
         target = next((t for t in self.evidence.get('target_systems') or []
-                       if t.get('ref') == ref and t.get('family') == 'android'), None)
+                       if t.get('ref') == ref and t.get('family') == family), None)
         return (target or {}).get('opaque_id') if ref else None
+
+    def evidence_opaque_id(self, proposal):
+        """The opaque id the evidence recorded for the proposal's and-N target, or None."""
+        return self.evidence_target_id(proposal, 'android')
+
+    # --------------------------------------------------------------- printer_ref
+
+    @staticmethod
+    def printer_param(action):
+        """Name of the action's printer_ref parameter, or None."""
+        return next((p['name'] for p in action.get('params') or [] if p['type'] == 'printer_ref'), None)
+
+    def resolve_printer(self, proposal):
+        """(CUPS queue name, reason): the queue of the printer the proposal names, or a typed refusal.
+
+        Nothing but the proposal's prn-N reference and the evidence's opaque id are used; the printers are looked up
+        again right now (USB sysfs, lpstat, ipptool; mDNS only with --printer-network), so a swapped, unplugged or
+        re-numbered printer is caught. The queue name stays in this process and the child argv."""
+        ref, expected = proposal.get('target_ref'), self.evidence_target_id(proposal, 'printer')
+        if not ref or not expected:
+            return None, 'printer-mismatch'
+        usb_list = usb_devices.list_usb_devices()
+        tools = printer.Tools(self.path)
+        if usb_list is None and tools.lpstat_path is None:
+            return None, 'printer-absent'
+        found, _status = printer.discover(usb_list, tools, network=self.printer_network)
+        current = printer.resolve_ref(found, ref)
+        if current is None:
+            return None, 'printer-absent'
+        if sum(1 for r in found if r['opaque_id'] == expected) > 1:
+            return None, 'printer-ambiguous'
+        if current['opaque_id'] != expected:
+            return None, 'printer-mismatch'
+        if current['connection'] == 'network' and not self.printer_network:
+            warn('  a network printer is only a target when this run is started with --printer-network')
+            return None, 'printer-absent'
+        queue = current['_private'].get('queue')
+        if not printer.valid_queue(queue):
+            warn('  this printer has no CUPS queue to address (create one in Printer Settings first)')
+            return None, 'printer-absent'
+        return queue, None
+
+    def bind_printer(self, action, proposal, values):
+        """(values with the printer_ref parameter rendered as the queue name, None) or (None, reason)."""
+        name = self.printer_param(action)
+        if name is None:
+            return values, None
+        queue, reason = self.resolve_printer(proposal)
+        if reason:
+            return None, reason
+        return dict(values, **{name: queue}), None
 
     def fastboot(self):
         if self._fastboot is None:
@@ -648,6 +710,9 @@ class Engine:
         values, refusal = self.bind_device(action, proposal, values)
         if refusal:
             return None, refusal
+        values, refusal = self.bind_printer(action, proposal, values)
+        if refusal:
+            return None, refusal
         refusal = self.run_guards(action, proposal, 'device')
         if refusal:
             return None, refusal
@@ -771,6 +836,10 @@ class Engine:
                 shown[p['name']] = '<fastboot %s>' % proposal.get('target_ref', '?')
             elif p['type'] == 'fastboot_slot':
                 shown[p['name']] = '<active slot>'
+            elif p['type'] == 'printer_ref':
+                shown[p['name']] = '<printer %s>' % proposal.get('target_ref', '?')
+            elif p['type'] == 'bundle_root':
+                shown[p['name']] = '<bundle>'
             elif p['type'] == 'firmware_file':
                 shown[p['name']] = '<firmware %s file>' % p['values'][0]
             elif p['type'] == 'detection_ref':
@@ -786,6 +855,9 @@ class Engine:
             say('   guards: %s (checked after approval, before anything is sent)' % ', '.join(action['guards']))
         if action.get('requires_target_rw'):
             say('   PERINGATAN / WARNING: target akan di-mount read-write / the target will be mounted read-write')
+        if action['risk'] == 'irreversible':
+            say('   PERINGATAN / WARNING: tidak dapat dibatalkan: memakai kertas atau tinta, atau membuang pekerjaan cetak / '
+                'cannot be undone: it uses paper or ink, or discards queued print jobs')
         if action['backup']['required']:
             say('   backup: %s (reference supplied)' % action['backup'].get('what'))
         say('   doc: %s' % action['doc'])
@@ -882,12 +954,21 @@ class Engine:
         return self.run_action(action, proposal, bound)
 
     def engine_values(self, action, values):
-        """Add the engine-provided state_dir values (<state>/clamav or <state>/quarantine)."""
+        """Add the engine-provided state_dir values (<state>/clamav or <state>/quarantine) and the bundle directory."""
         out = dict(values)
         for p in action.get('params') or []:
             if p['type'] == 'state_dir':
                 out[p['name']] = os.path.join(self.state_root or '', p['values'][0])
+            elif p['type'] == 'bundle_root':
+                out[p['name']] = str(rc.ROOT)
         return out
+
+    def show(self, action, result, limit=15):
+        """Echo a step's output, except for a printer action: a CUPS tool names the queue (``request id is Queue-12``)."""
+        if self.printer_param(action) is None:
+            show_output(result, limit)
+        elif result.get('output'):
+            say('    | (keluaran tidak ditampilkan karena dapat memuat nama printer / output not shown, it may name the printer)')
 
     def bind_detections(self, action, proposal, values, root):
         """Replace each detection_ref d-N by the verified absolute path below *root* ('/' on a host).
@@ -946,7 +1027,7 @@ class Engine:
             k: v for k, v in result_fields(result).items() if k not in ('outcome',)})
         say('  %-12s %s' % (stage, result['outcome']))
         if result['outcome'] != 'ok':
-            show_output(result)
+            self.show(action, result)
         return result
 
     def run_action(self, action, proposal, values):
@@ -958,7 +1039,7 @@ class Engine:
         if executed['outcome'] == 'unavailable':
             return 'skipped'
         if executed['outcome'] == 'ok':
-            show_output(executed, limit=8)
+            self.show(action, executed, limit=8)
             if self.step(action, proposal, 'verify', action['verify'], values)['outcome'] == 'ok':
                 return 'verified'
         rb = action['rollback']
@@ -997,6 +1078,8 @@ def main(argv=None):
     ap.add_argument('--select', action='append', default=[], metavar='ACTION_ID')
     ap.add_argument('--approve', action='append', default=[], metavar='ACTION_ID')
     ap.add_argument('--param', action='append', default=[], metavar='ACTION_ID.NAME=VALUE')
+    ap.add_argument('--printer-network', action='store_true',
+                    help='printer actions may address a network printer in this run (opt-in; default: USB and local queues only)')
     ap.add_argument('--backup-ref', metavar='FILE')
     ap.add_argument('--list', action='store_true', help='print the proposals and exit (nothing is journaled)')
     ap.add_argument('--verify-journal', metavar='FILE')

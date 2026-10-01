@@ -187,6 +187,7 @@
           }
         }
       ],
+      "printer": [],
       "environment": [
         {
           "check_id": "block-device-discovery",
