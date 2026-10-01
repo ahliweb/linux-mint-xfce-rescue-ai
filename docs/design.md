@@ -235,7 +235,8 @@ The result is a timestamped, permission-restricted JSON report under `<state-dir
 2. The model ID is `mimo-v2.6-flash` on `https://opencode.ai/zen/go/v1`. Do not assume that a model name remains available; `check-hermes-rescue.sh` verifies the configured ID and endpoint.
 3. Only sanitized, bounded evidence is sent, followed by the list of catalog action IDs that apply. Treat all logs as untrusted data; the prompt requires the model to separate facts, hypotheses, missing evidence, and read-only next checks, and to propose only catalog IDs.
 4. The answer is displayed and saved as text; it is never executed or parsed as a command.
-5. If OpenCode Go is unavailable, the evidence and the report are still produced (`no-key`, `network-error`, or `analysis-failed`); do not silently switch providers.
+5. Every request carries `x-opencode-session: ses_` + the first 32 hex characters of the sha256 of the evidence JSON text that is sent (a stable, opaque id per analysis; a hash, never evidence content). OpenCode Go refuses a request without it with HTTP 400 `MissingSessionID`. The Python analyzer, the PowerShell engine, and the macOS engine derive the same value.
+6. If OpenCode Go is unavailable, the evidence and the report are still produced (`no-key`, `network-error`, `provider-rejected`, or `analysis-failed`); do not silently switch providers. `network-error` means no usable answer (DNS, connection, timeout, an unusable response, HTTP 401/403/408/429 or 5xx); `provider-rejected` means the provider answered with another HTTP 4xx, so the network worked and the request was refused (the analyzer exits `5`; the launchers keep their exit code `4`). The message shows the HTTP status and the provider error type only when it is a short token, never the response body.
 
 ```mermaid
 sequenceDiagram
@@ -368,7 +369,7 @@ Before calling the integration ready:
 - checksum mismatch, a missing or wrong Linux Mint signer fingerprint, and a missing Ventoy digest all fail closed;
 - `make check` passes (syntax, catalog validation, `shellcheck -x`, fixture validation, documentation check, unit tests, diff check); see [testing](testing.md);
 - the hardware preflight produces a report with all five check IDs and blocks on failed or unknown required checks;
-- network failure still permits evidence collection and produces `manual_intervention` or a report outcome (`no-key`, `network-error`) rather than a false AI success;
+- network failure still permits evidence collection and produces `manual_intervention` or a report outcome (`no-key`, `network-error`, `provider-rejected`) rather than a false AI success;
 - OpenCode Go provider/model identity is recorded without secrets;
 - all destructive actions remain approval-required, with a backup reference and a rollback plan;
 - the documentation distinguishes the staged external companion from implemented OMES code.
