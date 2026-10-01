@@ -339,7 +339,7 @@ forbidden_programs=(sh bash dash zsh ksh mksh csh tcsh fish busybox env sudo su 
 ZERO_HASH=${(l:64::0:)}
 typeset -A A_risk A_scope A_root A_trw A_bkreq A_bkwhat A_rbkind A_rbdoc A_doc A_title A_titleid A_params
 typeset -A P_type P_hasdef P_def P_vals P_min P_max S_timeout S_expect S_argv S_stages
-typeset -A vals ex
+typeset -A vals ex batch_keys
 typeset -a prop_id prop_origin prop_target plan_errors catalog_files package_list rendered
 catalog_sha=''
 select_error=''
@@ -351,7 +351,7 @@ journal=''
 journal_ok=1
 run_id=''
 evidence_sha=''
-cur_id='' cur_origin='' cur_target='' cur_risk=''
+cur_id='' cur_origin='' cur_target='' cur_risk='' cur_index=0
 r_outcome='' r_reason='' r_code='' r_dur='' r_bytes='' r_sha=''
 vp_value='' vp_error='' rv_problem=''
 det_target='' det_sha='' det_sig='' det_rel=''
@@ -738,9 +738,60 @@ repair_card() {
   print -r -- "   doc: ${A_doc[$aid]}"
 }
 
+# batchable INDEX -> 0 when the proposal may be part of the one-question approval of safe actions: only a plain
+# safe action, never a quarantine, a reversible/irreversible/destructive one, one that writes the target or needs a
+# backup, one that needs root this session lacks, or one a host launcher cannot run
+batchable() {
+  local aid=${prop_id[$1]} p pk
+  [[ ${A_risk[$aid]} == safe ]] || return 1
+  [[ $aid == mw.quarantine-* ]] && return 1
+  [[ ${A_trw[$aid]} == 1 || ${A_bkreq[$aid]} == 1 ]] && return 1
+  (( ${approve_items[(Ie)$aid]} )) && return 1
+  if [[ ${A_root[$aid]} == 1 ]] && (( EUID != 0 )); then return 1; fi
+  for p in ${=A_params[$aid]}; do
+    pk=$aid'|'$p
+    [[ ${P_type[$pk]} == (block_device|target_root|android_device|fastboot_device|fastboot_slot|firmware_file|sha256|printer_ref|bundle_root) ]] && return 1
+  done
+  return 0
+}
+
+# plan_batch: approve-each + interactive + two or more pending safe actions: show the table of all proposals, then ask
+# once (empty answer = yes; end of input = no). Fills batch_keys with "action_id|target" for the approved ones.
+plan_batch() {
+  local i n=0 aid t mark ans bk
+  batch_keys=()
+  [[ $repair_policy == approve-each ]] || return 0
+  (( interactive )) || return 0
+  for (( i = 1; i <= ${#prop_id}; i++ )); do
+    if batchable $i; then n=$(( n + 1 )); fi
+  done
+  (( n >= 2 )) || return 0
+  print -r -- ''
+  print -r -- 'Menunggu persetujuan / pending approval:'
+  for (( i = 1; i <= ${#prop_id}; i++ )); do
+    aid=${prop_id[$i]}; mark=' '
+    if batchable $i; then mark='*'; fi
+    printf '  %s%2d. %-40s %-11s %s\n' "$mark" $i $aid ${A_risk[$aid]} "${A_title[$aid]}"
+  done
+  print -r -- '  (* = aman/safe: dapat disetujui sekaligus / can be approved at once; the others always ask)'
+  print -rn -- "Setujui semua $n aksi aman (safe) sekaligus? / Approve all $n safe actions at once? [Y/n]: "
+  read -r ans || return 0
+  if [[ -z $ans || ${(L)ans} == (ya|y|yes) ]]; then
+    for (( i = 1; i <= ${#prop_id}; i++ )); do
+      if batchable $i; then
+        t=${prop_target[$i]}
+        [[ $t == - ]] && t=''
+        bk=${prop_id[$i]}'|'$t
+        batch_keys[$bk]=1
+      fi
+    done
+  fi
+  return 0
+}
+
 # approve_action -> approved_reason (empty when not approved; the decision is journaled)
 approve_action() {
-  local aid=$cur_id auto=0 cli=0 ans ok=0
+  local aid=$cur_id auto=0 cli=0 ans ok=0 bkey=$cur_id'|'$cur_target
   approved_reason=''
   [[ $repair_policy == auto-safe && $cur_risk == safe && $cur_origin == catalog-trigger && ${A_trw[$aid]} != 1 ]] && auto=1
   (( ${approve_items[(Ie)$aid]} )) && cli=1
@@ -763,6 +814,10 @@ approve_action() {
     return 1
   fi
   repair_card
+  if [[ $cur_risk == safe ]] && (( ${+batch_keys[$bkey]} )); then
+    approved_reason=operator-approved-batch    # the operator answered yes for all safe actions (plan_batch)
+    return 0
+  fi
   if [[ $cur_risk == destructive ]]; then
     print -rn -- '  Ketik action_id untuk menyetujui / type the action_id to approve: '
     read -r ans || ans=''
@@ -794,6 +849,8 @@ approval_params_json() {
 
 run_action() {
   local aid=$cur_id st rbkind=${A_rbkind[$cur_id]} verified=0
+  print -r -- ''
+  print -r -- "[$cur_index/${#prop_id}] $aid  risk=$cur_risk  menjalankan / running"
   for st in ${=S_stages[$aid]}; do
     [[ $st == precondition/* ]] || continue
     run_step $st "$aid|$st" || return 1
@@ -833,8 +890,8 @@ process_proposal() {
     outcome=proposed; return 0
   fi
   if [[ ${A_root[$aid]} == 1 ]] && (( EUID != 0 )); then
-    print -r -- "  $aid needs administrator rights; this launcher never elevates. / butuh hak administrator; launcher tidak pernah meminta elevasi." >&2
-    ex[reason]='"not-applicable"'; jlog approval unavailable || return 1
+    print -r -- "  $aid needs administrator rights (perlu root / needs root); this launcher never elevates. / butuh hak administrator; launcher tidak pernah meminta elevasi." >&2
+    ex[reason]='"needs-root"'; jlog approval unavailable || return 1
     outcome=skipped; return 0
   fi
   for p in ${=A_params[$aid]}; do
@@ -871,7 +928,7 @@ process_proposal() {
 
 # run_repairs ANALYSIS_FILE  -> repair_rc (0 ok | 1 failed | 2 catalog/selection | 5 journal)
 run_repairs() {
-  local analysis_file=${1:-} plan i outcome approved_reason out_line bk_size bk_fp found_program
+  local analysis_file=${1:-} plan i outcome approved_reason out_line bk_size bk_fp found_program root_note
   local -a summary
   repair_rc=0
   if ! load_catalog_files; then return 0; fi
@@ -893,7 +950,9 @@ run_repairs() {
   print -r -- "Repair plan / rencana perbaikan: policy=$repair_policy scope=${(j:,:)scope_items} platform=macos-host catalog=${catalog_sha[1,12]}"
   (( ${#prop_id} )) || print -r -- '  Tidak ada tindakan katalog yang berlaku / no applicable catalog actions.'
   for (( i = 1; i <= ${#prop_id}; i++ )); do
-    printf '  - %-40s %-11s %-15s %s\n' ${prop_id[$i]} ${A_risk[${prop_id[$i]}]} ${prop_origin[$i]} ${prop_target[$i]}
+    root_note=''
+    if [[ ${A_root[${prop_id[$i]}]} == 1 ]] && (( EUID != 0 )); then root_note='  (perlu root / needs root)'; fi
+    printf '  - %-40s %-11s %-15s %s%s\n' ${prop_id[$i]} ${A_risk[${prop_id[$i]}]} ${prop_origin[$i]} ${prop_target[$i]} "$root_note"
   done
   if (( repair_plan_only || ! ${#prop_id} )); then return 0; fi
 
@@ -904,7 +963,9 @@ run_repairs() {
   fi
   evidence_sha=$(file_sha256 "$evidence_path")
   run_id=${${ev#*'"run_id": "'}%%'"'*}
+  plan_batch
   for (( i = 1; i <= ${#prop_id}; i++ )); do
+    cur_index=$i
     process_proposal $i || break
     summary+=("$(printf '  %-40s %s' ${prop_id[$i]} $outcome)")
     [[ $outcome == failed || $outcome == rolled-back ]] && repair_rc=1
@@ -986,7 +1047,7 @@ function toAction(raw) {
   if (rb.kind === 'step' && rbStep === null) { problems.push(id + ' rollback step'); }
   var params = [];
   (raw.params || []).forEach(function (p) {
-    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root'].indexOf(p.type) < 0 ||
+    if (['enum', 'integer', 'bundle_config', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root'].indexOf(p.type) < 0 ||
         typeof p.name !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(p.name)) { problems.push(id + ' param'); return; }
     params.push({ name: p.name, type: p.type, values: has(p, 'values') ? p.values.map(String) : [],
       minimum: has(p, 'minimum') ? Number(p.minimum) : 0, maximum: has(p, 'maximum') ? Number(p.maximum) : 0,
@@ -1283,7 +1344,7 @@ var ORIGINS = ['catalog-trigger', 'ai-proposal', 'operator'];
 var RISKS = ['safe', 'reversible', 'irreversible', 'destructive'];
 var STAGES = ['proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback'];
 var RECORD_OUTCOMES = ['ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable'];
-var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch', 'printer-absent', 'printer-mismatch', 'printer-ambiguous'];
+var REASONS = ['policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch', 'printer-absent', 'printer-mismatch', 'printer-ambiguous', 'needs-root', 'operator-approved-batch'];
 var TARGET_ENUMS = {
   family: ['linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android', 'printer'], architecture: ['x86_64', 'arm64', 'unknown'],
   detection: ['live-offline', 'host-native', 'usb-adb', 'usb-enumerated', 'usb-cups', 'usb-ipp', 'ipp-usb', 'network-ipp'], encryption: ['none', 'bitlocker', 'filevault', 'luks', 'unknown'],
