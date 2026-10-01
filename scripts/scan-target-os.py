@@ -20,18 +20,22 @@ Safety properties (see docs/target-os-scan.md and docs/security-model.md):
 Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 
 Usage: scan-target-os.py --output FILE [--scope LIST] [--packages LIST] [--repair-policy P]
-                         [--state-dir DIR] [--malware-full-disk] [--fixture-root DIR]
+                         [--state-dir DIR] [--malware-full-disk] [--malware-target os-N] [--fixture-root DIR]
   --scope / --packages select the detection modules in scripts/rescue_modules/
   (hardware, operating_system, software, malware); --state-dir is the USB state
   (signature DB, quarantine, and the LOCAL malware detection list written to
   DIR/reports/, never part of the evidence); --repair-policy is recorded in the
   evidence. Catalog-trigger repair proposals (action IDs only) are added from
   rescue-ai/v1/catalog/; nothing is repaired here (see scripts/rescue-repair.py).
+  --malware-target os-N scans only that target for malware (it gets the whole
+  malware time budget); the other targets report malware-scan unknown (not
+  scanned, never clean). Without it the budget is shared fairly by all targets.
   --fixture-root is a TEST hook: every subdirectory NAME of DIR is treated as an
   already-mounted partition root, described by the sidecar DIR/NAME.meta.json
   (fstype, label, parttype, uuid, partuuid, size, encryption, ...). A
   NAME.meta.json without a directory is a partition that cannot be mounted.
-Exit codes: 0 evidence written, 1 fatal error, 2 usage error.
+Exit codes: 0 evidence written, 1 fatal error, 2 usage error (including an --malware-target that matches no
+discovered operating system).
 """
 import argparse
 import hashlib
@@ -901,6 +905,19 @@ def encrypted_target(kind, part):
 
 MODULE_CTX = None  # rescue_modules.Context set by main(); None disables the module hooks
 MODULE_SEQ = 0
+OS_INDEX = 0       # os-N index the target being inspected will get in the evidence (set by main())
+MALWARE_TARGET_RE = re.compile(r'^os-[0-9]{1,2}$')
+MALWARE_MIN_OS_BYTES = 2 * 1024 ** 3  # smaller partitions (recovery, utility) are not counted as likely scan targets
+
+
+def likely_malware_target(part):
+    """1 when *part* will probably be scanned for malware (a mountable, large enough, unencrypted OS volume).
+
+    Only used to estimate how many targets share the malware time budget; time a data or recovery partition
+    does not use carries forward to the next target anyway.
+    """
+    kind = classify(part)
+    return 1 if kind in ('ntfs', 'linuxfs', 'apfs') and part['size'] >= MALWARE_MIN_OS_BYTES else 0
 
 
 def module_checks(root, info):
@@ -912,6 +929,7 @@ def module_checks(root, info):
     info['module_key'] = 'k%d' % MODULE_SEQ  # maps the local malware detection list to os-N once refs exist
     target = {k: info.get(k) for k in ('family', 'release')}
     target['target_ref'] = info['module_key']
+    target['os_ref'] = 'os-%d' % OS_INDEX
     return [check(c['check_id'], c['status'], c.get('kind'), c.get('number'))
             for c in rescue_modules.collect_offline_target(MODULE_CTX, root, target)]
 
@@ -1129,6 +1147,8 @@ def main(argv=None):
                         help='USB state directory: signature DB (DIR/clamav), quarantine, local detection list')
     parser.add_argument('--malware-full-disk', action='store_true',
                         help='scan whole partitions for malware instead of the default areas (slow)')
+    parser.add_argument('--malware-target', metavar='os-N',
+                        help='scan only this target (os-N, as in the evidence) for malware; it gets the whole budget')
     parser.add_argument('--repair-policy', choices=('detect-only', 'approve-each', 'auto-safe'), default='approve-each')
     parser.add_argument('--catalog-dir', metavar='DIR', help=argparse.SUPPRESS)
     parser.add_argument('--provider-ready', action='store_true',
@@ -1141,9 +1161,12 @@ def main(argv=None):
     packages = tuple(p for p in args.packages.split(',') if p)
     if any(not repair_catalog.PACKAGE_RE.match(p) for p in packages):
         parser.error('invalid package name in --packages')
+    if args.malware_target is not None and not MALWARE_TARGET_RE.fullmatch(args.malware_target):
+        parser.error('--malware-target must look like os-0 / os-1')
     global MODULE_CTX
     MODULE_CTX = rescue_modules.Context(mode='live', scope=scope, packages=packages, fixture_root=args.fixture_root,
-                                        state_dir=args.state_dir, malware_full_disk=args.malware_full_disk)
+                                        state_dir=args.state_dir, malware_full_disk=args.malware_full_disk,
+                                        malware_target=args.malware_target)
 
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, _on_signal)
@@ -1198,16 +1221,30 @@ def main(argv=None):
             same = [info for disk, info in esp_infos if disk == part['disk']]
             return same or [info for _, info in esp_infos]
 
-        for part in candidates:
+        global OS_INDEX
+        likely = [likely_malware_target(p) for p in candidates]
+        for pos, part in enumerate(candidates):
             kind = classify(part)
             if kind in (None, 'esp'):
                 continue
+            # Fair share of the malware budget: this partition plus the likely targets after it (docs/malware.md).
+            MODULE_CTX.malware_pending = 1 + sum(likely[pos + 1:])
+            OS_INDEX = len(targets)
             target = inspect_partition(part, kind, mounter, esps_for, idents, locked_present, boot_mode)
             if target is not None:
                 target.setdefault('encryption', 'none')
                 targets.append(target)
     finally:
         mounter.close()
+    if args.malware_target is not None:
+        index = int(args.malware_target[3:])
+        if index >= min(len(targets), MAX_TARGETS):
+            print('scan-target-os: --malware-target %s matches no discovered operating system (%d found) / '
+                  'tidak cocok dengan sistem operasi yang ditemukan' % (args.malware_target, len(targets)),
+                  file=sys.stderr)
+            return 2
+        if not targets[index].get('module_key'):
+            MODULE_CTX.warnings.append('rescue_modules.malware: the selected target was not mounted, nothing was scanned')
 
     env_checks = [check('block-device-discovery', discovery), check('network-connectivity', network_status())]
     if not targets:

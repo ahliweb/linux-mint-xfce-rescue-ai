@@ -26,7 +26,7 @@ flowchart TD
     RP --> H[Hermes + skill rescue-target-os]
 ```
 
-Launcher meneruskan `--scope`, `--packages`, `--repair-policy` (default `approve-each`), `--state-dir`, dan `--malware-full-disk` ke pemindai (dengan batas waktu 1500 detik; 4200 detik dengan `--malware-full-disk`), lalu menjalankan `scripts/rescue-repair.py` setelah analisis; lihat [repair-framework.md](repair-framework.md). Pemindai memanggil modul deteksi `scripts/rescue_modules/` (hardware, OS, software, malware) untuk PC itu sendiri dan untuk setiap OS yang di-mount read-only, dan menambahkan usulan `catalog-trigger` (hanya `action_id`) ke evidence. Daftar deteksi malware lokal (`malware-detections-<run>.json`, berisi path) ditulis ke `<state-dir>/reports/` dan tidak pernah masuk evidence ([malware.md](malware.md)).
+Launcher meneruskan `--scope`, `--packages`, `--repair-policy` (default `approve-each`), `--state-dir`, `--malware-full-disk`, dan `--malware-target os-N` ke pemindai (dengan batas waktu 1500 detik; 4200 detik dengan `--malware-full-disk`), lalu menjalankan `scripts/rescue-repair.py` setelah analisis; lihat [repair-framework.md](repair-framework.md). Pemindai memanggil modul deteksi `scripts/rescue_modules/` (hardware, OS, software, malware) untuk PC itu sendiri dan untuk setiap OS yang di-mount read-only, dan menambahkan usulan `catalog-trigger` (hanya `action_id`) ke evidence. `--malware-target os-N` (format `^os-[0-9]{1,2}$`, nomor `target_systems[].ref`) membatasi pemindaian malware ke satu target dengan seluruh anggaran waktu; target lain `malware-scan` `unknown` (tidak dipindai, bukan bersih), dan nilai yang tidak cocok dengan target yang ditemukan adalah kesalahan penggunaan (kode keluar 2). Tanpa opsi ini anggaran waktu malware dibagi adil antar target ([malware.md](malware.md#memilih-satu-target---malware-target)). Daftar deteksi malware lokal (`malware-detections-<run>.json`, berisi path) ditulis ke `<state-dir>/reports/` dan tidak pernah masuk evidence ([malware.md](malware.md)).
 
 Pemindaian atau analisis yang gagal **tidak** memblokir Hermes: launcher mencetak peringatan dwibahasa, mencatat hasilnya di laporan proses, dan tetap membuka Hermes. Lewati seluruh langkah ini dengan `--no-target-scan` (hasil laporan `scan-skipped`). Preflight perangkat keras yang gagal tetap menghentikan launcher (kode keluar 1), tetapi laporan proses ditulis.
 
@@ -39,6 +39,7 @@ Otomatis lewat autostart XFCE (`launch-hermes-rescue.sh`). Manual:
 ./scripts/launch-hermes-rescue.sh --state-dir ... --no-target-scan   # tanpa pemindaian/analisis
 ./scripts/launch-hermes-rescue.sh --state-dir ... --scope hardware.disk,os --repair-policy detect-only
 ./scripts/launch-hermes-rescue.sh --state-dir ... --scope malware --malware-full-disk
+./scripts/launch-hermes-rescue.sh --state-dir ... --scope malware --malware-full-disk --malware-target os-1   # satu target saja
 ```
 
 Komponen terpisah (untuk uji):
