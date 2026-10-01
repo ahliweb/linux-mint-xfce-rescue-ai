@@ -182,14 +182,14 @@ else:
     return script
 
 
-def patch_date(days_ago):
-    return (date.today() - timedelta(days=days_ago)).isoformat()
+def patch_date(days_ago, today=None):
+    return ((today or date.today()) - timedelta(days=days_ago)).isoformat()
 
 
-def good_phone_outputs(patch_days=30, sdk=34, **over):
+def good_phone_outputs(patch_days=30, sdk=34, today=None, **over):
     props = '\n'.join([
         '[ro.build.version.sdk]: [%d]' % sdk, '[ro.build.version.release]: [14]',
-        '[ro.build.version.security_patch]: [%s]' % patch_date(patch_days),
+        '[ro.build.version.security_patch]: [%s]' % patch_date(patch_days, today),
         '[ro.boot.verifiedbootstate]: [green]', '[ro.boot.flash.locked]: [1]', '[ro.debuggable]: [0]',
         '[ro.product.cpu.abi]: [arm64-v8a]', '[ro.serialno]: [%s]' % SERIAL_A,
         '[ro.product.model]: [Galaxy Secret Model]', '[persist.sys.timezone]: [Asia/Jakarta]']) + '\n'
@@ -432,7 +432,8 @@ class CheckThresholdTests(unittest.TestCase):
     TODAY = date(2026, 10, 1)
 
     def evaluate(self, **over):
-        outputs = good_phone_outputs(**{k: v for k, v in over.items() if k in ('patch_days', 'sdk')})
+        # The patch date is relative to the same fixed TODAY that evaluate() uses (not the real date).
+        outputs = good_phone_outputs(today=self.TODAY, **{k: v for k, v in over.items() if k in ('patch_days', 'sdk')})
         outputs.update({k: v for k, v in over.items() if k not in ('patch_days', 'sdk')})
         names = {' '.join(v): k for k, v in android.COMMANDS.items()}
         checks, props = android.evaluate({names[k]: v for k, v in outputs.items()}, self.TODAY)
@@ -467,7 +468,7 @@ class CheckThresholdTests(unittest.TestCase):
         for days, expected in ((0, 'pass'), (90, 'pass'), (91, 'warn'), (365, 'warn'), (366, 'fail')):
             with self.subTest(days=days):
                 self.assertEqual(self.evaluate(patch_days=days)['android-security-patch-age']['status'], expected)
-        # patch_days is relative to the real today, TODAY is fixed: check the arithmetic directly
+        # Check the arithmetic directly as well
         props = {'ro.build.version.security_patch': '2026-07-01'}
         self.assertEqual(android._patch_age(props, self.TODAY)['number'], 92)
         self.assertEqual(android._patch_age({'ro.build.version.security_patch': '2027-01-01'}, self.TODAY)['number'], 0)
