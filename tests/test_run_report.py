@@ -856,7 +856,7 @@ class Generators:
 
     def common(self, **over):
         c = {'run_id': RUN, 'mode': 'linux-host', 'outcome': 'completed', 'started': STARTED, 'ended': ENDED,
-             'version': '0.3.0', 'scope': '', 'policy': '', 'key_present': True}
+             'version': '0.3.0', 'scope': '', 'policy': '', 'key_present': True, 'repair_exit': 0}
         c.update(over)
         return c
 
@@ -871,6 +871,8 @@ class Generators:
             args += ['--scope', c['scope']]
         if c['policy']:
             args += ['--repair-policy', c['policy']]
+        if c['repair_exit']:
+            args += ['--repair-exit', str(c['repair_exit'])]
         for flag, key in (('--evidence', 'evidence'), ('--evidence-after', 'after'), ('--analysis', 'analysis'), ('--journal', 'journal'),
                           ('--readiness', 'readiness')):
             if key in paths:
@@ -889,7 +891,7 @@ class Generators:
                'evidence': str(paths.get('evidence', '')), 'after': str(paths.get('after', '')),
                'analysis': str(paths.get('analysis', '')), 'journal': str(paths.get('journal', '')),
                'readiness': str(paths.get('readiness', '')), 'action_info': INFO, 'ai_counts': self.counts(paths),
-               'secret': c.get('secret', '')}
+               'secret': c.get('secret', ''), 'repair_exit': c['repair_exit']}
         (self.tmp / 'cfg.json').write_text(json.dumps(cfg))
         script = (
             "$env:RESCUE_PS_LIBRARY_ONLY='1'; . $env:RR_PS1; "
@@ -902,7 +904,7 @@ class Generators:
             "$ok = Invoke-RunReport -Reports $cfg.reports -RunId $cfg.run_id -Mode $cfg.mode -Outcome $cfg.outcome -Started $env:RR_STARTED "
             "-Ended $env:RR_ENDED -Version $cfg.version -CatalogSha $cfg.catalog_sha -Scope @($cfg.scope) -Policy $cfg.policy "
             "-KeyPresent ([bool]$cfg.key_present) -EvidencePath $cfg.evidence -EvidenceAfterPath $cfg.after -AnalysisPath $cfg.analysis "
-            "-JournalPath $cfg.journal -ActionInfo $info -AiCounts $counts -Readiness $rd -Secrets @($cfg.secret); "
+            "-JournalPath $cfg.journal -ActionInfo $info -AiCounts $counts -Readiness $rd -Secrets @($cfg.secret) -RepairExit ([int]$cfg.repair_exit); "
             "Write-Output ('OK=' + $ok)")
         proc = subprocess.run([PWSH, '-NoProfile', '-NonInteractive', '-Command', script], capture_output=True, text=True,
                               env=HL.clean_env(RR_PS1=str(PS1), RR_CFG=str(self.tmp / 'cfg.json'), RR_STARTED=c['started'], RR_ENDED=c['ended']), stdin=subprocess.DEVNULL, timeout=300)
@@ -919,7 +921,8 @@ class Generators:
                    RESCUE_RR_KEY_PRESENT='yes' if c['key_present'] else 'no', RESCUE_RR_ACTION_INFO=action_info_lines(),
                    RESCUE_RR_EVIDENCE=str(paths.get('evidence', '')), RESCUE_RR_EVIDENCE_AFTER=str(paths.get('after', '')),
                    RESCUE_RR_ANALYSIS=str(paths.get('analysis', '')), RESCUE_RR_JOURNAL=str(paths.get('journal', '')),
-                   RESCUE_RR_READINESS=str(paths.get('readiness', '')), RESCUE_RR_FORCE_REFUSE=c.get('force_refuse', ''), RESCUE_RR_KEY_REDACTIONS=str(c.get('key_redactions', 0)))
+                   RESCUE_RR_READINESS=str(paths.get('readiness', '')), RESCUE_RR_FORCE_REFUSE=c.get('force_refuse', ''), RESCUE_RR_KEY_REDACTIONS=str(c.get('key_redactions', 0)),
+                   RESCUE_RR_REPAIR_EXIT=str(c['repair_exit']) if c['repair_exit'] else '')
         counts = self.counts(paths)
         if counts and 'analysis' in paths:
             env['RESCUE_RR_AI_ACCEPTED'], env['RESCUE_RR_AI_REJECTED'] = str(counts[0]), str(counts[1])
@@ -982,6 +985,27 @@ class CrossCheckMixin:
                 shutil.rmtree(self.tmp / 'py', ignore_errors=True)
                 shutil.rmtree(self.tmp / self.NAME, ignore_errors=True)
                 self.assert_same(paths, mode=mode, outcome=outcome, key_present=key)
+
+    def test_repair_engine_failed_open_item_is_equal(self):
+        # The engine's own failure (#56): same open item, same text, same place (after the action items,
+        # before journal-invalid) in all three generators; exits 0 and 1 add nothing.
+        tampered = sample_journal()
+        tampered[3] = tampered[3].replace(b'"outcome":"ok"', b'"outcome":"fail"')
+        for label, paths in (('valid', self.gen.files()), ('tampered', self.gen.files(journal_lines=tampered))):
+            for code in (0, 1, 2, 3):
+                with self.subTest(journal=label, code=code):
+                    shutil.rmtree(self.tmp / 'py', ignore_errors=True)
+                    shutil.rmtree(self.tmp / self.NAME, ignore_errors=True)
+                    py, other = self.assert_same(paths, outcome='network-error', repair_exit=code)
+                    items = [(i['kind'], i.get('ref')) for i in py[0]['open_items']]
+                    self.assertEqual(py[0]['header']['outcome'], 'network-error')
+                    if code in (2, 3):
+                        self.assertIn(('repair-engine-failed', 'exit-%d' % code), items)
+                        self.assertIn('repair-engine-failed exit-%d' % code, other[1])
+                        if label == 'tampered':
+                            self.assertLess(items.index(('repair-engine-failed', 'exit-%d' % code)), [k for k, _ in items].index('journal-invalid'))
+                    else:
+                        self.assertNotIn('repair-engine-failed', [k for k, _ in items])
 
     def test_failed_run_without_artifacts_is_equal(self):
         paths = self.gen.files(evidence=False, after=False, analysis=None, journal=False, readiness=True)
@@ -1343,6 +1367,44 @@ class WindowsReportTests(HR.HostRepairCase):
                 self.assertEqual(doc['remediation']['actions'], [])
                 time.sleep(1.05)
 
+    def open_items(self, doc):
+        return [(i['kind'], i.get('ref')) for i in doc['open_items']]
+
+    def test_a_repair_engine_failure_keeps_the_first_failure_outcome_and_adds_the_open_item(self):
+        # #56: no key is the first failure (outcome no-key, exit 3); the engine's exit 2 (a -Select that
+        # names no catalog action) is only recorded as the open item, as in the Linux launcher.
+        proc = self.run_args('-Select', 'os-windows.nope', '-Scope', 'os')
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        doc, md = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'no-key')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+        self.assertIn('repair-engine-failed exit-2', md)
+
+    def test_a_repair_engine_failure_alone_is_repair_invalid_with_the_open_item(self):
+        proc = self.run_args('-EvidenceOnly', '-Select', 'os-windows.nope', '-Scope', 'os')
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'repair-invalid')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+
+    def test_an_unusable_journal_outranks_the_first_failure_and_exits_5(self):
+        (self.bundle / 'reports').mkdir(exist_ok=True)
+        (self.bundle / 'reports' / 'repairs').write_text('a file, not a folder')  # the journal cannot be opened
+        proc = self.run_args('-Approve', 'os-windows.safe-ok', '-Scope', 'os')
+        self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'journal-unusable')
+        self.assertIn(('repair-engine-failed', 'exit-3'), self.open_items(doc))
+
+    def test_a_clean_repair_run_has_no_repair_engine_failed_item(self):
+        proc = self.run_args('-Approve', 'os-windows.safe-ok', '-Scope', 'os')
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.bundle / 'reports')
+        self.assertNotIn('repair-engine-failed', [k for k, _ in self.open_items(doc)])
+
     def test_bad_flags_and_missing_bundle_write_no_report(self):
         self.assertEqual(self.run_args('-Scope', 'bogus').returncode, 64)
         self.assertEqual(run_dirs(self.bundle / 'reports'), [])
@@ -1410,6 +1472,57 @@ class MacReportTests(HR.HostRepairCase):
         self.assertIn('provider-rejected-request', doc['honesty']['environment_blocked'])
         self.assertNotIn('network-unreachable', doc['honesty']['environment_blocked'])
         self.assertIn('bukan masalah jaringan', md)
+
+    def open_items(self, doc):
+        return [(i['kind'], i.get('ref')) for i in doc['open_items']]
+
+    def test_a_repair_engine_failure_keeps_the_first_failure_outcome_and_adds_the_open_item(self):
+        # #56: the first failure stays the outcome and the exit code; the engine's exit 2 (a --select that
+        # names no catalog action) is only recorded as the open item, as in the Linux launcher.
+        proc = self.run_args('--select', 'os-macos.nope', '--scope', 'os')  # no key
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        doc, md = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'no-key')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+        self.assertIn('repair-engine-failed exit-2', md)
+        self.write_env_file("OPENCODE_GO_API_KEY='%s'\n" % HL.DUMMY_KEY)
+        for mode, outcome in (('reject', 'provider-rejected'), ('fail', 'network-error')):
+            with self.subTest(outcome=outcome):
+                time.sleep(1.1)  # report and evidence names carry a one-second timestamp
+                (self.shims / 'curl.mode').write_text(mode)
+                proc = self.run_args('--select', 'os-macos.nope', '--scope', 'os')
+                self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)  # the analyzer's code, not the engine's 2
+                doc, _ = load_report(self.bundle / 'reports')
+                validate(self, doc)
+                self.assertEqual(doc['header']['outcome'], outcome)
+                self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+                self.assertNotIn(HL.DUMMY_KEY, ''.join(p.read_text(encoding='utf-8', errors='replace')
+                                                       for p in (self.bundle / 'reports').rglob('*') if p.is_file() and p.name != 'journal.jsonl'))
+
+    def test_a_repair_engine_failure_alone_is_repair_invalid_with_the_open_item(self):
+        proc = self.run_args('--evidence-only', '--select', 'os-macos.nope', '--scope', 'os')
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'repair-invalid')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+
+    def test_an_unusable_journal_outranks_the_first_failure_and_exits_5(self):
+        (self.bundle / 'reports').mkdir(exist_ok=True)
+        (self.bundle / 'reports' / 'repairs').write_text('a file, not a folder')  # the journal cannot be opened
+        proc = self.run_args('--approve', 'os-macos.safe-ok', '--scope', 'os')  # no key: would be no-key / exit 3
+        self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.bundle / 'reports')
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'journal-unusable')
+        self.assertIn(('repair-engine-failed', 'exit-3'), self.open_items(doc))
+
+    def test_a_clean_repair_run_has_no_repair_engine_failed_item(self):
+        proc = self.run_args('--approve', 'os-macos.safe-ok', '--scope', 'os')
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.bundle / 'reports')
+        self.assertNotIn('repair-engine-failed', [k for k, _ in self.open_items(doc)])
 
     def test_analysis_key_and_ai_counts(self):
         self.with_key('Analisis.\n```rescue-proposals\n{"proposed_actions":[{"action_id":"os-macos.slow","target_ref":"os-0"},'
@@ -1594,6 +1707,63 @@ class LiveLauncherReportTests(unittest.TestCase):
         self.assertEqual(doc['header']['outcome'], 'provider-rejected')
         self.assertIn('provider-rejected-request', doc['honesty']['environment_blocked'])
         self.assertFalse(list(self.reports_dir().glob('analysis-*.md')))
+
+    def break_catalog(self):
+        """A catalog file that is not JSON: the repair engine refuses it (exit 2, 'catalog INVALID')."""
+        (self.case.src / 'rescue-ai' / 'v1' / 'catalog' / 'zz-broken.json').write_text('{not json')
+
+    def open_items(self, doc):
+        return [(i['kind'], i.get('ref')) for i in doc['open_items']]
+
+    def test_a_repair_engine_failure_keeps_the_first_failure_outcome_and_adds_the_open_item(self):
+        # #56: only a run that has not failed yet takes repair-invalid; the engine failure is an open item.
+        self.break_catalog()
+        c = self.case
+        c.provider = self.TS.FakeProvider(status=400, error_body=b'{"type":"error","error":{"type":"MissingSessionID"}}')
+        self.addCleanup(c.provider.close)
+        proc = self.launch()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)  # Hermes still starts
+        doc, md = load_report(self.reports_dir())
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'provider-rejected')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+        self.assertIn('repair-engine-failed exit-2', md)
+        for label, setup, outcome in (('no-key', lambda: None, 'no-key'), ('offline', self.go_offline, 'network-error')):
+            with self.subTest(outcome=outcome):
+                setup()
+                time.sleep(1.1)  # report names carry a one-second timestamp
+                proc = self.launch(key=None)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                doc, _ = load_report(self.reports_dir())
+                self.assertEqual(doc['header']['outcome'], outcome)
+                self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+
+    def test_a_repair_engine_failure_alone_is_repair_invalid_with_the_open_item(self):
+        self.break_catalog()
+        proc = self.launch()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.reports_dir())
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'repair-invalid')
+        self.assertIn(('repair-engine-failed', 'exit-2'), self.open_items(doc))
+
+    def test_an_unusable_journal_outranks_the_first_failure(self):
+        c = self.case
+        c.provider = self.TS.FakeProvider(status=400, error_body=b'{"type":"error","error":{"type":"MissingSessionID"}}')
+        self.addCleanup(c.provider.close)
+        shutil.rmtree(c.state / 'repairs', ignore_errors=True)
+        (c.state / 'repairs').write_text('a file, not a folder')  # the journal cannot be opened
+        self.launch('--repair-policy', 'auto-safe')
+        doc, _ = load_report(self.reports_dir())
+        validate(self, doc)
+        self.assertEqual(doc['header']['outcome'], 'journal-unusable')
+        self.assertIn(('repair-engine-failed', 'exit-3'), self.open_items(doc))
+
+    def test_a_clean_run_has_no_repair_engine_failed_item(self):
+        proc = self.launch('--repair-policy', 'auto-safe')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        doc, _ = load_report(self.reports_dir())
+        self.assertNotIn('repair-engine-failed', [k for k, _ in self.open_items(doc)])
 
     def test_offline_when_readiness_network_check_is_not_pass(self):
         # a route exists but the readiness gate reports the internet check as warn (DNS/HTTPS down)
