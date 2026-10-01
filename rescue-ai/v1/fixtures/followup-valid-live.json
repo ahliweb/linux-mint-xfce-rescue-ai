@@ -1,0 +1,110 @@
+{
+  "generated_at": "2026-10-01T09:30:00Z",
+  "items": [
+    {
+      "check_id": "smart-health",
+      "followup_id": "disk.attributes",
+      "reason": "attention",
+      "status": "warn",
+      "target_ref": "disk-0",
+      "values": {
+        "offline_uncorrectable": 0,
+        "pending": 8,
+        "power_on_hours": 18234,
+        "reallocated": 24,
+        "smart_passed": true,
+        "temperature_c": 41
+      }
+    },
+    {
+      "check_id": "smart-health",
+      "followup_id": "disk.selftest-result",
+      "reason": "in-progress",
+      "status": "unknown",
+      "target_ref": "disk-0",
+      "values": {
+        "selftest": "in-progress",
+        "selftest_percent_remaining": 70
+      }
+    },
+    {
+      "check_id": "nvme-health",
+      "followup_id": "disk.attributes",
+      "reason": "ok",
+      "status": "pass",
+      "target_ref": "disk-1",
+      "values": {
+        "nvme_available_spare": 100,
+        "nvme_critical_warning": 0,
+        "nvme_media_errors": 0,
+        "nvme_percentage_used": 3,
+        "power_on_hours": 912,
+        "smart_passed": true,
+        "temperature_c": 38
+      }
+    },
+    {
+      "check_id": "linux-journal-errors",
+      "followup_id": "journal.categories",
+      "reason": "attention",
+      "status": "fail",
+      "target_ref": "os-1",
+      "values": {
+        "application": 9,
+        "audio": 0,
+        "bluetooth": 0,
+        "display_gpu": 31,
+        "filesystem": 2,
+        "kernel": 40,
+        "network": 12,
+        "other": 1,
+        "power_acpi": 4,
+        "sampled": 145,
+        "security_auth": 3,
+        "storage": 5,
+        "systemd": 38,
+        "total": 145,
+        "truncated": false,
+        "usb": 0
+      }
+    },
+    {
+      "check_id": "malware-scan",
+      "followup_id": "malware.coverage",
+      "reason": "budget",
+      "status": "unknown",
+      "target_ref": "os-1",
+      "values": {
+        "coverage": "budget-exhausted",
+        "db_present": true,
+        "signature_age_days": 9,
+        "signature_stale": true
+      }
+    },
+    {
+      "check_id": "malware-signatures",
+      "followup_id": "malware.signatures",
+      "reason": "db-stale",
+      "status": "warn",
+      "values": {
+        "db_present": true,
+        "signature_age_days": 9,
+        "signature_stale": true
+      }
+    },
+    {
+      "check_id": "persistence",
+      "followup_id": "persistence.active",
+      "reason": "ok",
+      "status": "pass",
+      "values": {
+        "cmdline_persistent": true,
+        "persistence_active": true,
+        "upper_backing": "loop"
+      }
+    }
+  ],
+  "mode": "live-linux",
+  "run_id": "rescue-20261001-093000",
+  "schema_version": "1.0"
+}

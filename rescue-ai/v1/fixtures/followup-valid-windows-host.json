@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-10-01T10:00:00Z",
+  "items": [
+    {
+      "check_id": "windows-event-log-errors",
+      "followup_id": "windows.event-log-categories",
+      "reason": "attention",
+      "status": "warn",
+      "target_ref": "os-0",
+      "values": {
+        "application": 1,
+        "total": 1
+      }
+    },
+    {
+      "check_id": "encryption-status",
+      "followup_id": "windows.encryption-state",
+      "reason": "needs-admin",
+      "status": "unknown",
+      "target_ref": "os-0",
+      "values": {
+        "encryption_state": "unknown"
+      }
+    },
+    {
+      "check_id": "windows-restore-points",
+      "followup_id": "windows.restore-points",
+      "reason": "needs-admin",
+      "status": "unknown",
+      "target_ref": "os-0",
+      "values": {}
+    }
+  ],
+  "mode": "windows-host",
+  "run_id": "rescue-20261001-100000",
+  "schema_version": "1.0"
+}

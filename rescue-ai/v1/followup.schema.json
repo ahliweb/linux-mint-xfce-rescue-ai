@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rescue-ai:v1:followup",
+  "title": "rescue-ai-followup",
+  "description": "Typed read-only follow-ups of the checks an analysis flagged (docs/hermes-learning-loop.md, Hermes autorun). Written as followup-<run_id>.json next to the run reports by scripts/rescue-followup.py (Linux) or natively by the Windows launcher. Closed vocabulary: numbers, booleans and members of closed sets only; it MUST NOT carry serials, models, device paths, journal messages, unit or program names, file names, signature names, addresses, or raw output. Disks are opaque ordinals (disk-N).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "mode",
+    "generated_at",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "live-linux",
+        "linux-host",
+        "windows-host"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "followup_id",
+          "status",
+          "reason",
+          "values"
+        ],
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "enum": [
+              "smart-health",
+              "nvme-health",
+              "linux-journal-errors",
+              "malware-scan",
+              "malware-signatures",
+              "persistence",
+              "windows-event-log-errors",
+              "encryption-status",
+              "windows-boot-config",
+              "windows-restore-points"
+            ]
+          },
+          "target_ref": {
+            "type": "string",
+            "pattern": "^(os|disk|and|prn)-[0-9]{1,2}$"
+          },
+          "followup_id": {
+            "type": "string",
+            "enum": [
+              "disk.attributes",
+              "disk.selftest-result",
+              "journal.categories",
+              "malware.coverage",
+              "malware.signatures",
+              "persistence.active",
+              "windows.event-log-categories",
+              "windows.encryption-state",
+              "windows.boot-config",
+              "windows.restore-points"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "warn",
+              "fail",
+              "unknown",
+              "not_applicable"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "attention",
+              "needs-root",
+              "needs-admin",
+              "tool-missing",
+              "no-data",
+              "in-progress",
+              "timeout",
+              "unsupported",
+              "not-mounted",
+              "no-journal",
+              "not-scanned",
+              "budget",
+              "db-missing",
+              "db-stale",
+              "detections",
+              "incomplete",
+              "other"
+            ]
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "reallocated": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "pending": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "offline_uncorrectable": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "power_on_hours": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "temperature_c": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "smart_passed": {
+                "type": "boolean"
+              },
+              "selftest": {
+                "type": "string",
+                "enum": [
+                  "completed-ok",
+                  "in-progress",
+                  "failed",
+                  "aborted",
+                  "none",
+                  "unknown"
+                ]
+              },
+              "selftest_percent_remaining": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "nvme_percentage_used": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "nvme_media_errors": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "nvme_critical_warning": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "nvme_available_spare": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "total": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "sampled": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "incomplete",
+                  "stale-signatures",
+                  "not-scanned",
+                  "budget-exhausted",
+                  "detections-found",
+                  "unknown"
+                ]
+              },
+              "detections": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "signature_age_days": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "signature_stale": {
+                "type": "boolean"
+              },
+              "db_present": {
+                "type": "boolean"
+              },
+              "persistence_active": {
+                "type": "boolean"
+              },
+              "cmdline_persistent": {
+                "type": "boolean"
+              },
+              "upper_backing": {
+                "type": "string",
+                "enum": [
+                  "block",
+                  "loop",
+                  "tmpfs",
+                  "unknown"
+                ]
+              },
+              "restore_points": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "encryption_state": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off",
+                  "suspended",
+                  "unknown"
+                ]
+              },
+              "boot_config": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "missing",
+                  "unreadable",
+                  "unknown"
+                ]
+              },
+              "kernel": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "storage": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "filesystem": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "network": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "display_gpu": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "audio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "usb": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "bluetooth": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "power_acpi": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "systemd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "security_auth": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "application": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              },
+              "other": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000000
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
