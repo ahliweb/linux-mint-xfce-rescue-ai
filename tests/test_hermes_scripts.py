@@ -214,6 +214,7 @@ class TestInstalledBundle(HermesScriptTestCase):
         self.assertEqual(installed, shipped)
         self.assertIn("rescue-target-os", installed)
         self.assertIn("rescue-android", installed)
+        self.assertIn("rescue-printer", installed)
         desktop = self.home / ".config" / "autostart" / "hermes-rescue.desktop"
         exec_line = next(l for l in desktop.read_text().splitlines() if l.startswith("Exec="))
         self.assertIn(f'--state-dir "{self.state}"', exec_line)

@@ -1,0 +1,22 @@
+# Fixed IPP Get-Printer-Attributes request used by scripts/rescue_modules/printer.py (read-only).
+# Managed by ahlikoding.com and satpamsiber.com under ahliweb.com. Operator documentation: docs/printer.md.
+#
+# The request asks only for the attributes the rescue checks need. It never asks for a queue name,
+# device URI, printer-info, printer-location, serial or any other identifier. The printer URI is the
+# only variable and is passed to ipptool by the module (a queue or a resolved address; never stored).
+{
+	NAME "rescue printer status"
+	OPERATION Get-Printer-Attributes
+	GROUP operation-attributes-tag
+	ATTR charset attributes-charset utf-8
+	ATTR language attributes-natural-language en
+	ATTR uri printer-uri $uri
+	ATTR keyword requested-attributes printer-state,printer-state-reasons,printer-is-accepting-jobs,queued-job-count,marker-levels,marker-types,printer-make-and-model
+	DISPLAY printer-state
+	DISPLAY printer-state-reasons
+	DISPLAY printer-is-accepting-jobs
+	DISPLAY queued-job-count
+	DISPLAY marker-levels
+	DISPLAY marker-types
+	DISPLAY printer-make-and-model
+}

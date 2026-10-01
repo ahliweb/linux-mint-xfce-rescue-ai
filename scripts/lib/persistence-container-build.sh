@@ -34,7 +34,11 @@ apt-get install -y -q --no-install-recommends ca-certificates curl git python3 p
 # adb + android-sdk-platform-tools-common: read-only checks of an Android phone attached over USB
 # (docs/android.md). The second package only ships the udev rules for non-root adb access; adb's own
 # Recommends is skipped by --no-install-recommends, hence it is listed. Neither starts a service.
-optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam adb android-sdk-platform-tools-common)
+# cups + cups-client (lpstat) + cups-ipp-utils (ipptool) + ipp-usb + avahi-utils (avahi-browse): read-only printer
+# detection (docs/printer.md). The Mint live image ships most of them; listing them keeps the persistence image
+# correct on its own. policy-rc.d below keeps every service stopped while installing.
+optional=(dislocker libfsapfs-utils smartmontools nvme-cli clamav clamav-freshclam adb android-sdk-platform-tools-common
+          cups cups-client cups-ipp-utils ipp-usb avahi-utils)
 missing_optional=()
 printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
 chmod 0755 /usr/sbin/policy-rc.d
@@ -131,7 +135,7 @@ for skill_dir in /tmp/rescue-src-ro/profiles/rescue-hermes/skills/*/; do
   skills_installed+=("$skill")
 done
 log "rescue skills installed: ${skills_installed[*]}"
-for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission rescue-android; do
+for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission rescue-android rescue-printer; do
   [[ -f $state_dir/hermes/skills/$required/SKILL.md ]] || { echo "required skill missing: $required" >&2; exit 1; }
 done
 

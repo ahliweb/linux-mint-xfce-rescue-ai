@@ -32,50 +32,106 @@ V12_CHECK_IDS = {
 V12_MUTATION_STATUSES = {'failed', 'rolled_back'}
 V12_VALUE_KINDS = {'celsius'}
 PRE_V12_MAX_CHECKS = 64
-V13_FAMILIES = {'android'}
-V13_DETECTIONS = {'usb-adb', 'usb-enumerated'}
-V13_ACCESS = {'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only'}
+# printer-target-* describe the print spooler of an installed OS (offline scan, written with schema 1.2 by
+# scan-target-os.py); every other printer-* check is 1.3 (scan-printers.py).
+PRINTER_TARGET_PREFIX = 'printer-target-'
+V13_FAMILIES = {'android', 'printer'}
+ANDROID_DETECTIONS = {'usb-adb', 'usb-enumerated'}
+ANDROID_ACCESS = {'adb-authorized', 'adb-unauthorized', 'adb-unavailable', 'usb-only'}
+PRINTER_DETECTIONS = {'usb-enumerated', 'usb-cups', 'usb-ipp', 'ipp-usb', 'network-ipp'}
+PRINTER_ACCESS = {'usb-only', 'ipp-read', 'cups-only', 'ipp-unavailable'}
+V13_DETECTIONS = ANDROID_DETECTIONS | PRINTER_DETECTIONS
+V13_ACCESS = ANDROID_ACCESS | PRINTER_ACCESS
 V13_TARGET_FIELDS = ('opaque_id', 'usb_port')
+V13_REF_PREFIXES = ('and-', 'prn-')
+FAMILY_REF_PREFIX = {'android': 'and-', 'printer': 'prn-'}
+FAMILY_DETECTIONS = {'android': ANDROID_DETECTIONS, 'printer': PRINTER_DETECTIONS}
+FAMILY_ACCESS = {'android': ANDROID_ACCESS, 'printer': PRINTER_ACCESS}
+PRINTER_USB_CONNECTIONS = {'usb', 'ipp-over-usb'}
 SCOPE_GROUPS = {'hardware': 'hardware.', 'software': 'software.'}
 
 
 def is_v12_check(check_id):
-    return check_id in V12_CHECK_IDS or check_id.startswith(('hw-', 'sw-', 'malware-'))
+    return check_id in V12_CHECK_IDS or check_id.startswith(('hw-', 'sw-', 'malware-', PRINTER_TARGET_PREFIX))
 
 
 def is_v13_check(check_id):
-    return check_id.startswith(('android-', 'usb-'))
+    return check_id.startswith(('android-', 'usb-', 'printer-')) and not check_id.startswith(PRINTER_TARGET_PREFIX)
 
 
 def uses_v13(data):
-    """True when the document uses anything that only exists since schema 1.3 (Android targets, USB inventory)."""
-    if 'usb_ports' in data or any(is_v13_check(c['check_id']) or str(c.get('target_ref', '')).startswith('and-')
-                                  for c in data['checks']):
+    """True when the document uses anything that only exists since schema 1.3 (Android and printer targets,
+    USB inventory, printers list)."""
+    if 'usb_ports' in data or 'printers' in data or any(
+            is_v13_check(c['check_id']) or str(c.get('target_ref', '')).startswith(V13_REF_PREFIXES)
+            for c in data['checks']):
         return True
     for t in data.get('target_systems') or []:
         if t['family'] in V13_FAMILIES or t['detection'] in V13_DETECTIONS or t['access'] in V13_ACCESS \
-                or t['ref'].startswith('and-') or any(f in t for f in V13_TARGET_FIELDS):
+                or t['ref'].startswith(V13_REF_PREFIXES) or any(f in t for f in V13_TARGET_FIELDS):
             return True
     return False
 
 
 def android_errors(data):
-    """Android/USB cross-field rules (schema 1.3): ref prefix matches the family, ports are consistent."""
+    """Android, printer and USB cross-field rules (schema 1.3): the ref prefix matches the family, detection and
+    access values belong to their family, ports are consistent, printer checks and printers[] agree."""
     errors = []
     ports = [p['port'] for p in data.get('usb_ports') or []]
     if len(ports) != len(set(ports)):
         errors.append('usb_ports[].port values must be unique')
+    printer_ports = {}
     for t in data.get('target_systems') or []:
-        android_ref = t['ref'].startswith('and-')
-        if android_ref != (t['family'] == 'android'):
-            errors.append('target_systems %s: refs "and-N" and family "android" go together' % t['ref'])
-        if t['detection'] in V13_DETECTIONS and t['family'] != 'android':
-            errors.append('target_systems %s: detection %s is for Android targets only' % (t['ref'], t['detection']))
-        if t['access'] in V13_ACCESS and t['family'] != 'android':
-            errors.append('target_systems %s: access %s is for Android targets only' % (t['ref'], t['access']))
+        family = t['family']
+        for fam, prefix in FAMILY_REF_PREFIX.items():
+            if t['ref'].startswith(prefix) != (family == fam):
+                errors.append('target_systems %s: refs "%sN" and family "%s" go together' % (t['ref'], prefix, fam))
+        if t['detection'] in V13_DETECTIONS and family not in V13_FAMILIES:
+            errors.append('target_systems %s: detection %s is for Android and printer targets only'
+                          % (t['ref'], t['detection']))
+        if t['access'] in V13_ACCESS and family not in V13_FAMILIES:
+            errors.append('target_systems %s: access %s is for Android and printer targets only'
+                          % (t['ref'], t['access']))
+        if family in FAMILY_DETECTIONS:
+            if t['detection'] not in FAMILY_DETECTIONS[family]:
+                errors.append('target_systems %s: detection %s does not belong to family %s'
+                              % (t['ref'], t['detection'], family))
+            if t['access'] not in FAMILY_ACCESS[family]:
+                errors.append('target_systems %s: access %s does not belong to family %s'
+                              % (t['ref'], t['access'], family))
         port = t.get('usb_port')
         if port is not None and port not in ports:
             errors.append('target_systems %s: usb_port does not match any usb_ports[].port' % t['ref'])
+        if family == 'printer':
+            printer_ports[t['ref']] = port
+    listed = [p['ref'] for p in data.get('printers') or []]
+    if len(listed) != len(set(listed)):
+        errors.append('printers[].ref values must be unique')
+    for p in data.get('printers') or []:
+        ref, port = p['ref'], p.get('usb_port')
+        if ref not in printer_ports:
+            errors.append('printers %s: no target_systems entry of family printer with this ref' % ref)
+            continue
+        if port is not None:
+            if p['connection'] not in PRINTER_USB_CONNECTIONS:
+                errors.append('printers %s: usb_port is for usb and ipp-over-usb connections only' % ref)
+            if port not in ports:
+                errors.append('printers %s: usb_port does not match any usb_ports[].port' % ref)
+        if port != printer_ports[ref]:
+            errors.append('printers %s: usb_port must equal the target_systems usb_port' % ref)
+    if printer_ports and set(listed) != set(printer_ports):
+        errors.append('every target_systems entry of family printer needs exactly one printers[] entry')
+    for i, c in enumerate(data['checks']):
+        cid, ref = c['check_id'], c.get('target_ref')
+        if cid == 'printer-count':
+            if ref is not None:
+                errors.append('checks/%d: printer-count describes the machine and takes no target_ref' % i)
+        elif cid.startswith(PRINTER_TARGET_PREFIX):
+            if ref is None or not ref.startswith('os-'):
+                errors.append('checks/%d: %s needs an os-N target_ref' % (i, cid))
+        elif cid.startswith('printer-'):
+            if ref is None or not ref.startswith('prn-'):
+                errors.append('checks/%d: %s needs a prn-N target_ref' % (i, cid))
     return errors
 
 
@@ -113,9 +169,9 @@ def semantic_errors(data):
         if len(data['checks']) > PRE_V12_MAX_CHECKS:
             errors.append('schema_version %s allows at most %d checks' % (data['schema_version'], PRE_V12_MAX_CHECKS))
     if data['schema_version'] != '1.3' and uses_v13(data):
-        errors.append('schema_version %s must not use 1.3 fields (android family and and-N refs, usb_ports, '
-                      'android-*/usb-* check IDs, usb-adb/usb-enumerated detection, adb-*/usb-only access)'
-                      % data['schema_version'])
+        errors.append('schema_version %s must not use 1.3 fields (android and printer families, and-N/prn-N refs, '
+                      'usb_ports, printers, android-*/usb-*/printer-* check IDs, usb-*/ipp-*/network-ipp detection, '
+                      'adb-*/ipp-*/cups-only/usb-only access)' % data['schema_version'])
     errors.extend(android_errors(data))
     errors.extend(scope_errors(data.get('scope') or []))
     seen = set()

@@ -29,7 +29,7 @@ Dokumen ini menggabungkan apa yang **sudah ada** dan rancangan yang **belum ada*
 
 | Bagian | Status |
 |---|---|
-| Profile Hermes terpisah (`profiles/rescue-hermes/`: `SOUL.md`, `AGENTS.md`, skill `rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`, `rescue-android`) dipasang ke `HERMES_HOME` yang terisolasi oleh `install-hermes-rescue.sh` | Implemented |
+| Profile Hermes terpisah (`profiles/rescue-hermes/`: `SOUL.md`, `AGENTS.md`, skill `rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`, `rescue-android`, `rescue-printer`) dipasang ke `HERMES_HOME` yang terisolasi oleh `install-hermes-rescue.sh` | Implemented |
 | OpenCode Go sebagai satu-satunya provider (`custom`, `mimo-v2.6-flash`); memory Hermes dengan `write_approval: true` dan tanpa profil pengguna | Implemented |
 | Gerbang kesiapan hardware sebelum diagnosis dan laporan JSON | Implemented |
 | Evidence terbatas (schema 1.2) dan analyzer yang hanya menghasilkan teks | Implemented |
