@@ -179,6 +179,18 @@ class InstallVentoyUsbTests(unittest.TestCase):
     def test_requires_arguments(self):
         self.assertEqual(self.call().returncode, 2)
 
+    def test_reinstall_without_yes_still_refuses(self):
+        r = self.call("--device", "/dev/null", "--ventoy-dir", self.vdir, "--reinstall")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--yes", r.stderr)
+
+    def test_script_has_reinstall_flag_and_ventoy_flags(self):
+        script = (SCRIPTS / "install-ventoy-usb.sh").read_text()
+        self.assertIn("--reinstall", script)
+        self.assertIn("ventoy_flag='-i'", script)
+        self.assertIn("ventoy_flag='-I'", script)
+        self.assertIn("[[ $reinstall -eq 1 ]]", script)
+
 
 BLOCK_DEV = next((d for d in ("/dev/sda", "/dev/vda", "/dev/nvme0n1", "/dev/loop0")
                   if pathlib.Path(d).is_block_device()), None)

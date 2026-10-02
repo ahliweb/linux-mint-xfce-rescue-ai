@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - `scripts/migrate-persistence-state.py --key-only [--dry-run]` for a clean USB with the provider key: it carries only `OPENCODE_GO_API_KEY` from the old image's `hermes/env` (read with `debugfs`, parsed with the allowlist rules of `scripts/lib/rescue-env.sh`; empty, missing or unsafe values are refused) into the new image's `hermes/env`, replacing just that line and keeping the other lines, owner, group and mode `0600`. No sessions, memories, learned skills, cases, reports or journal are copied. The key is never printed or put on an argv; `e2fsck -fn` and a SHA-256 read-back of the one file verify the result. `docs/persistence.md` gains "USB bersih dengan kunci saja"; `tests/test_persistence_migration.py` gains `MigrateKeyOnlyTest`.
+- `scripts/install-ventoy-usb.sh --reinstall`: forces a clean Ventoy reinstall (uses Ventoy's `-I` flag) instead of the default `-i`, erasing the entire disk; all safety checks (removable/USB, not mounted, not backing root) run first, and the operator must back up `persistence/*.dat`, `rescue-omes/reports/`, and `rescue-omes/config/rescue.env` before reinstalling.
 
 ## [0.7.0] - 2026-10-02
 
