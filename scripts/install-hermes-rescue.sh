@@ -133,6 +133,7 @@ fi
 "${sudo_cmd[@]}" ln -sfn -- "$prefix/scripts/launch-hermes-rescue.sh" "$bin_dir/launch-hermes-rescue.sh"
 "${sudo_cmd[@]}" ln -sfn -- "$prefix/scripts/check-hermes-rescue.sh" "$bin_dir/check-hermes-rescue.sh"
 "${sudo_cmd[@]}" ln -sfn -- "$prefix/scripts/malware-quarantine.py" "$bin_dir/rescue-malware-quarantine"
+"${sudo_cmd[@]}" ln -sfn -- "$prefix/scripts/rescue-followup.py" "$bin_dir/rescue-followup"
 trap '[[ -z ${installer:-} ]] || rm -f "$installer"' EXIT
 
 install -m 0600 "$root/profiles/rescue-hermes/SOUL.md" "$state_dir/hermes/SOUL.md"

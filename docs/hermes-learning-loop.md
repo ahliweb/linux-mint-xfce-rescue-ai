@@ -29,7 +29,7 @@ Dokumen ini menggabungkan apa yang **sudah ada** dan rancangan yang **belum ada*
 
 | Bagian | Status |
 |---|---|
-| Profile Hermes terpisah (`profiles/rescue-hermes/`: `SOUL.md`, `AGENTS.md`, skill `rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`, `rescue-android`, `rescue-printer`) dipasang ke `HERMES_HOME` yang terisolasi oleh `install-hermes-rescue.sh` | Implemented |
+| Profile Hermes terpisah (`profiles/rescue-hermes/`: `SOUL.md`, `AGENTS.md`, skill `rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`, `rescue-android`, `rescue-printer`, `rescue-autorun`) dipasang ke `HERMES_HOME` yang terisolasi oleh `install-hermes-rescue.sh` | Implemented |
 | OpenCode Go sebagai satu-satunya provider (`custom`, `mimo-v2.6-flash`); memory Hermes dengan `write_approval: true` dan tanpa profil pengguna | Implemented |
 | Gerbang kesiapan hardware sebelum diagnosis dan laporan JSON | Implemented |
 | Evidence terbatas (schema 1.2) dan analyzer yang hanya menghasilkan teks | Implemented |
@@ -37,6 +37,8 @@ Dokumen ini menggabungkan apa yang **sudah ada** dan rancangan yang **belum ada*
 | Karantina malware yang dapat dibalik dan aturan penghapusan ([malware.md](malware.md)) | Implemented |
 | Laporan proses per run yang dibaca Hermes lebih dulu ([run-report.md](run-report.md)) | Implemented |
 | Pengajuan kandidat skill ke GitHub Issues setelah sanitasi dan konfirmasi operator ([skill-submission.md](skill-submission.md)) | Implemented; panggilan GitHub nyata Environment-blocked |
+| Autorun Hermes: giliran pertama tetap (`profiles/rescue-hermes/kickoff.md`), skill `rescue-autorun`, follow-up bertipe read-only `scripts/rescue-followup.py` (skema `rescue-ai/v1/followup.schema.json`), `approvals.deny` di `config/hermes-rescue.config.yaml` ([bagian Autorun](#autorun-hermes-69)) | Implemented (level source; sesi Hermes nyata dan cloud Environment-blocked) |
+| Launcher live/host yang mengirim `kickoff.md` sebagai giliran pertama dan memanggil `rescue-followup` otomatis; follow-up native Windows | Planned (dikerjakan di sisi launcher, terpisah dari isu ini) |
 | Direktori `cases/`, `learning/candidates/`, `learning/approved/` di state (dibuat installer, kosong) | Implemented (hanya direktori) |
 | `case.json`, `operator-feedback.json`, `verification.json`, `learning-candidate.json`, `case_signature` dan retrieval, label feedback, kandidat memory otomatis, evaluasi regresi, metrik, promosi bertanda tangan | Planned |
 | Toolset `rescue_read_only`, adapter tool bertipe dengan `tool_id`, penonaktifan channel messaging/webhook lewat config, ledger terenkripsi, `releases/manifest.json` | Planned (template config saat ini tidak menetapkannya) |
@@ -294,6 +296,50 @@ rescue-omes/
 
 `profiles/rescue-hermes` dan `learning/approved` dipasang read-only ketika boot normal. Hanya `cases/`, `learning/candidates/`, dan session workspace yang writable.
 
+## Autorun Hermes (#69)
+
+Hasil lapangan 2026-10-01 (v0.6.0): analisis menyarankan pemeriksaan read-only lanjutan (atribut SMART terperinci, penyebab `windows-system-files` warn, penyebab `malware-scan` warn tanpa temuan) tetapi tidak ada yang menjalankannya; hasil self-test SMART tidak pernah dibaca; Hermes menyangka root adalah overlay RAM (`/cow`) padahal persistence Ventoy aktif. Autorun menutup celah itu **tanpa** memberi Hermes jalan untuk menjalankan perintah bebas.
+
+```mermaid
+flowchart TD
+    L[Launcher: scan, analisis, perbaikan, laporan] --> F["rescue-followup.py: follow-up bertipe read-only"]
+    F --> FF[("followup-run_id.json: angka, boolean, enum tertutup")]
+    L --> K["Giliran pertama tetap: kickoff.md, path relatif"]
+    K --> H[Hermes dengan cwd = folder laporan]
+    FF --> H
+    H --> SK[Skill rescue-autorun]
+    SK --> C1["Perintah 1: rescue-followup bila belum ada"]
+    SK --> C2["Perintah 2: rescue-repair.py --policy auto-safe --select aksi safe yang diusulkan"]
+    SK --> M["Semua perintah lain: persetujuan manual Hermes"]
+    M --> D{"approvals.deny cocok?"}
+    D -- ya --> X[Diblokir, juga di bawah yolo]
+    D -- tidak --> O[Operator menyetujui]
+```
+
+| Bagian | Isi | Status |
+|---|---|---|
+| Giliran pertama | `profiles/rescue-hermes/kickoff.md`: Bahasa Indonesia singkat dengan satu baris Inggris. Hermes mulai dengan cwd = folder laporan, jadi hanya path relatif (`index.md`, `run-*/report.md`, `followup-*.json`, `analysis-*.md`); tidak ada path absolut atau nama pengguna. Tes memeriksa hal ini | Implemented (berkas dan tes); pengiriman oleh launcher Planned |
+| Skill `rescue-autorun` | (1) ringkas laporan per domain (unknown bukan sehat), (2) jalankan follow-up bila belum ada untuk run terbaru, (3) jalankan aksi katalog `safe` yang diusulkan tetapi belum jalan, (4) beri tahu kapan menjalankan ulang follow-up bila self-test masih berjalan, (5) ringkasan bernomor dengan kondisi berhenti | Implemented |
+| Dua perintah tanpa tanya | `rescue-followup` (argumen tetap) dan `rescue-repair.py --policy auto-safe --select <action_id yang diusulkan dan safe>` (hanya mode Linux). Tidak pernah `--approve`, `--param`, `--backup-ref`; yang bukan `safe` dijelaskan dan disetujui operator di mesin. Catatan: `auto-safe` menjalankan otomatis hanya aksi pemicu katalog (`catalog-trigger`) berisiko `safe`; usulan `--select` berasal `operator` dan tetap meminta persetujuan di mesin | Implemented |
+| `approvals` di config Hermes | `mode: manual` dan `deny` (glob `fnmatch` pada varian perintah huruf kecil; memblokir juga di bawah `--yolo`): `*--approve*`, `*--backup-ref*`, `*--param*`, `dd *`, `*mkfs*`, `*wipefs*`, `*parted*`, `*fdisk*`, `*sgdisk*`, `*grub-install*`, `*efibootmgr*`, `*bcdedit*`, `*diskpart*`, `*format-volume*`, `*cryptsetup*`, `*dislocker*`, `*ntfsfix*`, `*chkdsk*`, `*fsck*`, `*rescue.env*`, `*hermes/env*`, `*rescue_github_issues_token*`, `*malware-detections-*`, `*/quarantine/*`, `rm -rf *`, `*remove-item*-recurse*`. Diverifikasi terhadap checkout Hermes lokal (`hermes config check` dan `tools.approval._match_user_deny_rule`); tesnya dilewati bersih bila Hermes tidak ada (CI) | Implemented; sesi Hermes nyata Hardware-required |
+
+### Follow-up bertipe (`scripts/rescue-followup.py`)
+
+```
+rescue-followup.py --evidence FILE --reports-dir DIR [--mode live-linux|linux-host] [--state-dir DIR] [--timeout SECONDS]
+```
+
+Menulis `DIR/followup-<run_id>.json` secara atomik (0600 bila didukung; dari `sudo -n` berkas diserahkan ke pengguna desktop) dan mencetak ringkasan dua bahasa. Exit 0 walau ada item `unknown`; 2 untuk input atau evidence tidak valid (atau `--timeout` di luar 10 sampai 900 detik, default 120 detik total, tiap perintah dengan batas sendiri). Mode bawaan diambil dari `source_platform`; `windows-host` ditulis native oleh launcher Windows dan ditolak di sini. Resep tetap dan hanya untuk check berstatus warn/fail/unknown dalam scope:
+
+| Check | Follow-up | Isi (angka/boolean/enum saja) |
+|---|---|---|
+| `smart-health`, `nvme-health` | `disk.attributes`, `disk.selftest-result` per `disk-N` (urutan disk internal dari `lsblk`; tanpa serial, model, atau path) via `smartctl -j` | realokasi, pending, offline-uncorrectable, jam hidup, suhu, NVMe percentage used/media errors/critical warning/spare; self-test terakhir `completed-ok`, `in-progress` (persen tersisa), `failed`, `aborted`, `none` |
+| `linux-journal-errors` | `journal.categories` (host: `journalctl -p 3 -b -o json`; live: jurnal `var/log/journal` target Linux yang di-mount read-only, tanpa symlink keluar root) | hitungan per 13 kategori tetap (`kernel`, `storage`, `filesystem`, `network`, `display-gpu`, `audio`, `usb`, `bluetooth`, `power-acpi`, `systemd`, `security-auth`, `application`, `other`) lewat pemetaan allowlist internal; tanpa teks pesan, unit, atau nama program |
+| `malware-scan`, `malware-signatures` | `malware.coverage`, `malware.signatures` | cakupan (`complete`, `incomplete`, `stale-signatures`, `not-scanned`, `budget-exhausted`, `detections-found`), jumlah deteksi, umur signature (hari), ada tidaknya basis data; diturunkan dari evidence dan basis data signature lewat `rescue_modules.malware`, tanpa memindai ulang |
+| `persistence` (live, selalu) | `persistence.active` | `persistence_active` (tidak ada bila tidak dapat ditentukan), `upper_backing` (`block`, `loop`, `tmpfs`, `unknown`), `cmdline_persistent`; dari `/proc/mounts` dan `/proc/cmdline`: lapisan tulis overlay di perangkat blok/loop ber-filesystem ext/btrfs/xfs berarti aktif, di `tmpfs` berarti tidak (keberadaan `/cow` saja bukan bukti) |
+
+Aturan: `unknown` tidak pernah menjadi `pass` (alat hilang `tool-missing`, tanpa root `needs-root`, waktu habis `timeout`, target tidak bisa di-mount `not-mounted`). Di mode `linux-host` yang berjalan sebagai pengguna biasa, apa pun yang butuh root menjadi `unknown`/`needs-root`; ini wajar, bukan kerusakan. Format (`rescue-ai/v1/followup.schema.json`, `schema_version` `1.0`): `run_id`, `mode` (`live-linux`, `linux-host`, `windows-host`), `generated_at`, `items[]` berisi `check_id`, `target_ref` (opsional: `os-N`, `disk-N`), `followup_id`, `status`, `reason` (himpunan tertutup) dan `values` (nama tetap; angka, boolean, atau anggota enum tertutup). **Privacy self-check** menolak dan tidak menulis dokumen yang berisi kunci atau nilai di luar himpunan itu, atau string yang menyerupai path, serial, MAC/IP, e-mail, atau teks bebas; skema yang sama dipakai launcher Windows (**Planned**) saat menulis berkas native.
+
 ## Konfigurasi Hermes pada USB
 
 ```mermaid
@@ -306,6 +352,7 @@ flowchart LR
 ```
 
 - Gunakan profile Hermes khusus rescue, bukan profile personal.
+- `config/hermes-rescue.config.yaml` menetapkan `approvals.mode: manual` dan daftar `approvals.deny` ([Autorun Hermes](#autorun-hermes-69)): perintah di daftar itu diblokir walau Hermes dijalankan dengan `--yolo`.
 - Set `HERMES_HOME` ke partisi writable terenkripsi atau media penyimpanan terpisah.
 - Nonaktifkan channel messaging dan webhook pada mode rescue kecuali operator mengaktifkannya secara eksplisit (**Planned**: template config saat ini belum menetapkannya; jangan mengaktifkan channel di profil rescue).
 - Aktifkan memory/skills hanya untuk data yang sudah disanitasi.
