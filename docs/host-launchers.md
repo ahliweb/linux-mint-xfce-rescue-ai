@@ -74,6 +74,56 @@ Tidak memerlukan hak administrator dan tidak pernah meminta elevasi. Pemeriksaan
 
 **SmartScreen:** file `.cmd` dan `.ps1` dari USB umumnya tidak diberi tanda "Mark of the Web", sehingga jarang memicu SmartScreen. Bila Windows menampilkan "Windows protected your PC", pilih **More info** lalu **Run anyway** hanya setelah operator memverifikasi bahwa USB adalah USB rescue milik sendiri. Kebijakan organisasi (AppLocker, WDAC, Constrained Language Mode) dapat memblokir skrip; jangan mengakalinya di komputer yang bukan milik operator. `-ExecutionPolicy Bypass` hanya berlaku untuk proses itu dan tidak mengubah kebijakan mesin.
 
+#### Windows: lanjut otomatis ke Hermes
+
+Setelah laporan proses ditulis, `rescue-windows.ps1` melanjutkan ke Hermes di jendela konsol yang sama (ahliweb/linux-mint-xfce-rescue-ai#72), tanpa langkah tambahan dari operator. Hermes langsung membaca ringkasan dan rekomendasi (`profiles/rescue-hermes/kickoff.md`, skill `rescue-autorun`), menjelaskan tiap domain, lalu sesi interaktif tetap terbuka; keluar dengan `/exit` atau Ctrl+C. Catatan dwibahasa satu baris dicetak sebelum Hermes dibuka. Kode keluar launcher tidak pernah ditentukan oleh Hermes.
+
+| Status | Arti |
+|---|---|
+| **Implemented** (level source) | Alur, fungsi murni (`Get-RescueHermesLaunch`, penulis follow-up, pemicu pindai ulang), seed `hermes-home`, argv dan lingkungan, dan semua keluaran diuji lewat `pwsh` (CI) dan uji statis |
+| **Hardware-required** | Menjalankan Hermes portabel di Windows 10/11 sungguhan: Windows PowerShell 5.1, konsol nyata, runtime Python portabel x86_64 di USB, `Write-Progress` di konsol Windows. **Tidak dijalankan** di lingkungan pengembangan |
+| **Environment-blocked** | Sesi Hermes dengan provider cloud (butuh API key, jaringan, dan biaya provider) |
+
+```mermaid
+flowchart LR
+    C[Pemeriksaan + analisis] --> P[Perbaikan bertipe]
+    P --> S{Ada aksi execute ok di run ini?}
+    S -->|ya| R[Pindai ulang]
+    S -->|tidak| F[Follow-up read-only]
+    R --> F
+    F --> L[Laporan run-UTC + index.md]
+    L --> H{Konsol interaktif, kunci, runtime x86_64?}
+    H -->|ya| X[Hermes di konsol yang sama]
+    H -->|tidak| N[Catatan dwibahasa, bukan kegagalan]
+```
+
+Opsi khusus Windows (diteruskan oleh `RESCUE-WINDOWS.cmd`):
+
+| Opsi | Arti |
+|---|---|
+| `-NoHermes` | Berhenti setelah laporan (perilaku sebelumnya) |
+| `-HermesOnly` | Lewati pemeriksaan, analisis, dan perbaikan; buka Hermes pada laporan yang sudah ada di `reports/`. Tidak boleh digabung dengan `-EvidenceOnly`, `-DryRun`, `-ListRepairs`, atau `-NoHermes` (kode `64`); tanpa `reports/index.md` kode `5`; tanpa kunci kode `3` |
+
+Hermes **tidak** dimulai (dan itu bukan kegagalan) bila: `-NoHermes`, `-EvidenceOnly`, `-DryRun`, atau `-ListRepairs`; tidak ada konsol interaktif (input atau output dialihkan); tidak ada kunci API (hasil `no-key`, kode `3`); hasil run bukan `completed`/`repair-invalid` (misalnya `network-error`); proses bukan PowerShell 64-bit di Windows x86_64 (catatan dwibahasa); atau `hermes-portable\windows-x86_64\python\python.exe` tidak ada di USB (catatan dwibahasa yang menunjuk ke panduan runtime portabel, hermes-portable.md).
+
+Perintah yang dijalankan (tidak pernah memuat kunci, hanya konstanta dan path kickoff di USB):
+
+```
+<bundle>\hermes-portable\windows-x86_64\python\python.exe -m hermes_cli.main chat --cli --provider custom --model mimo-v2.6-flash -s rescue-autorun --query-file <bundle>\profiles\rescue-hermes\kickoff.md
+```
+
+**Isolasi lingkungan.** Hermes berjalan sebagai satu proses anak dengan lingkungan yang diatur hanya pada proses itu (lingkungan proses launcher dan registry tidak diubah): `HERMES_HOME=<bundle>\hermes-home`; `TEMP` dan `TMP` di `hermes-home\tmp`; `LOCALAPPDATA` dan `APPDATA` di `hermes-home\localappdata` dan `hermes-home\appdata`; `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` di `hermes-home\xdg\...`; `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, `PYTHONUTF8=1`. `OPENCODE_GO_API_KEY` datang dari parser `rescue.env` yang sama (data, tanpa dot-source) dan hanya ada di lingkungan proses anak itu, tidak pernah di argumen. `RESCUE_GITHUB_ISSUES_TOKEN`, `PYTHONPATH`, `PYTHONHOME`, dan `PYTHONSTARTUP` dihapus dari lingkungan anak. Direktori kerja adalah folder `reports/`, sehingga kickoff memakai path relatif. Launcher tidak naik hak akses, tidak memasang apa pun, dan tidak menulis ke disk host; semua state Hermes ada di USB.
+
+**Seed `hermes-home`** (setiap run, dari bundle): `SOUL.md`, `AGENTS.md`, setiap `profiles/rescue-hermes/skills/<nama>/SKILL.md`, dan `config.yaml` dari `config/hermes-rescue.config.yaml` ditimpa; memori, sesi, `state.db`, dan log tidak disentuh. Bila USB tidak bisa ditulis, Hermes tidak dimulai dan ada peringatan.
+
+**Progres.** Setiap fase mencetak baris `[N/T] label` (layar dan transkrip) dan memperbarui `Write-Progress` dengan persen antarfase: pemeriksaan, validasi, analisis, perbaikan, pindai ulang, follow-up, laporan, Hermes. Semua rekaman progres ditutup (`-Completed`) sebelum Hermes dibuka agar bar tidak menimpanya; pada fase perbaikan bar langsung ditutup supaya tidak menutupi pertanyaan persetujuan.
+
+**Pindai ulang** hanya terjadi bila minimal satu aksi run ini mencapai tahap `execute` dengan hasil `ok` di journal; aksi yang gagal atau `unavailable` tidak memicunya. Setelah pindai ulang, `latest-evidence.json` berisi evidence sesudah perbaikan.
+
+**Follow-up native** (read-only, tanpa admin, dibatasi waktu, tidak pernah fatal) menulis `followup-<run_id>.json` sesuai `rescue-ai/v1/followup.schema.json` (`mode` `windows-host`) hanya untuk check Windows yang ditandai: `windows.event-log-categories` (jumlah per kategori tetap dari log System level 1/2 selama 7 hari, maksimum 1000 event, batas waktu 25 detik; nama penyedia dan pesan tidak pernah keluar), `windows.encryption-state`, `windows.boot-config`, dan `windows.restore-points` (alasan `needs-admin` bila sesi bukan admin, atau nilai nyata bila bukti sudah memilikinya).
+
+Tambahan di `reports/` (semuanya di USB): `latest-evidence.json` (salinan evidence run ini), `followup-<run_id>.json`, dan folder `hermes-home/` di samping `reports/` di dalam bundle (state Hermes; jangan dibagikan karena memuat sesi dan memori).
+
 ### macOS 12+ (Intel dan Apple Silicon)
 
 1. Klik dua kali `RESCUE-MACOS.command`; Terminal terbuka dan menjalankan launcher.
