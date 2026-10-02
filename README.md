@@ -65,6 +65,11 @@ Legend: **Implemented** (source level, covered by `make check`), **Hardware-requ
 | Repair catalog, policy engine, hash-chained journal | Implemented; real repairs are Hardware-required | [repair framework](docs/repair-framework.md) |
 | Windows, macOS, and Linux host launchers with native repairs | Implemented; real Windows 10/11 and macOS runs are Hardware-required | [host launchers](docs/host-launchers.md), [host repair](docs/host-repair.md) |
 | Portable, credential-free Hermes runtime on the USB data partition for the host launchers (`build-hermes-portable.py`, `prepare-ventoy-usb.sh --hermes-portable`) | Implemented; the Windows build runs only in CI (Environment-blocked here) and a real Windows run is Hardware-required | [Hermes portabel](docs/hermes-portable.md) |
+| Host launchers continue into Hermes automatically from the portable runtime on the USB (Linux, Windows) | Implemented at source level; real Windows/Linux host session is Hardware-required | [host launchers](docs/host-launchers.md), [Hermes portabel](docs/hermes-portable.md) |
+| Hermes autorun on open with fixed kickoff, skill `rescue-autorun`, and typed read-only follow-ups (`scripts/rescue-followup.py`) | Implemented | [learning loop](docs/hermes-learning-loop.md) |
+| Progress bars for every long phase (evidence, analysis, repairs, follow-up, report) | Implemented | [target OS scan](docs/target-os-scan.md), [repair framework](docs/repair-framework.md) |
+| Repair engine UX: batch approval of safe actions, needs-root precheck, disk and failed-unit pickers | Implemented | [repair framework](docs/repair-framework.md) |
+| Live readiness check `persistence-active` (upper-layer type and mount on the running system) | Implemented (physical boot is Hardware-required) | [persistence](docs/persistence.md) |
 | Run report on the USB | Implemented | [run report](docs/run-report.md) |
 | Candidate skill submission to GitHub Issues | Implemented; real GitHub calls are Environment-blocked | [skill submission](docs/skill-submission.md) |
 | Live cloud smoke test (`test-hermes-conversation.sh --live`) | Environment-blocked | [testing](docs/testing.md) |
