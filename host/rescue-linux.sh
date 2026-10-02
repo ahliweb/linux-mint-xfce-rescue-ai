@@ -22,9 +22,14 @@
 #             open item repair-engine-failed (exit-2 or exit-3) and the exit code stays the first
 #             failure's. A repair journal that cannot be used (engine exit 3) outranks everything,
 #             as in the macOS launcher: outcome journal-unusable and exit 5.
+# Hermes: when the run ends on an interactive terminal the launcher starts the portable Hermes runtime from
+#             the USB (<bundle>/hermes-portable/linux-x86_64, docs/hermes-portable.md) on the reports it just
+#             wrote, with HERMES_HOME on the USB. Hermes' own exit code is logged, never returned. Not started with
+#             --no-hermes, --evidence-only, --dry-run, no terminal, no key, or no runtime for this architecture.
 # Launcher log: everything this launcher and its child tools print (none of them prints the API key)
 #             is also appended to reports/launcher-linux-<utc>.log on the USB (0600 where the
 #             filesystem has modes; never on the host disk).
+# shellcheck source-path=SCRIPTDIR
 set -Eeuo pipefail
 umask 077
 
@@ -32,12 +37,15 @@ usage() {
   cat >&2 <<'EOF'
 usage: rescue-linux.sh [--evidence-only] [--dry-run] [--bundle DIR] [--pause]
                        [--scope LIST] [--packages LIST] [--repair-policy POLICY] [--malware-full-disk]
+                       [--no-hermes | --hermes-only]
   --evidence-only  collect + validate + save evidence; no network, no AI call; repairs listed only
   --dry-run        like --evidence-only, and ask the analyzer to show what it would send
   --scope LIST     all (default) | hardware | hardware.cpu,... | os | software | software.selected | malware
   --malware-full-disk  scan the whole system for malware (slow; default: user-writable and autostart areas)
   --packages LIST  comma list of packages for --scope software.selected
   --repair-policy  detect-only | approve-each (default) | auto-safe
+  --no-hermes      do not open Hermes at the end (default: open it on an interactive terminal)
+  --hermes-only    skip scan, analysis and repairs; open Hermes on the existing reports of the USB
   --bundle DIR     rescue-omes bundle directory (default: auto-detect next to this script)
   --pause          wait for Enter before exiting (for double-click terminals)
 EOF
@@ -52,11 +60,15 @@ scope=all
 packages=''
 repair_policy=approve-each
 malware_full=0
+no_hermes=0
+hermes_only=0
 while (($#)); do
   case "$1" in
     --evidence-only) evidence_only=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --pause) pause=1; shift ;;
+    --no-hermes) no_hermes=1; shift ;;
+    --hermes-only) hermes_only=1; shift ;;
     --bundle) bundle=${2:?--bundle needs a directory}; shift 2 ;;
     --scope) scope=${2:?--scope needs a list}; shift 2 ;;
     --packages) packages=${2:?--packages needs a list}; shift 2 ;;
@@ -67,6 +79,7 @@ while (($#)); do
   esac
 done
 
+((!(hermes_only && (evidence_only || dry_run || no_hermes)))) || usage
 case $repair_policy in detect-only | approve-each | auto-safe) ;; *) usage ;; esac
 [[ $scope =~ ^[a-z.,]+$ ]] || usage
 [[ -z $packages || $packages =~ ^[A-Za-z0-9][A-Za-z0-9+._:@,-]*$ ]] || usage
@@ -75,6 +88,7 @@ run_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 run_id="rescue-$(date -u +%Y%m%d-%H%M%S)-lh"   # the one run id: report and evidence share it (the re-scan adds -after)
 run_outcome=scan-failed
 report_ready=0 report_done=0
+hermes_ready=0   # set only on the paths that end a normal run; the interrupt handler clears it
 run_evidence='' run_evidence_after='' run_analysis='' repair_rc=0
 
 # Write the run report to the USB (never blocks or changes the exit code). Idempotent.
@@ -94,11 +108,13 @@ emit_report() {
     printf 'PERINGATAN: laporan proses tidak dapat ditulis penuh.\nWARNING: the run report could not be fully written.\n' >&2
 }
 trap 'emit_report' EXIT
-trap 'run_outcome=interrupted; pause=0; finish 130' INT TERM HUP
+trap 'run_outcome=interrupted; pause=0; hermes_ready=0; finish 130' INT TERM HUP
 
 finish() {
   local rc=$1
-  emit_report
+  if ((hermes_ready)); then rescue_progress_step 7 8 'Laporan proses / run report'; fi
+  emit_report   # the report and index.md exist before Hermes reads them
+  if ((hermes_ready)); then start_hermes || true; fi
   if ((pause)) && [[ -t 0 ]]; then
     printf '\nTekan Enter untuk menutup / Press Enter to close... '
     read -r _ || true
@@ -128,6 +144,14 @@ if ! mkdir -p -- "$reports" 2>/dev/null || [[ ! -w $reports ]]; then
 fi
 
 report_ready=1
+# Progress helpers from the bundle (docs/target-os-scan.md); older bundles get plain no-op fallbacks.
+if [[ -f $bundle/scripts/lib/progress.sh ]]; then
+  # shellcheck source=../scripts/lib/progress.sh
+  source "$bundle/scripts/lib/progress.sh"
+else
+  rescue_progress_step() { printf '[%s/%s] %s\n' "${1:-}" "${2:-}" "${3:-}"; }
+  rescue_progress_run() { shift 2 || true; [[ ${1:-} != -- ]] || shift; "$@"; }
+fi
 export TMPDIR="$reports"          # any tool that wants a temp file uses the USB, not this host
 ((malware_full)) && export RESCUE_MALWARE_FULL_DISK=1
 export PYTHONDONTWRITEBYTECODE=1  # no __pycache__ clutter on the USB bundle
@@ -146,9 +170,100 @@ if : >>"$launcher_log" 2>/dev/null; then
   exec 3>&1
   exec > >(tee -a -- "$launcher_log") 2> >(tee -a -- "$launcher_log" >&2)
 else
+  exec 3>&1
   printf 'PERINGATAN / WARNING: the launcher log could not be created on the USB; continuing without it.\n' >&2
 fi
 export PYTHONUNBUFFERED=1
+
+# --- Hermes (portable runtime on the USB) -------------------------------------------------------------
+# Seed or refresh the profile-owned files of HERMES_HOME from the bundle; everything else in it
+# (memories, sessions, state.db, logs) is kept. 0700/0600 where the filesystem has modes (exFAT has none).
+seed_hermes_home() {
+  local hh=$1 prof="$bundle/profiles/rescue-hermes" cfg="$bundle/config/hermes-rescue.config.yaml" d name f
+  [[ -f $cfg && -f $prof/SOUL.md ]] || return 1
+  mkdir -p -- "$hh" "$hh/skills" "$hh/xdg/cache" "$hh/xdg/data" "$hh/xdg/state" "$hh/xdg/config" || return 1
+  chmod 700 -- "$hh" "$hh/xdg" 2>/dev/null || true
+  for f in SOUL.md AGENTS.md; do
+    [[ -f $prof/$f ]] || continue
+    cp -f -- "$prof/$f" "$hh/$f" || return 1
+    chmod 600 -- "$hh/$f" 2>/dev/null || true
+  done
+  for d in "$prof"/skills/*/; do
+    [[ -f $d/SKILL.md ]] || continue
+    name=$(basename -- "$d")
+    mkdir -p -- "$hh/skills/$name" && cp -f -R -- "$d". "$hh/skills/$name/" || return 1
+  done
+  cp -f -- "$cfg" "$hh/config.yaml" || return 1
+  chmod 600 -- "$hh/config.yaml" 2>/dev/null || true
+}
+
+# Open the portable Hermes on the reports of the USB. Never fatal. Returns 0 when Hermes was started
+# (whatever its own exit code), 1 when it was not (reason in hermes_skip: key | other).
+hermes_skip=other
+start_hermes() {
+  local plat py hh kickoff hrc=0
+  hermes_skip=other
+  ((!no_hermes && !evidence_only && !dry_run)) || return 1
+  if ((!interactive_tty)); then
+    printf 'Hermes tidak dibuka: tidak ada terminal interaktif / Hermes not opened: no interactive terminal.\n'
+    return 1
+  fi
+  case "$(uname -m)" in
+    x86_64 | amd64) plat=linux-x86_64 ;;
+    *) printf 'Catatan / note: runtime Hermes untuk arsitektur ini tidak ada di USB / the Hermes runtime for this architecture is not on the USB (%s). See docs/hermes-portable.md.\n' "$(uname -m)"; return 1 ;;
+  esac
+  py="$bundle/hermes-portable/$plat/python/bin/python3"
+  kickoff="$bundle/profiles/rescue-hermes/kickoff.md"
+  if [[ ! -x $py || ! -f $kickoff ]]; then
+    printf 'Catatan / note: runtime Hermes portabel belum ada di USB. Siapkan dengan: prepare-ventoy-usb.sh --hermes-portable (docs/hermes-portable.md).\n'
+    printf '                the portable Hermes runtime is not on the USB. Prepare it with: prepare-ventoy-usb.sh --hermes-portable (docs/hermes-portable.md).\n'
+    return 1
+  fi
+  hh="$bundle/hermes-home"
+  if ! seed_hermes_home "$hh"; then
+    printf 'PERINGATAN / WARNING: hermes-home di USB tidak bisa disiapkan; Hermes tidak dibuka / hermes-home on the USB could not be prepared; Hermes not opened.\n' >&2
+    return 1
+  fi
+  printf '\nHermes dibuka dan langsung mengerjakan rekomendasi. Keluar: Ctrl+D atau /exit.\n'
+  printf 'Hermes is opening and will work on the recommendations right away. Exit: Ctrl+D or /exit.\n'
+  # Subshell: the key and the isolation variables exist for the Hermes process only. The key comes from
+  # the environment or from rescue.env parsed as DATA (never sourced as code, never on a command line).
+  (
+    if [[ -f $bundle/scripts/lib/rescue-env.sh ]]; then
+      # shellcheck source=../scripts/lib/rescue-env.sh
+      source "$bundle/scripts/lib/rescue-env.sh"
+      rescue_load_env "$bundle/config/rescue.env" || true
+    elif [[ -z ${OPENCODE_GO_API_KEY:-} && -f $bundle/scripts/opencode-go-analyze.py ]]; then
+      OPENCODE_GO_API_KEY=$(python3 - "$bundle" <<'PYKEY' 2>/dev/null || true
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location('rescue_analyzer', os.path.join(sys.argv[1], 'scripts', 'opencode-go-analyze.py'))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.find_api_key([os.path.join(sys.argv[1], 'config', 'rescue.env')]) or '')
+PYKEY
+      )
+    fi
+    if [[ -z ${OPENCODE_GO_API_KEY:-} ]]; then
+      exit 211   # private marker for "no key" (Hermes' own exit codes are only logged)
+    fi
+    export OPENCODE_GO_API_KEY
+    unset RESCUE_GITHUB_ISSUES_TOKEN
+    export HERMES_HOME="$hh"
+    export XDG_CACHE_HOME="$hh/xdg/cache" XDG_DATA_HOME="$hh/xdg/data" XDG_STATE_HOME="$hh/xdg/state" XDG_CONFIG_HOME="$hh/xdg/config"
+    export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 TMPDIR="$reports"
+    cd -- "$reports" || exit 5
+    # The real terminal (fd 3), not the log tee: an interactive session must not be piped through it.
+    "$py" -m hermes_cli.main chat --cli --provider custom --model mimo-v2.6-flash \
+      -s rescue-autorun --query-file "$kickoff" >&3 2>&3
+  ) || hrc=$?
+  if ((hrc == 211)); then
+    hermes_skip=key
+    printf 'ID: Hermes tidak dibuka: OPENCODE_GO_API_KEY tidak ditemukan di rescue-omes/config/rescue.env.\nEN: Hermes not opened: OPENCODE_GO_API_KEY was not found in rescue-omes/config/rescue.env.\n'
+    return 1
+  fi
+  printf 'Hermes selesai (kode %d) / Hermes finished (exit code %d); the launcher exit code is unchanged.\n' "$hrc" "$hrc"
+  return 0
+}
 
 # python3-jsonschema is checked once. Without it schema validation, the AI analysis and the catalog
 # repairs cannot run; this launcher never installs anything on the host, so it says so and stops there.
@@ -162,8 +277,21 @@ if [[ ${RESCUE_TEST_BASE_URL:-} == http://127.0.0.1:* ]]; then skip_network=1; f
 
 printf 'Rescue host launcher (Linux) - read-only checks; output goes to the USB only.\n'
 
+if ((hermes_only)); then
+  # No scan, no analysis, no repairs: open Hermes on the reports that already exist on the USB.
+  report_ready=0
+  if [[ ! -s $reports/latest-evidence.json || ! -s $reports/index.md ]]; then
+    printf 'ID: belum ada laporan di USB; jalankan launcher tanpa --hermes-only dulu.\nEN: there are no reports on the USB yet; run the launcher without --hermes-only first.\n' >&2
+    finish 5
+  fi
+  start_hermes && finish 0
+  if [[ $hermes_skip == key ]]; then finish 3; fi
+  finish 6
+fi
+
 # Collector: allowlisted read-only commands; only closed-set statuses, bounded numbers.
 # collect_evidence OUTPUT_FILE RUN_ID (also used for the post-repair re-scan, with RUN_ID-after).
+# shellcheck disable=SC2317  # also called indirectly through rescue_progress_run
 collect_evidence() {
 python3 - "$1" "$skip_network" "$reports" "$bundle" "$scope" "$packages" "$repair_policy" "$2" <<'PY'
 import hashlib, json, os, platform, re, shutil, socket, subprocess, sys, tempfile
@@ -498,8 +626,15 @@ except BaseException:
     raise
 PY
 }
+# Realistic budget for the progress bar: the malware scan alone is 780 s (3300 s with --malware-full-disk).
+collect_budget=420
+if [[ $scope == all || $scope == *malware* ]]; then
+  collect_budget=1100
+  ((!malware_full)) || collect_budget=3600
+fi
 rc=0
-collect_evidence "$evidence" "$run_id" || rc=$?
+rescue_progress_step 1 8 'Kumpulkan evidence / collect evidence'
+rescue_progress_run 'collect evidence' "$collect_budget" -- collect_evidence "$evidence" "$run_id" || rc=$?
 if ((rc == 64)); then usage; fi
 if ((rc != 0)); then
   printf 'ERROR: evidence gagal dibuat / evidence could not be created (exit %d).\n' "$rc" >&2
@@ -509,6 +644,7 @@ fi
 printf 'Evidence tersimpan / saved: %s\n' "$evidence"
 
 validator="$bundle/scripts/validate-evidence.py"
+rescue_progress_step 2 8 'Validasi evidence / validate evidence'
 if ((!have_jsonschema)); then
   printf '\nID: python3-jsonschema tidak ada di komputer ini. Validasi schema, analisis AI, dan perbaikan katalog membutuhkannya.\n'
   printf '    Launcher ini TIDAK memasang apa pun di komputer ini. Evidence tetap dikumpulkan (hanya pemeriksaan struktur internal) dan tersimpan di USB:\n    %s\n' "$evidence"
@@ -527,6 +663,44 @@ else
 fi
 run_evidence=$evidence
 run_outcome=completed
+# The newest evidence under a fixed name: the Hermes skill rescue-autorun reads it (a copy, on the USB).
+if cp -f -- "$evidence" "$reports/latest-evidence.json" 2>/dev/null; then
+  chmod 600 -- "$reports/latest-evidence.json" 2>/dev/null || true
+else
+  printf 'PERINGATAN / WARNING: latest-evidence.json could not be written to the USB.\n' >&2
+fi
+
+# True when at least one action of THIS run reached stage execute with outcome ok (journal lines are
+# parsed as JSON, never grepped). A failed or unavailable action does not justify a second scan.
+journal_has_ok_execute() {
+  python3 - "$1" "$2" <<'PYJ'
+import json, sys
+try:
+    run_id = json.load(open(sys.argv[1], encoding='utf-8'))['run_id']
+    lines = open(sys.argv[2], encoding='utf-8').read().splitlines()
+except Exception:
+    raise SystemExit(1)
+for line in lines:
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(rec, dict) and rec.get('run_id') == run_id and rec.get('stage') == 'execute' and rec.get('outcome') == 'ok':
+        raise SystemExit(0)
+raise SystemExit(1)
+PYJ
+}
+
+# Typed read-only follow-up for the flagged checks (docs/hermes-learning-loop.md); never fatal.
+run_followup() {
+  local fu="$bundle/scripts/rescue-followup.py"
+  ((!evidence_only && !dry_run)) || return 0
+  rescue_progress_step 6 8 'Tindak lanjut read-only / read-only follow-up'
+  [[ -f $fu ]] || return 0
+  rescue_progress_run 'follow-up' 120 -- python3 "$fu" --evidence "$evidence" --reports-dir "$reports" --mode linux-host ||
+    printf 'PERINGATAN / WARNING: the follow-up did not finish (exit %d); the run continues.\n' "$?" >&2
+  return 0
+}
 
 # Catalog repairs (typed actions only; see docs/repair-framework.md). The journal and every
 # result stay on the USB. --list only plans; it never executes or journals.
@@ -539,6 +713,7 @@ run_repair() {
   [[ ! -s $analysis ]] || rargs+=(--analysis "$analysis")
   [[ ${1:-} != list ]] || rargs+=(--list)
   printf '\n'
+  [[ ${1:-} == list ]] || rescue_progress_step 4 8 'Perbaikan katalog / catalog repairs'
   repair_rc=0
   # The engine decides "interactive" from stdin AND stdout being a terminal: with a terminal its stdout
   # bypasses the log tee (its journal is the record); its stderr (diagnostics) is always logged.
@@ -551,15 +726,17 @@ run_repair() {
     3) run_outcome=journal-unusable ;;
     *) ;;
   esac
-  # Before/after: when an action executed in this run, re-collect with the same scope for the report.
-  if [[ ${1:-} != list && -s $reports/repairs/journal.jsonl ]] &&
-    ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
-    grep -F -- "\"run_id\":\"$ev_run_id\"" "$reports/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
-    printf 'Mengumpulkan ulang setelah perbaikan (scope sama) / re-collecting after repairs (same scope)...\n'
-    if collect_evidence "$reports/linux-$stamp-evidence-after.json" "$run_id-after"; then
-      run_evidence_after="$reports/linux-$stamp-evidence-after.json"
+  # Before/after: re-collect (same scope) only when an action of THIS run executed successfully.
+  if [[ ${1:-} != list ]]; then
+    if [[ -s $reports/repairs/journal.jsonl ]] && journal_has_ok_execute "$evidence" "$reports/repairs/journal.jsonl"; then
+      rescue_progress_step 5 8 'Kumpulkan ulang setelah perbaikan / re-collect after repairs'
+      if rescue_progress_run 're-collect' "$collect_budget" -- collect_evidence "$reports/linux-$stamp-evidence-after.json" "$run_id-after"; then
+        run_evidence_after="$reports/linux-$stamp-evidence-after.json"
+      else
+        printf 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.\n' >&2
+      fi
     else
-      printf 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.\n' >&2
+      rescue_progress_step 5 8 'Kumpulkan ulang: dilewati, tidak ada perbaikan yang berhasil / re-collect skipped: no repair succeeded'
     fi
   fi
 }
@@ -587,10 +764,11 @@ if [[ ! -f $analyzer ]]; then
   finish 6
 fi
 
+rescue_progress_step 3 8 'Analisis AI / AI analysis'
 args=(python3 "$analyzer" --evidence "$evidence" --output "$analysis" --env-file "$bundle/config/rescue.env")
 if ((dry_run)); then args+=(--dry-run); fi
 set +e
-"${args[@]}"
+rescue_progress_run 'analisis AI' 90 -- "${args[@]}"
 rc=$?
 set -e
 case $rc in
@@ -600,7 +778,10 @@ case $rc in
   5) run_outcome=provider-rejected ;;
   *) run_outcome='analysis-failed' ;;
 esac
-if ((dry_run)); then run_repair list; else run_repair; fi
+if ((dry_run)); then run_repair list; else run_repair; run_followup; fi
+# Hermes continues the session only when it can work: not without a key, not when the provider is unreachable,
+# not with an unusable repair journal (finish also checks the terminal, the runtime and --no-hermes).
+if ((!dry_run && rc != 3 && rc != 4 && repair_rc != 3)); then hermes_ready=1; fi
 
 # The analyzer failed first: its exit code stands (a repair-engine failure is only recorded in the
 # report), except that an unusable repair journal outranks it, as in the macOS launcher.

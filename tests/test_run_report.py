@@ -1191,7 +1191,7 @@ class LinuxHostReportTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(HL.bundle_files(self.bundle), before)
         names = sorted(p.name for p in self.reports.iterdir())
-        self.assertEqual(len(names), 4, names)  # evidence, launcher log, run folder, index.md
+        self.assertEqual(len(names), 5, names)  # evidence, latest-evidence.json, launcher log, run folder, index.md
         self.assertIn('index.md', names)
         self.assertEqual(len([n for n in names if n.startswith('launcher-linux-') and n.endswith('.log')]), 1, names)
         doc, md = load_report(self.reports)
