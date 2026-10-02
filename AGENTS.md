@@ -120,7 +120,7 @@ It requires an operator-provided `OPENCODE_GO_API_KEY` and incurs provider usage
 
 ## Versioning and changelog
 
-- The version is SemVer in the `VERSION` file (currently `0.6.0`).
+- The version is SemVer in the `VERSION` file (currently `0.7.0`).
 - `CHANGELOG.md` follows Keep a Changelog. This repository has no Node/changesets tooling, so `CHANGELOG.md` is the changeset record: every behavior-changing commit adds an entry under `[Unreleased]`, and a release moves those entries under a dated version heading together with the `VERSION` bump.
 - Reference issues as `ahliweb/linux-mint-xfce-rescue-ai#N`.
 
