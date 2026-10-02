@@ -11,6 +11,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tarfile
@@ -398,6 +399,40 @@ class ArchiveRoundTripTests(unittest.TestCase):
             junk = pathlib.Path(td) / 'whatever.tar.gz'
             junk.write_bytes(b'not an archive')
             self.assertTrue(hp.inspect_archive(str(junk))[1])
+
+
+class CompileAllExclusionTests(unittest.TestCase):
+    def test_compileall_exclude_regex_matches_tcl_tk_data_paths(self):
+        """Verify that Tcl/Tk data directories are excluded from byte-compilation."""
+        regex_pattern = hp._compileall_exclude_regex()
+        regex = re.compile(regex_pattern)
+
+        # Paths that SHOULD be excluded (Tcl/Tk data directories)
+        excluded_paths = [
+            'python/tcl/tix8.4.3/pref/WmDefault.py',
+            'python/tcl8.6.11/library/init.tcl',
+            'python/tk/button.tcl',
+            'python/lib/tcl/x.py',
+            'python\\tcl\\8.6\\init.tcl',  # Windows path
+            'python\\tcl8.6.11\\library\\test.py',
+            'python/lib/python3.11/tcl8.6/x.py',
+        ]
+        for path in excluded_paths:
+            with self.subTest(path=path):
+                self.assertTrue(regex.match(path), f"Pattern should exclude {path}")
+
+        # Paths that should NOT be excluded (normal Python files)
+        included_paths = [
+            'python/Lib/site-packages/x.py',
+            'python/lib/python3.11/site-packages/module.py',
+            'python/bin/python3',
+            'python/hermes-agent/hermes_cli/main.py',
+            'python/Lib/collections/__init__.py',
+            'python/lib/python3.11/asyncio/tasks.py',
+        ]
+        for path in included_paths:
+            with self.subTest(path=path):
+                self.assertFalse(regex.match(path), f"Pattern should include {path}")
 
 
 class CliTests(unittest.TestCase):

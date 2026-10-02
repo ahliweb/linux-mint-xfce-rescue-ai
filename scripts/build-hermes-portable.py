@@ -705,11 +705,23 @@ def neutralize_paths(python_dir, install_path):
     return changed
 
 
+def _compileall_exclude_regex():
+    """Return a regex pattern that excludes Tcl/Tk data directories from compilation.
+
+    Tcl/Tk data (WmDefault.py, etc.) in the standalone Python distribution have
+    mixed tabs/spaces and cause TabError. This pattern excludes paths containing
+    /tcl/ or /tk/ directory segments with optional version numbers.
+    """
+    return r'.*[\\/](?:tcl|tk)(?:\d+(?:\.\d+)*)?[\\/].*'
+
+
 def compile_all(py, python_dir, env):
     # unchecked-hash: no mtime comparison (exFAT timestamps differ) and no source
     # read at import time. -s/-p replace the build-machine prefix in co_filename.
+    # -x: exclude Tcl/Tk data directories (mixed tabs/spaces cause TabError on Windows).
     run([py, '-m', 'compileall', '-q', '-j', '0', '-f', '--invalidation-mode', 'unchecked-hash',
-         '-s', python_dir, '-p', 'hermes-portable/python', python_dir], env)
+         '-s', python_dir, '-p', 'hermes-portable/python', '-x', _compileall_exclude_regex(),
+         python_dir], env)
 
 
 def smoke(platform, plat_dir):
