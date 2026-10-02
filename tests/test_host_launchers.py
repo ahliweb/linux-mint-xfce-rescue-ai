@@ -16,7 +16,9 @@ import hashlib
 import http.server
 import json
 import os
+import pty
 import re
+import select
 import shutil
 import socket
 import stat
@@ -166,7 +168,9 @@ class LinuxLauncherTests(unittest.TestCase):
         # the evidence, the launcher log, and the run report (reports/run-<utc>/ and index.md, docs/run-report.md): all on the USB, nothing else
         names = sorted(p.name for p in (self.bundle / 'reports').iterdir())
         self.assertEqual([n for n in names if n != 'index.md' and not n.startswith('run-')],
-                         sorted([evidence.name, self.launcher_log().name]))
+                         sorted([evidence.name, self.launcher_log().name, 'latest-evidence.json']))
+        self.assertEqual((self.bundle / 'reports' / 'latest-evidence.json').read_text(encoding='utf-8'),
+                         evidence.read_text(encoding='utf-8'))
         self.assertEqual(len([n for n in names if n.startswith('run-')]), 1, names)
         self.assertIn('index.md', names)
         self.assertEqual(bundle_files(self.bundle), before)
@@ -257,9 +261,9 @@ class LinuxLauncherTests(unittest.TestCase):
         self.assertNotIn(DUMMY_KEY, proc.stdout + proc.stderr)
         self.assertNotIn(DUMMY_KEY, one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
 
-    def _failing_catalog(self):
+    def _failing_catalog(self, exit_code=3):
         """Only a fixture catalog (auto-safe must never reach real actions on the test machine) whose action
-        always fails. Returns the fake program directory for RESCUE_REPAIR_TEST_PATH."""
+        exits with exit_code (3: fails, 0: succeeds). Returns the fake program directory for RESCUE_REPAIR_TEST_PATH."""
         catalog = self.bundle / 'rescue-ai' / 'v1' / 'catalog'
         for f in catalog.glob('*.json'):
             f.unlink()
@@ -271,7 +275,7 @@ class LinuxLauncherTests(unittest.TestCase):
             'rollback': {'kind': 'none'}, 'backup': {'required': False}, 'doc': 'docs/hardware.md'}]}))
         fakebin = self.tmp / 'fakebin'
         fakebin.mkdir()
-        (fakebin / 'rescue-test-failer').write_text('#!/bin/sh\nexit 3\n')
+        (fakebin / 'rescue-test-failer').write_text('#!/bin/sh\nexit %d\n' % exit_code)
         (fakebin / 'rescue-test-failer').chmod(0o755)
         return fakebin
 
@@ -285,6 +289,9 @@ class LinuxLauncherTests(unittest.TestCase):
         journal = self.bundle / 'reports' / 'repairs' / 'journal.jsonl'
         stages = [(r['stage'], r['outcome']) for r in map(json.loads, journal.read_text().splitlines())]
         self.assertIn(('execute', 'fail'), stages)
+        # a failed action no longer triggers the (5 minute) re-collect
+        self.assertEqual(self.reports('linux-*-evidence-after.json'), [])
+        self.assertIn('re-collect skipped', proc.stdout)
 
     @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
     def test_http_error_exit_4(self):
@@ -376,11 +383,11 @@ class LinuxLauncherTests(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
     def test_the_after_evidence_derives_its_run_id_from_the_same_base(self):
-        fakebin = self._failing_catalog()
+        fakebin = self._failing_catalog(exit_code=0)   # the action succeeds: this is what justifies the re-collect
         base = self._serve(200)
         proc = self.run_launcher('--repair-policy', 'auto-safe', env=clean_env(
             RESCUE_TEST_BASE_URL=base, OPENCODE_GO_API_KEY=DUMMY_KEY, RESCUE_REPAIR_TEST_PATH=str(fakebin)))
-        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         before = json.loads(one(self.reports('linux-*-evidence.json'), self).read_text(encoding='utf-8'))
         after_path = one(self.reports('linux-*-evidence-after.json'), self)
         after = json.loads(after_path.read_text(encoding='utf-8'))
@@ -511,6 +518,250 @@ class LinuxLauncherTests(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 # Key parser parity: bash reference (scripts/lib/rescue-env.sh) vs the other implementations
 # --------------------------------------------------------------------------------------
+FAKE_HERMES = r'''#!/usr/bin/env python3
+import glob, json, os, sys
+bundle = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+reports = os.path.join(bundle, 'reports')
+key = os.environ.get('OPENCODE_GO_API_KEY')
+rec = {
+    'argv': sys.argv[1:], 'cwd': os.getcwd(),
+    'env': {n: os.environ.get(n) for n in ('HERMES_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
+                                           'XDG_CONFIG_HOME', 'TMPDIR', 'PYTHONDONTWRITEBYTECODE', 'PYTHONNOUSERSITE',
+                                           'PYTHONSAFEPATH', 'HOME')},
+    'key_matches': key == os.environ.get('FAKE_EXPECTED_KEY'),
+    'github_token_present': 'RESCUE_GITHUB_ISSUES_TOKEN' in os.environ,
+    'key_in_argv': any((os.environ.get('FAKE_EXPECTED_KEY') or '\0') in a for a in sys.argv),
+    'stdin_tty': os.isatty(0), 'stdout_tty': os.isatty(1),
+    'report_before': bool(glob.glob(os.path.join(reports, 'run-*', 'report.md'))) and os.path.isfile(os.path.join(reports, 'index.md')),
+    'latest_evidence': os.path.isfile(os.path.join(reports, 'latest-evidence.json')),
+    'followup': bool(glob.glob(os.path.join(reports, 'followup-*.json'))),
+    'seeded': sorted(os.listdir(os.environ['HERMES_HOME'])),
+}
+with open(os.environ['FAKE_HERMES_OUT'], 'a') as f:
+    f.write(json.dumps(rec) + '\n')
+raise SystemExit(int(os.environ.get('FAKE_HERMES_EXIT', '0')))
+'''
+
+
+def run_in_pty(argv, env, cwd, timeout=240):
+    """Run argv with a real pseudo-terminal as stdin/stdout/stderr. Returns (returncode, output text)."""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, close_fds=True)
+    os.close(slave)
+    chunks = []
+    deadline = time.time() + timeout
+    while True:
+        if time.time() > deadline:
+            proc.kill()
+            break
+        ready, _, _ = select.select([master], [], [], 0.5)
+        if ready:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                data = b''
+            if not data:
+                break
+            chunks.append(data)
+        elif proc.poll() is not None:
+            break
+    os.close(master)
+    proc.wait(timeout=30)
+    return proc.returncode, b''.join(chunks).decode('utf-8', 'replace')
+
+
+@unittest.skipUnless(HAVE_JSONSCHEMA, 'the real analyzer needs python3-jsonschema')
+class LinuxHermesTests(unittest.TestCase):
+    """The Linux host launcher opens the portable Hermes (ahliweb/linux-mint-xfce-rescue-ai#71) with a fake runtime."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='host-hermes-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.usb, self.bundle = make_usb(self.tmp)
+        self.script = self.bundle / 'host' / 'rescue-linux.sh'
+        (self.bundle / 'config').mkdir()
+        shutil.copy2(REPO / 'config' / 'hermes-rescue.config.yaml', self.bundle / 'config' / 'hermes-rescue.config.yaml')
+        self.out = self.tmp / 'hermes-record.jsonl'
+        self.home = self.tmp / 'home'
+        self.home.mkdir()
+        _FakeApi.status = 200
+        _FakeApi.seen = []
+        server = http.server.HTTPServer(('127.0.0.1', 0), _FakeApi)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base = 'http://127.0.0.1:%d' % server.server_address[1]
+
+    def add_runtime(self):
+        py = self.bundle / 'hermes-portable' / 'linux-x86_64' / 'python' / 'bin' / 'python3'
+        py.parent.mkdir(parents=True)
+        py.write_text(FAKE_HERMES)
+        py.chmod(0o755)
+
+    def env(self, **extra):
+        values = dict(RESCUE_TEST_BASE_URL=self.base, OPENCODE_GO_API_KEY=DUMMY_KEY, FAKE_EXPECTED_KEY=DUMMY_KEY,
+                      FAKE_HERMES_OUT=str(self.out), HOME=str(self.home), RESCUE_PROGRESS='0',
+                      RESCUE_GITHUB_ISSUES_TOKEN='dummy-gh-token-value')
+        values.update(extra)
+        return clean_env(**values)
+
+    def records(self):
+        return [json.loads(line) for line in self.out.read_text().splitlines()] if self.out.exists() else []
+
+    # These tests are about Hermes, not repairs or detection: detect-only so no repair prompt waits on the
+    # pseudo-terminal (a CI runner with a failed unit triggers os-linux.restart-failed-units), and a narrow scope so
+    # the real host collection stays short on slow runners (package inventory, large journals).
+    FAST = ('--repair-policy', 'detect-only', '--scope', 'hardware.cpu')
+
+    def pty_run(self, *args, **extra):
+        return run_in_pty([str(self.script), *self.FAST, *args], self.env(**extra), self.tmp, timeout=480)
+
+    def test_hermes_starts_on_a_terminal_with_the_fixed_argv_cwd_and_environment(self):
+        self.add_runtime()
+        rc, output = self.pty_run()
+        self.assertEqual(rc, 0, output)
+        (rec,) = self.records()
+        reports = self.bundle / 'reports'
+        hh = self.bundle / 'hermes-home'
+        self.assertEqual(rec['argv'], ['-m', 'hermes_cli.main', 'chat', '--cli', '--provider', 'custom', '--model',
+                                       'mimo-v2.6-flash', '-s', 'rescue-autorun', '--query-file',
+                                       str(self.bundle / 'profiles' / 'rescue-hermes' / 'kickoff.md')])
+        self.assertEqual(os.path.realpath(rec['cwd']), os.path.realpath(reports))
+        env = rec['env']
+        self.assertEqual(env['HERMES_HOME'], str(hh))
+        self.assertEqual(env['XDG_CACHE_HOME'], str(hh / 'xdg' / 'cache'))
+        self.assertEqual(env['XDG_DATA_HOME'], str(hh / 'xdg' / 'data'))
+        self.assertEqual(env['XDG_STATE_HOME'], str(hh / 'xdg' / 'state'))
+        self.assertEqual(env['XDG_CONFIG_HOME'], str(hh / 'xdg' / 'config'))
+        self.assertEqual(env['TMPDIR'], str(reports))
+        self.assertEqual((env['PYTHONDONTWRITEBYTECODE'], env['PYTHONNOUSERSITE'], env['PYTHONSAFEPATH']), ('1', '1', '1'))
+        self.assertEqual(env['HOME'], str(self.home))   # unchanged: Hermes writes nothing to HOME with HERMES_HOME set
+        self.assertTrue(rec['key_matches'])
+        self.assertFalse(rec['key_in_argv'])
+        self.assertFalse(rec['github_token_present'])
+        self.assertTrue(rec['stdin_tty'] and rec['stdout_tty'])   # the real terminal, not the log tee
+        self.assertEqual(os.listdir(self.home), [])
+        self.assertIn('Ctrl+D', output)
+        self.assertNotIn(DUMMY_KEY, output)
+        self.assertNotIn(DUMMY_KEY, next(reports.glob('launcher-linux-*.log')).read_text())
+
+    def test_report_follow_up_and_latest_evidence_exist_before_hermes_starts(self):
+        self.add_runtime()
+        rc, output = self.pty_run()
+        self.assertEqual(rc, 0, output)
+        (rec,) = self.records()
+        self.assertTrue(rec['report_before'])
+        self.assertTrue(rec['latest_evidence'])
+        self.assertTrue(rec['followup'])
+        evidence = next((self.bundle / 'reports').glob('linux-*-evidence.json'))
+        self.assertEqual((self.bundle / 'reports' / 'latest-evidence.json').read_text(), evidence.read_text())
+        for step in ('[1/8]', '[2/8]', '[3/8]', '[4/8]', '[5/8]', '[6/8]', '[7/8]'):
+            self.assertIn(step, output)
+
+    def test_hermes_home_is_seeded_and_refreshed_but_user_state_is_kept(self):
+        self.add_runtime()
+        hh = self.bundle / 'hermes-home'
+        (hh / 'memories').mkdir(parents=True)
+        (hh / 'memories' / 'keep.txt').write_text('mine')
+        (hh / 'SOUL.md').write_text('stale')
+        rc, output = self.pty_run()
+        self.assertEqual(rc, 0, output)
+        prof = REPO / 'profiles' / 'rescue-hermes'
+        self.assertEqual((hh / 'SOUL.md').read_text(), (prof / 'SOUL.md').read_text())
+        self.assertEqual((hh / 'AGENTS.md').read_text(), (prof / 'AGENTS.md').read_text())
+        self.assertEqual((hh / 'config.yaml').read_text(), (REPO / 'config' / 'hermes-rescue.config.yaml').read_text())
+        for skill in (prof / 'skills').iterdir():
+            self.assertEqual((hh / 'skills' / skill.name / 'SKILL.md').read_text(), (skill / 'SKILL.md').read_text())
+        self.assertEqual((hh / 'memories' / 'keep.txt').read_text(), 'mine')
+        self.assertEqual(stat.S_IMODE((hh / 'config.yaml').stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(hh.stat().st_mode), 0o700)
+
+    def test_the_key_comes_from_rescue_env_as_data_and_the_github_token_stays_out(self):
+        self.add_runtime()
+        env_file = self.bundle / 'config' / 'rescue.env'
+        env_file.write_text("OPENCODE_GO_API_KEY='%s'\nRESCUE_GITHUB_ISSUES_TOKEN=dummy-gh-from-file\n" % DUMMY_KEY)
+        env_file.chmod(0o600)
+        env = self.env()
+        del env['OPENCODE_GO_API_KEY'], env['RESCUE_GITHUB_ISSUES_TOKEN']
+        rc, output = run_in_pty([str(self.script), *self.FAST], env, self.tmp, timeout=480)
+        self.assertEqual(rc, 0, output)
+        (rec,) = self.records()
+        self.assertTrue(rec['key_matches'])
+        self.assertFalse(rec['key_in_argv'])
+        self.assertFalse(rec['github_token_present'])
+
+    def test_hermes_exit_code_is_logged_but_never_changes_the_launcher_exit_code(self):
+        self.add_runtime()
+        rc, output = self.pty_run(FAKE_HERMES_EXIT='7')
+        self.assertEqual(rc, 0, output)
+        self.assertIn('exit code 7', output)
+
+    def test_hermes_is_not_started_with_no_hermes_evidence_only_dry_run_or_without_a_terminal(self):
+        self.add_runtime()
+        for args in (('--no-hermes',), ('--evidence-only',), ('--dry-run',)):
+            rc, output = self.pty_run(*args)
+            self.assertEqual(rc, 0, (args, output))
+        self.assertEqual(self.records(), [])
+        proc = subprocess.run([str(self.script)], capture_output=True, text=True, env=self.env(), cwd=self.tmp, timeout=240)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn('no interactive terminal', proc.stdout)
+        self.assertEqual(self.records(), [])
+        self.assertFalse((self.bundle / 'hermes-home').exists())
+
+    def test_without_a_key_hermes_is_not_started_and_the_exit_code_is_3(self):
+        self.add_runtime()
+        env = self.env()
+        del env['OPENCODE_GO_API_KEY']
+        rc, output = run_in_pty([str(self.script), *self.FAST], env, self.tmp, timeout=480)
+        self.assertEqual(rc, 3, output)
+        self.assertEqual(self.records(), [])
+
+    def test_a_missing_runtime_gets_a_bilingual_note_and_the_exit_code_is_unchanged(self):
+        rc, output = self.pty_run()
+        self.assertEqual(rc, 0, output)
+        self.assertIn('--hermes-portable', output)
+        self.assertIn('docs/hermes-portable.md', output)
+        self.assertEqual(self.records(), [])
+
+    def test_another_architecture_gets_the_note_not_a_failure(self):
+        self.add_runtime()
+        shim = self.tmp / 'shim'
+        shim.mkdir()
+        (shim / 'uname').write_text('#!/bin/sh\necho aarch64\n')
+        (shim / 'uname').chmod(0o755)
+        rc, output = self.pty_run(PATH=str(shim) + os.pathsep + os.environ['PATH'])
+        self.assertEqual(rc, 0, output)
+        self.assertIn('architecture is not on the USB', output)
+        self.assertEqual(self.records(), [])
+
+    def test_hermes_only_opens_hermes_on_the_existing_reports_without_scanning(self):
+        self.add_runtime()
+        rc, output = self.pty_run('--hermes-only')
+        self.assertEqual(rc, 5, output)   # no reports yet
+        self.assertEqual(self.records(), [])
+        rc, output = self.pty_run('--no-hermes')
+        self.assertEqual(rc, 0, output)
+        before = sorted(p.name for p in (self.bundle / 'reports').iterdir() if not p.name.startswith('launcher-linux-'))
+        seen = len(_FakeApi.seen)
+        rc, output = self.pty_run('--hermes-only')
+        self.assertEqual(rc, 0, output)
+        (rec,) = self.records()
+        self.assertEqual(rec['argv'][2:4], ['chat', '--cli'])
+        self.assertEqual(len(_FakeApi.seen), seen)   # no analysis call
+        after = sorted(p.name for p in (self.bundle / 'reports').iterdir() if not p.name.startswith('launcher-linux-'))
+        self.assertEqual(after, before)
+        for args in (('--hermes-only', '--no-hermes'), ('--hermes-only', '--dry-run'), ('--hermes-only', '--evidence-only')):
+            rc, _ = self.pty_run(*args)
+            self.assertEqual(rc, 64, args)
+
+    def test_hermes_only_without_a_runtime_exits_6_with_the_note(self):
+        rc, _ = self.pty_run('--no-hermes')
+        self.assertEqual(rc, 0)
+        rc, output = self.pty_run('--hermes-only')
+        self.assertEqual(rc, 6, output)
+        self.assertIn('--hermes-portable', output)
+
+
 KEY_CASES = [
     "OPENCODE_GO_API_KEY=abc123\n",
     "export OPENCODE_GO_API_KEY=abc123\n",
@@ -1041,6 +1292,10 @@ class StaticTests(unittest.TestCase):
                         r'\bUSERNAME\b', r'\bCOMPUTERNAME\b', r'MachineName', r'\bUserName\b', r'\bwhoami\b'):
             self.assertIsNone(re.search(pattern, ps, re.M | re.I), pattern)
         sh = self.text('rescue-linux.sh')
+        # the only sourced files are the bundle's own libraries (progress.sh, rescue-env.sh: the key parser)
+        own = re.compile(r'^\s*source "\$bundle/scripts/lib/(progress|rescue-env)\.sh"$', re.M)
+        self.assertEqual(len(own.findall(sh)), 2)
+        sh = own.sub('', sh)
         for pattern in (r'\beval\b', r'\bsudo\b', r'\bsource\s', r'^\s*\.\s+\S', r'\bwhoami\b', r'\bpkexec\b'):
             self.assertIsNone(re.search(pattern, sh, re.M), pattern)
 
