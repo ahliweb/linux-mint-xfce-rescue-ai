@@ -697,7 +697,7 @@ run_followup() {
   ((!evidence_only && !dry_run)) || return 0
   rescue_progress_step 6 8 'Tindak lanjut read-only / read-only follow-up'
   [[ -f $fu ]] || return 0
-  rescue_progress_run 'follow-up' 120 -- python3 "$fu" --evidence "$evidence" --reports-dir "$reports" --mode linux-host ||
+  rescue_progress_run 'follow-up' 120 -- python3 "$fu" --evidence "${run_evidence_after:-$evidence}" --reports-dir "$reports" --mode linux-host ||
     printf 'PERINGATAN / WARNING: the follow-up did not finish (exit %d); the run continues.\n' "$?" >&2
   return 0
 }
@@ -732,6 +732,8 @@ run_repair() {
       rescue_progress_step 5 8 'Kumpulkan ulang setelah perbaikan / re-collect after repairs'
       if rescue_progress_run 're-collect' "$collect_budget" -- collect_evidence "$reports/linux-$stamp-evidence-after.json" "$run_id-after"; then
         run_evidence_after="$reports/linux-$stamp-evidence-after.json"
+        # Hermes and the follow-up work from the state AFTER the successful repair, not the one before it.
+        cp -f -- "$run_evidence_after" "$reports/latest-evidence.json" 2>/dev/null || true
       else
         printf 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.\n' >&2
       fi
