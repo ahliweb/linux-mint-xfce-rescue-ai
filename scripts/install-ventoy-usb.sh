@@ -4,12 +4,14 @@ set -Eeuo pipefail
 device=''
 ventoy_dir=''
 yes=0
+reinstall=0
 while (($#)); do
   case "$1" in
     --device) device=${2:?missing device}; shift 2 ;;
     --ventoy-dir) ventoy_dir=${2:?missing extracted Ventoy directory}; shift 2 ;;
     --yes) yes=1; shift ;;
-    *) printf 'usage: %s --device /dev/sdX --ventoy-dir DIR --yes\n' "$0" >&2; exit 2 ;;
+    --reinstall) reinstall=1; shift ;;
+    *) printf 'usage: %s --device /dev/sdX --ventoy-dir DIR [--reinstall] --yes\n' "$0" >&2; exit 2 ;;
   esac
 done
 [[ -n "$device" && -n "$ventoy_dir" ]] || { printf 'Device and extracted Ventoy directory are required.\n' >&2; exit 2; }
@@ -83,7 +85,12 @@ fi
 
 printf 'TARGET: %s | model=%s | size=%s | transport=%s\n' "$device" "$model" "$size_human" "$tran"
 printf 'This operation formats the target USB and destroys all data.\n'
-sudo bash "$ventoy_dir/Ventoy2Disk.sh" -i -s "$device"
+if [[ $reinstall -eq 1 ]]; then
+  printf 'PERINGATAN: --reinstall memaksa instal ulang Ventoy; SELURUH isi %s akan dihapus. / WARNING: --reinstall forces a Ventoy reinstall; ALL data on %s will be erased.\n' "$device" "$device"
+fi
+ventoy_flag='-i'
+[[ $reinstall -eq 1 ]] && ventoy_flag='-I'
+sudo bash "$ventoy_dir/Ventoy2Disk.sh" "$ventoy_flag" -s "$device"
 udevadm settle 2>/dev/null || true
 lsblk -o NAME,PATH,TYPE,RM,SIZE,MODEL,TRAN,MOUNTPOINT "$device"
 printf 'Ventoy installation completed. Mount the first partition before copying the ISO.\n'
