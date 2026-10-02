@@ -358,6 +358,106 @@ class TestLiveLauncherHelpers(HermesScriptTestCase):
         self.assertIn("rc=0", result.stdout)
 
 
+class TestLiveKickoff(HermesScriptTestCase):
+    """Launcher: follow-up as root, re-scan only after an ok execute, Hermes started with the kickoff (#73)."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.install().returncode, 0)
+        self.calls = self.tmp / "calls"
+        self.write_shim("hermes", 'printf "HERMES-PWD %s\\n" "$PWD"\nfor a in "$@"; do printf "HERMES-ARG %s\\n" "$a"; done\n')
+        self.write_shim("sudo", 'printf "SUDO %s\\n" "$*" >> "%s"\n[ "$1" = -n ] && shift\nexec "$@"\n' % ("%s", self.calls))
+        self.write_shim("ip", 'echo "default via 10.0.0.1 dev wlan0"\n')
+        fixture = self.src / "rescue-ai" / "v1" / "fixtures" / "valid-live-multi-os-1.1.json"
+        self.stubs = {
+            "check-hardware-readiness.py": (
+                "import json, os, sys\nout = sys.argv[sys.argv.index('--output') + 1]\n"
+                "json.dump({'checks': [{'check_id': 'persistence-active', 'status': os.environ.get('TEST_PERSIST', 'pass'), 'required': False}]}, open(out, 'w'))\n"),
+            "scan-target-os.py": (
+                "import shutil, sys\nopen(%r, 'a').write('SCAN\\n')\n"
+                "shutil.copy(%r, sys.argv[sys.argv.index('--output') + 1])\n" % (str(self.calls), str(fixture))),
+            "rescue-repair.py": (
+                "import json, os, sys\nargs = sys.argv[1:]\nrid = json.load(open(args[args.index('--evidence') + 1]))['run_id']\n"
+                "mode = os.environ.get('TEST_REPAIR', 'none')\n"
+                "state = args[args.index('--state-dir') + 1]\nos.makedirs(state + '/repairs', exist_ok=True)\n"
+                "rows = {'none': [], 'fail': [{'stage': 'execute', 'outcome': 'fail', 'run_id': rid}],\n"
+                "        'ok': [{'run_id': 'other-run', 'stage': 'execute', 'outcome': 'ok'},\n"
+                "               {'outcome': 'ok', 'run_id': rid, 'stage': 'execute'}]}[mode]\n"
+                "open(state + '/repairs/journal.jsonl', 'w').write(''.join(json.dumps(r) + '\\n' for r in rows))\n"),
+            "rescue-followup.py": (
+                "import sys\nopen(%r, 'a').write('FOLLOWUP ' + ' '.join(sys.argv[1:]) + '\\n')\n" % str(self.calls)),
+            "scan-printers.py": "import sys\nprint(0 if '--count' in sys.argv else '')\n",
+            "scan-android.py": "import sys\nprint(0 if '--count-android' in sys.argv else '')\n",
+        }
+        for name, body in self.stubs.items():
+            path = self.src / "scripts" / name
+            path.write_text("#!/usr/bin/env python3\n" + body)
+            os.chmod(path, 0o755)
+            self._open(path)
+            os.chmod(path, 0o755)
+
+    def launch(self, repair="none", persist="pass"):
+        return self.run_cmd(
+            [self.src / "scripts" / "launch-hermes-rescue.sh", "--state-dir", self.state],
+            env_extra={"TEST_REPAIR": repair, "TEST_PERSIST": persist, "RESCUE_PROGRESS": "0"},
+            path=f"{self.shims}:/usr/bin:/bin")
+
+    def calls_text(self):
+        return self.calls.read_text() if self.calls.exists() else ""
+
+    def test_hermes_starts_with_kickoff_in_reports_dir(self):
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        out = result.stdout
+        kickoff = self.src / "profiles" / "rescue-hermes" / "kickoff.md"
+        self.assertTrue(kickoff.is_file())
+        args = [line[len("HERMES-ARG "):] for line in out.splitlines() if line.startswith("HERMES-ARG ")]
+        self.assertEqual(args, ["chat", "--cli", "--provider", "custom", "--model", "mimo-v2.6-flash",
+                                "-s", "rescue-autorun", "--query-file", str(kickoff)])
+        self.assertIn("HERMES-PWD " + str(self.state / "reports"), out)
+        self.assertIn("Hermes terbuka dan langsung menjalankan rekomendasi", out)
+        self.assertIn("Hermes opens and starts on", out)
+        self.assertNotIn("persistensi TIDAK aktif", result.stderr)
+        self.assertIn("[10/10]", out)
+
+    def test_followup_runs_as_root_with_fixed_args_before_hermes(self):
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        followups = [line for line in self.calls_text().splitlines() if line.startswith("FOLLOWUP ")]
+        self.assertEqual(len(followups), 1, self.calls_text())
+        evidence = sorted((self.state / "reports").glob("target-evidence-*.json"))
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(followups[0], "FOLLOWUP --evidence %s --reports-dir %s --mode live-linux --state-dir %s" % (
+            evidence[0], self.state / "reports", self.state))
+        self.assertIn("SUDO -n python3 %s/scripts/rescue-followup.py" % self.src, self.calls_text())
+
+    def test_rescan_only_after_an_ok_execute_of_this_run(self):
+        for repair, scans in (("none", 1), ("fail", 1), ("ok", 2)):
+            with self.subTest(repair=repair):
+                self.calls.unlink(missing_ok=True)
+                result = self.launch(repair=repair)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.calls_text().count("SCAN"), scans, self.calls_text())
+                self.assertEqual(len(list((self.state / "reports").glob("target-evidence-*-after.json"))) > 0, scans == 2)
+                for old in (self.state / "reports").glob("target-evidence-*"):
+                    old.unlink()
+
+    def test_persistence_warning_is_printed_before_hermes(self):
+        result = self.launch(persist="warn")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("persistensi TIDAK aktif", result.stderr)
+        self.assertIn("persistence is NOT active", result.stderr)
+        self.assertIn("HERMES-ARG chat", result.stdout)
+
+    def test_old_bundle_without_kickoff_starts_hermes_plainly(self):
+        (self.src / "profiles" / "rescue-hermes" / "kickoff.md").unlink()
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = [line[len("HERMES-ARG "):] for line in result.stdout.splitlines() if line.startswith("HERMES-ARG ")]
+        self.assertEqual(args, ["--tui", "--provider", "custom", "--model", "mimo-v2.6-flash"])
+        self.assertNotIn("query-file", result.stdout)
+
+
 class TestLauncherValidation(HermesScriptTestCase):
     def test_launch_rejects_non_numeric_thresholds(self):
         launcher = self.src / "scripts" / "launch-hermes-rescue.sh"

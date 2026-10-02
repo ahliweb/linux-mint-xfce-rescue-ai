@@ -7,6 +7,7 @@
 #   rescue_offline_prompt            bilingual prompt loop; returns 0 once a route exists, 1 to continue offline
 #                                    (type L, EOF, or no answer within RESCUE_NET_PROMPT_TIMEOUT seconds)
 #   rescue_pause_for_enter           wait for Enter; never hangs on EOF
+#   rescue_journal_executed_ok J RID true when journal J has an execute/ok entry of run RID (python JSON parse)
 
 rescue_default_route() {
   local found dest rest
@@ -60,4 +61,27 @@ rescue_pause_for_enter() {
   printf 'Tekan Enter untuk menutup jendela ini. / Press Enter to close this window.\n' >&2
   # shellcheck disable=SC2034
   read -r ignored || true
+}
+
+# rescue_journal_executed_ok JOURNAL RUN_ID: true when the repair journal (JSON lines) holds at least one entry of
+# THIS run with stage "execute" and outcome "ok". Parsed with python, never grep on key order; a missing or
+# unreadable journal, or a malformed line, simply does not count.
+rescue_journal_executed_ok() {
+  [[ -s ${1:-} && -n ${2:-} ]] || return 1
+  python3 -c '
+import json, sys
+try:
+    handle = open(sys.argv[1], encoding="utf-8", errors="replace")
+except OSError:
+    sys.exit(1)
+with handle:
+    for line in handle:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("run_id") == sys.argv[2] and row.get("stage") == "execute" and row.get("outcome") == "ok":
+            sys.exit(0)
+sys.exit(1)
+' "$1" "$2" 2>/dev/null
 }
