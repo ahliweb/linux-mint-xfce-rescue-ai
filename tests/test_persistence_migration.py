@@ -340,5 +340,187 @@ class MigratePersistenceStateTest(unittest.TestCase):
         self.assertEqual(info(self.old, 'hermes/memories')[0] & 0o170000, 0o040000)
 
 
+NEW_ENV_TEXT = b"HERMES_HOME=/home/mint/.local/share/rescue-omes/hermes\nOPENCODE_GO_API_KEY=''\nRESCUE_STATE_DIR=/x\n"
+
+
+@unittest.skipUnless(HAVE_TOOLS, 'mke2fs, debugfs and e2fsck (e2fsprogs) are required')
+class MigrateKeyOnlyTest(unittest.TestCase):
+    """--key-only: a clean NEW image gets the provider key and nothing else from OLD."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = tempfile.mkdtemp(prefix='migkey-')
+        cls.old_tpl = os.path.join(cls.base, 'old.tpl')
+        cls.new_tpl = os.path.join(cls.base, 'new.tpl')
+        build_image(OLD_FILES, cls.old_tpl, symlink=True, owners=OLD_UID)
+        new_files = dict(NEW_FILES, **{'hermes/env': (NEW_ENV_TEXT, 0o600)})
+        build_image(new_files, cls.new_tpl, mtime_base=BASE_MTIME + 5000, owners={'hermes/env': (1001, 1002)})
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix='migcase-', dir=self.base)
+        self.old = os.path.join(self.work, 'old.dat')
+        self.new = os.path.join(self.work, 'new.dat')
+        self.tmpdir = os.path.join(self.work, 'tmp')
+        os.mkdir(self.tmpdir)
+        shutil.copyfile(self.old_tpl, self.old)
+        shutil.copyfile(self.new_tpl, self.new)
+
+    def put_env(self, image, content):
+        """Replace hermes/env in IMAGE with CONTENT (bytes) through debugfs."""
+        src = os.path.join(self.work, 'env.src')
+        Path(src).write_bytes(content)
+        migrate.DEBUGFS = TOOLS['debugfs']
+        for request in ('rm "%s/hermes/env"' % STATE, 'write "%s" "%s/hermes/env"' % (src, STATE)):
+            run_tool([TOOLS['debugfs'], '-w', '-R', request, image], check=request.startswith('write'))
+        os.unlink(src)
+
+    def key_only(self, *extra):
+        env = dict(os.environ, TMPDIR=self.tmpdir)
+        return subprocess.run([sys.executable, str(SCRIPT), '--from', self.old, '--to', self.new, '--key-only', *extra],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=300, check=False)
+
+    def test_key_is_carried_and_nothing_else(self):
+        proc = self.key_only()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("OPENCODE_GO_API_KEY='%s'\n" % FAKE_SECRET, dump(self.new, STATE + '/hermes/env').decode())
+        for rel in ('hermes/state.db', 'hermes/state.db-wal', 'hermes/memories/MEMORY.md',
+                    'hermes/sessions/s1.json', 'hermes/skills/field-learned/SKILL.md', 'hermes/logs/agent.log',
+                    'cases/c1/case.json', 'learning/l1.json', 'repairs/journal.jsonl', 'audit/a.log',
+                    'clamav/main.cvd'):
+            self.assertFalse(exists(self.new, rel), rel)
+        # NEW's own files are untouched
+        self.assertEqual(dump(self.new, STATE + '/reports/run-1/report.json'), b'{"new": true}\n')
+        self.assertEqual(dump(self.new, STATE + '/hermes/config.yaml'), b'model: new\nonboarded: false\n')
+        self.assertEqual(os.listdir(self.tmpdir), [], 'staging directory must be removed')
+
+    def test_other_lines_of_new_env_are_kept_and_the_key_line_replaced_in_place(self):
+        self.assertEqual(self.key_only().returncode, 0)
+        lines = dump(self.new, STATE + '/hermes/env').decode().splitlines()
+        self.assertEqual(lines, ['HERMES_HOME=/home/mint/.local/share/rescue-omes/hermes',
+                                 "OPENCODE_GO_API_KEY='%s'" % FAKE_SECRET, 'RESCUE_STATE_DIR=/x'])
+
+    def test_key_line_is_appended_when_new_has_none(self):
+        self.put_env(self.new, b'HERMES_HOME=/h')       # no trailing newline
+        self.assertEqual(self.key_only().returncode, 0)
+        self.assertEqual(dump(self.new, STATE + '/hermes/env').decode(),
+                         "HERMES_HOME=/h\nOPENCODE_GO_API_KEY='%s'\n" % FAKE_SECRET)
+
+    def test_owner_group_and_mode_are_kept_and_end_0600(self):
+        self.assertEqual(self.key_only().returncode, 0)
+        mode, uid, gid, _mtime = info(self.new, 'hermes/env')
+        self.assertEqual((mode, uid, gid), (0o100600, 1001, 1002))
+
+    def test_missing_new_env_is_created_with_the_owner_of_the_hermes_directory(self):
+        run_tool([TOOLS['debugfs'], '-w', '-R', 'rm "%s/hermes/env"' % STATE, self.new])
+        run_tool([TOOLS['debugfs'], '-w', '-R', 'sif "%s/hermes" uid 1003' % STATE, self.new])
+        run_tool([TOOLS['debugfs'], '-w', '-R', 'sif "%s/hermes" gid 1004' % STATE, self.new])
+        self.assertEqual(self.key_only().returncode, 0)
+        mode, uid, gid, _mtime = info(self.new, 'hermes/env')
+        self.assertEqual((mode, uid, gid), (0o100600, 1003, 1004))
+        self.assertEqual(dump(self.new, STATE + '/hermes/env').decode(), "OPENCODE_GO_API_KEY='%s'\n" % FAKE_SECRET)
+
+    def test_empty_or_missing_key_is_refused_and_changes_nothing(self):
+        cases = {'empty': b"OPENCODE_GO_API_KEY=''\n", 'absent': b'HERMES_HOME=/x\n', 'blank': b'',
+                 'comment': b"# OPENCODE_GO_API_KEY=abc\n"}
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                shutil.copyfile(self.old_tpl, self.old)
+                shutil.copyfile(self.new_tpl, self.new)
+                self.put_env(self.old, content)
+                before = sha(self.new)
+                proc = self.key_only()
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn('nothing to carry', proc.stderr)
+                self.assertEqual(sha(self.new), before)
+
+    def test_old_without_hermes_env_is_refused(self):
+        run_tool([TOOLS['debugfs'], '-w', '-R', 'rm "%s/hermes/env"' % STATE, self.old])
+        before = sha(self.new)
+        proc = self.key_only()
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(sha(self.new), before)
+
+    def test_unsafe_values_are_refused_without_printing_them(self):
+        bad = {'subshell': b'OPENCODE_GO_API_KEY=$(touch /tmp/pwn)\n',
+               'backtick': b'OPENCODE_GO_API_KEY="a`id`b"\n',
+               'dollar': b'OPENCODE_GO_API_KEY=ab$HOME\n',
+               'carriage-return': b"OPENCODE_GO_API_KEY='ab\rcd'\n",
+               'newline': b"OPENCODE_GO_API_KEY='ab\ncd'\n"}
+        for name, content in bad.items():
+            with self.subTest(case=name):
+                shutil.copyfile(self.old_tpl, self.old)
+                shutil.copyfile(self.new_tpl, self.new)
+                self.put_env(self.old, content)
+                before = sha(self.new)
+                proc = self.key_only()
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(sha(self.new), before)
+                self.assertNotIn('touch', proc.stdout + proc.stderr)
+
+    def test_allowlisted_quoting_forms_are_parsed_like_rescue_env(self):
+        for content, expect in (('export OPENCODE_GO_API_KEY="a\\$b" # c\n', 'a$b'),
+                                ("OPENCODE_GO_API_KEY='it'\\''s'\n", "it's"),
+                                ('OPENCODE_GO_API_KEY=plain-value\r\n', 'plain-value')):
+            with self.subTest(content=content):
+                self.assertEqual(migrate.extract_key(content), (expect, ''))
+
+    def test_the_key_is_never_printed(self):
+        for extra in ((), ('--dry-run',)):
+            proc = self.key_only(*extra)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn(FAKE_SECRET, proc.stdout + proc.stderr)
+            self.assertNotIn('OPENCODE_GO_API_KEY', proc.stdout + proc.stderr)
+
+    def test_the_key_is_never_on_a_subprocess_argv(self):
+        migrate.DEBUGFS = TOOLS['debugfs']
+        seen = []
+        real_run = migrate.subprocess.run
+
+        def spy(argv, *a, **kw):
+            seen.append(list(argv))
+            return real_run(argv, *a, **kw)
+
+        args = migrate.argparse.Namespace(old=self.old, new=self.new, dry_run=False, key_only=True)
+        with mock.patch.object(migrate.subprocess, 'run', side_effect=spy), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(migrate.key_only(args, TOOLS['e2fsck']), 0)
+        self.assertTrue(seen)
+        self.assertFalse([a for argv in seen for a in argv if FAKE_SECRET in a])
+
+    def test_dry_run_reports_and_changes_nothing(self):
+        before_new, before_old = sha(self.new), sha(self.old)
+        proc = self.key_only('--dry-run')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('Provider key present in old.dat: yes', proc.stdout)
+        self.assertIn('would replace the key line', proc.stdout)
+        self.assertEqual((sha(self.new), sha(self.old)), (before_new, before_old))
+        self.assertEqual(os.listdir(self.tmpdir), [])
+
+    def test_dry_run_without_key_says_no(self):
+        self.put_env(self.old, b"OPENCODE_GO_API_KEY=''\n")
+        proc = self.key_only('--dry-run')
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn('Provider key present in old.dat: no', proc.stdout)
+
+    def test_new_image_is_clean_and_old_is_unchanged(self):
+        before_old = sha(self.old)
+        proc = self.key_only()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('Key carried and verified', proc.stdout)
+        fsck = run_tool([TOOLS['e2fsck'], '-fn', self.new], check=False)
+        self.assertEqual(fsck.returncode, 0, fsck.stdout.decode('utf-8', 'replace')[-300:])
+        self.assertEqual(sha(self.old), before_old)
+
+    def test_repeat_run_is_idempotent(self):
+        self.assertEqual(self.key_only().returncode, 0)
+        first = dump(self.new, STATE + '/hermes/env')
+        self.assertEqual(self.key_only().returncode, 0)
+        self.assertEqual(dump(self.new, STATE + '/hermes/env'), first)
+
+
 if __name__ == '__main__':
     unittest.main()

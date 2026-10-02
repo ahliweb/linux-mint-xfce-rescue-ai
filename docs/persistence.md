@@ -250,6 +250,35 @@ sha256sum "$D" ~/rescue-backup/migrated.dat                      # sama
 - `old.dat` adalah satu-satunya jalan kembali; jangan hapus sebelum USB hasil upgrade diuji boot fisik dan Hermes memuat sessions lama.
 - Migrasi tidak membuktikan apa pun tentang boot: uji boot dengan persistence, autostart, dan retensi state setelah reboot tetap **Hardware-required**.
 
+### USB bersih dengan kunci saja
+
+Pakai `--key-only` bila operator ingin USB **bersih** (image CI baru tanpa memori, sessions, kasus, journal, atau skill hasil belajar lama) tetapi **dengan key provider**, supaya live session bisa menganalisis dan menjalankan Hermes. Di live session launcher membaca key hanya dari `<state-dir>/hermes/env` di dalam image persistence (bukan dari `config/rescue.env` di exFAT), sehingga image CI yang bebas kredensial tidak cukup. Status: **Implemented**, diuji di source level (`tests/test_persistence_migration.py`); boot fisik tetap **Hardware-required**.
+
+`migrate-persistence-state.py --key-only` hanya membaca `hermes/env` dari image lama dengan `debugfs` (read-only), mengambil `OPENCODE_GO_API_KEY` dengan aturan allowlist yang sama seperti `scripts/lib/rescue-env.sh` (hanya key itu; nilai dengan newline/CR/karakter kontrol, `$` atau backtick yang akan di-expand, atau tanda kutip yang tidak ditutup ditolak; key kosong atau tidak ada berarti tidak ada yang dibawa, pesan jelas, kode keluar `2`), lalu menulis `hermes/env` di image baru: file yang sudah ada dipertahankan persis dan hanya baris `OPENCODE_GO_API_KEY=` yang diganti (ditambahkan bila belum ada; `HERMES_HOME=` dan baris lain tidak berubah). Pemilik dan grup file di image baru dipertahankan (bila file belum ada: pemilik yang sama dengan direktori `hermes/`), mode berakhir `0600`. Tidak ada `state.db`, memories, sessions, skills, reports, cases, atau journal yang disalin. Key tidak pernah dicetak, tidak pernah ada di argv subprocess, dan hanya ada di staging `0700` yang dihapus di akhir; setelah penulisan `e2fsck -fn` harus bersih dan hanya file itu dibaca balik lalu SHA-256-nya dibandingkan (hash, bukan nilai).
+
+```bash
+# 1. Unduh dan verifikasi image CI sesuai "Paket GitHub" (oras pull, sha256sum -c, zstd -d --long=27).
+cp --sparse=always rescue-omes-casper-rw-0.7.0.dat ~/rescue-backup/clean.dat
+
+# 2. Dry run: apakah ada key di image lama (ya/tidak) dan apa yang akan berubah; tidak mengubah apa pun.
+python3 scripts/migrate-persistence-state.py --from ~/rescue-backup/old.dat --to ~/rescue-backup/clean.dat --key-only --dry-run
+
+# 3. Bawa key saja.
+python3 scripts/migrate-persistence-state.py --from ~/rescue-backup/old.dat --to ~/rescue-backup/clean.dat --key-only
+
+# 4. Siapkan USB (dari checkout bersih tag rilis); .env privat hanya berisi OPENCODE_GO_API_KEY.
+scripts/prepare-ventoy-usb.sh \
+  --ventoy-mount /mnt/ventoy \
+  --mint-iso /path/linuxmint-22.3-xfce-64bit.iso \
+  --sha256sums /path/sha256sum.txt --signature /path/sha256sum.txt.gpg \
+  --env-file ~/rescue-backup/rescue.env \
+  --persistence ~/rescue-backup/clean.dat --replace-persistence \
+  --hermes-portable /path/hermes-portable-linux-x86_64.tar.gz \
+  --hermes-portable /path/hermes-portable-windows-x86_64.zip
+```
+
+Ganti nama arsip `--hermes-portable` dengan arsip Linux dan Windows yang Anda pakai. **Peringatan:** `clean.dat` menjadi **credential-bearing** begitu key masuk. Jangan pernah mengunggahnya (bukan ke ghcr.io, GitHub Release, issue, atau chat), jangan commit, simpan `0600` di USB privat; `old.dat` tetap rollback. Image publik dari CI tetap bebas kredensial.
+
 ## Paket GitHub (tanpa kredensial)
 
 ```mermaid
