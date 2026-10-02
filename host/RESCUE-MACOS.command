@@ -1047,7 +1047,7 @@ function toAction(raw) {
   if (rb.kind === 'step' && rbStep === null) { problems.push(id + ' rollback step'); }
   var params = [];
   (raw.params || []).forEach(function (p) {
-    if (['enum', 'integer', 'bundle_config', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root'].indexOf(p.type) < 0 ||
+    if (['enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root'].indexOf(p.type) < 0 ||
         typeof p.name !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(p.name)) { problems.push(id + ' param'); return; }
     params.push({ name: p.name, type: p.type, values: has(p, 'values') ? p.values.map(String) : [],
       minimum: has(p, 'minimum') ? Number(p.minimum) : 0, maximum: has(p, 'maximum') ? Number(p.maximum) : 0,

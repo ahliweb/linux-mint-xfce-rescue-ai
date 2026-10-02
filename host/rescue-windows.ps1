@@ -852,7 +852,7 @@ function ConvertTo-CatalogAction {
     foreach ($p in @(Get-JsonProp $Raw 'params')) {
         if ($null -eq $p) { continue }
         $pt = [string]$p.type
-        if (@('enum', 'integer', 'bundle_config', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
+        if (@('enum', 'integer', 'block_device', 'target_root', 'package_name', 'service_name', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root') -cnotcontains $pt -or ([string]$p.name) -cnotmatch '^[a-z][a-z0-9_]{0,31}\z') {
             $Problems.Add("$id param"); continue
         }
         $entry = @{ name = [string]$p.name; type = $pt; values = @(); minimum = 0; maximum = 0; has_default = $false; default = $null }
@@ -1570,7 +1570,7 @@ function Write-RepairCard {
 
 function Test-RepairUnsupported {
     # Parameter types a host launcher cannot resolve (the Python engine does): such an action is never run here
-    # (same list as the $unsupported check of Invoke-RepairProposal; bundle_config exists only on linux-host).
+    # (same list as the $unsupported check of Invoke-RepairProposal).
     param($Action)
     $bad = @($Action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' -or $_.type -ceq 'fastboot_device' -or $_.type -ceq 'fastboot_slot' -or $_.type -ceq 'firmware_file' -or $_.type -ceq 'sha256' -or $_.type -ceq 'printer_ref' -or $_.type -ceq 'bundle_root' })
     return ($bad.Count -gt 0)

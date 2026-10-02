@@ -75,79 +75,31 @@ def catalog_errors(domain, act):
     return []
 
 
-def malware_action(**over):
-    base = action(action_id='mw.test-conf', scope='malware', platforms=['linux-host'],
-                  triggers=[{'check_id': 'malware-signatures', 'status': ['warn']}],
-                  params=[{'name': 'dbdir', 'type': 'state_dir', 'values': ['clamav']},
-                          {'name': 'conf', 'type': 'bundle_config', 'values': ['freshclam-user.conf']}],
-                  execute={'argv': ['freshclam', '--stdout', '--config-file={conf}', '--datadir={dbdir}']},
-                  verify={'argv': ['clamscan', '--version', '--database={dbdir}']})
-    base.update(over)
-    return base
-
-
 # ------------------------------------------------------------------------ catalog
 
 class CatalogTests(unittest.TestCase):
-    def test_the_shipped_actions(self):
+    def test_clamav_update_is_live_only_and_there_is_no_host_variant(self):
         root_action = CATALOG.get('mw.clamav-update-signatures')
-        user = CATALOG.get('mw.clamav-update-signatures-user')
         self.assertEqual(root_action['platforms'], ['live-linux'])
         self.assertTrue(root_action['requires_root'])
-        self.assertEqual(user['platforms'], ['linux-host'])
-        self.assertFalse(user['requires_root'])
-        self.assertEqual(user['risk'], 'safe')
-        self.assertEqual(user['triggers'], root_action['triggers'])
-        self.assertEqual(user['execute']['argv'],
-                         ['freshclam', '--stdout', '--config-file={freshclam_conf}', '--datadir={dbdir}'])
-        self.assertEqual(user['verify']['argv'], ['clamscan', '--version', '--database={dbdir}'])
-        self.assertEqual([(p['type'], p.get('values')) for p in user['params']],
-                         [('state_dir', ['clamav']), ('bundle_config', ['freshclam-user.conf'])])
-        self.assertNotIn('--user=root', user['execute']['argv'])
+        self.assertIsNone(CATALOG.get('mw.clamav-update-signatures-user'))
+        self.assertFalse((rc.ROOT / 'config' / 'freshclam-user.conf').exists())
+        # on a Linux host the stale-signatures trigger proposes nothing: a host never gets an update that cannot work
+        host_ev = json.loads(LIVE_12.read_text())
+        host_ev['source_platform'] = 'linux-host'
+        host_ev['checks'].append({'check_id': 'malware-signatures', 'status': 'warn', 'source': 'host-allowlist',
+                                  'observed_at': '2026-10-01T08:00:00Z'})
+        self.assertEqual([p for p in rc.triggered(CATALOG, host_ev, ('all',)) if p['action_id'].startswith('mw.clamav')], [])
+        live_ev = json.loads(LIVE_12.read_text())
+        live_ev['checks'].append({'check_id': 'malware-signatures', 'status': 'warn', 'source': 'collector-allowlist',
+                                  'observed_at': '2026-09-30T08:00:00Z'})
+        self.assertEqual([p['action_id'] for p in rc.triggered(CATALOG, live_ev, ('all',)) if p['action_id'].startswith('mw.clamav')],
+                         ['mw.clamav-update-signatures'])
 
-    def test_it_renders_only_the_bundle_internal_config(self):
-        user = CATALOG.get('mw.clamav-update-signatures-user')
-        eng = engine_mod.Engine.__new__(engine_mod.Engine)
-        eng.state_root = '/usb/rescue-omes/reports'
-        values = eng.engine_values(user, {})
-        argv = rc.render(user['execute']['argv'], values)
-        self.assertEqual(argv, ['freshclam', '--stdout', '--config-file=%s/config/freshclam-user.conf' % rc.ROOT,
-                                '--datadir=/usb/rescue-omes/reports/clamav'])
-        self.assertTrue((rc.ROOT / 'config' / 'freshclam-user.conf').is_file())
-
-    def test_the_shipped_config_is_fixed_and_minimal(self):
-        text = (rc.ROOT / 'config' / 'freshclam-user.conf').read_text()
-        keys = [ln.split()[0] for ln in text.splitlines() if ln.strip() and not ln.startswith('#')]
-        self.assertIn('DatabaseMirror', keys)
-        for forbidden in ('UpdateLogFile', 'DatabaseOwner', 'DatabaseDirectory', 'HTTPProxyServer', 'HTTPProxyPassword',
-                          'PrivateMirror', 'OnUpdateExecute', 'OnErrorExecute', 'OnOutdatedExecute', 'Include'):
-            self.assertNotIn(forbidden, keys)
-        self.assertEqual(set(keys), {'DatabaseMirror', 'ConnectTimeout', 'ReceiveTimeout', 'ScriptedUpdates'})
-
-    def test_bundle_config_rules(self):
-        self.assertEqual(catalog_errors('malware', malware_action()), [])
-        bad_file = malware_action(params=[{'name': 'dbdir', 'type': 'state_dir', 'values': ['clamav']},
-                                          {'name': 'conf', 'type': 'bundle_config', 'values': ['../../etc/passwd']}])
-        self.assertTrue(catalog_errors('malware', bad_file))
-        self.assertTrue(catalog_errors('malware', malware_action(params=[
-            {'name': 'dbdir', 'type': 'state_dir', 'values': ['clamav']},
-            {'name': 'conf', 'type': 'bundle_config'}])))
-        self.assertTrue(catalog_errors('malware', malware_action(params=[
-            {'name': 'dbdir', 'type': 'state_dir', 'values': ['clamav']},
-            {'name': 'conf', 'type': 'bundle_config', 'values': ['freshclam-user.conf'], 'default': 'x'}])))
-        # only as --config-file={name}
-        wrong = malware_action(execute={'argv': ['freshclam', '{conf}', '--datadir={dbdir}']})
-        self.assertTrue(any('bundle_config' in e for e in catalog_errors('malware', wrong)))
-        wrong = malware_action(execute={'argv': ['freshclam', '--log={conf}', '--datadir={dbdir}']})
-        self.assertTrue(any('bundle_config' in e for e in catalog_errors('malware', wrong)))
-        # not in another domain, not on a host launcher platform
-        self.assertTrue(catalog_errors('hardware', malware_action(action_id='hw.test-conf', scope='hardware.disk')))
-        self.assertTrue(catalog_errors('malware', malware_action(platforms=['linux-host', 'windows-host'])))
-
-    def test_bundle_config_is_never_operator_input(self):
-        param = {'name': 'conf', 'type': 'bundle_config', 'values': ['freshclam-user.conf']}
-        with self.assertRaises(ValueError):
-            rc.validate_param(param, '/etc/clamav/freshclam.conf')
+    def test_bundle_config_no_longer_exists(self):
+        self.assertTrue(catalog_errors('malware', action(action_id='mw.test-x', scope='malware', platforms=['linux-host'],
+                                                         params=[{'name': 'c', 'type': 'bundle_config', 'values': ['x']}],
+                                                         execute={'argv': ['freshclam', '--config-file={c}']})))
 
     def test_new_reasons_are_everywhere(self):
         journal = json.loads((ROOT / 'rescue-ai/v1/repair-journal.schema.json').read_text())
@@ -338,51 +290,22 @@ class NeedsRootTests(EngineBase):
             self.assertTrue(CATALOG.get(aid)['requires_root'])
 
 
-# ------------------------------------------------------- non-root ClamAV update (host)
-
-class UserClamavTests(EngineBase):
-    def setUp(self):
-        super().setUp()
-        self.tool('freshclam', 'echo "freshclam $*" >> "%s"\nexit 0\n' % self.log)
-        self.tool('clamscan', 'echo "clamscan $*" >> "%s"\necho "ClamAV 1.4.0"\nexit 0\n' % self.log)
-        self.sudo(usable=False)      # a desktop host: any sudo use would show here
-        self.evidence = self.host_evidence([('malware-signatures', 'warn')])
-        self.aid = 'mw.clamav-update-signatures-user'
-
-    def test_trigger_proposes_only_the_user_variant_on_a_host(self):
-        r = self.run_engine('--list', evidence=self.evidence)
-        self.assertIn(self.aid, r.stdout)
-        self.assertNotRegex(r.stdout, r'mw\.clamav-update-signatures\s')
-
-    def test_it_updates_the_usb_database_with_the_bundled_config_and_no_sudo(self):
-        r = self.run_engine('--approve', self.aid, evidence=self.evidence)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        db = str(self.reports / 'clamav')
-        self.assertEqual(self.calls(), [
-            'freshclam --stdout --config-file=%s/config/freshclam-user.conf --datadir=%s' % (rc.ROOT, db),
-            'clamscan --version --database=%s' % db])
-        self.assertEqual([s[:2] for s in self.stages(self.aid)],
-                         [('proposed', 'ok'), ('approval', 'ok'), ('execute', 'ok'), ('verify', 'ok')])
-        text = self.journal.read_text()
-        self.assertNotIn(str(self.usb), text)
-        self.assertNotIn('freshclam-user.conf', text)
-
-    def test_a_journal_outside_a_repairs_directory_is_refused_not_guessed(self):
+class StateDirActionTests(EngineBase):
+    def test_a_journal_outside_a_repairs_directory_refuses_a_state_dir_action(self):
+        self.logging_tool('rescue-test-fix')
+        self.logging_tool('rescue-test-check')
+        cat = self.tmp / 'catalog'
+        write_catalog(cat, 'malware', [action(
+            action_id='mw.test-state', scope='malware', params=[{'name': 'dbdir', 'type': 'state_dir', 'values': ['clamav']}],
+            execute={'argv': ['rescue-test-fix', '--db={dbdir}']}, verify={'argv': ['rescue-test-check']})])
         self.journal = self.tmp / 'elsewhere' / 'journal.jsonl'
-        r = self.run_engine('--approve', self.aid, evidence=self.evidence)
+        r = self.run_engine('--approve', 'mw.test-state', catalog=cat)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.calls(), [])
-        self.assertEqual(self.stages(self.aid)[-1], ('approval', 'unavailable', 'provider-unavailable'))
-
-    def test_the_live_variant_is_not_proposed_on_a_host_and_vice_versa(self):
-        host = rc.triggered(CATALOG, json.loads(self.evidence.read_text()), ('all',))
-        self.assertEqual([p['action_id'] for p in host if p['action_id'].startswith('mw.')], [self.aid])
-        live_ev = json.loads(LIVE_12.read_text())
-        live_ev['checks'].append({'check_id': 'malware-signatures', 'status': 'warn', 'source': 'collector-allowlist',
-                                  'observed_at': '2026-09-30T08:00:00Z'})
-        live = rc.triggered(CATALOG, live_ev, ('all',))
-        self.assertEqual([p['action_id'] for p in live if p['action_id'].startswith('mw.clamav')],
-                         ['mw.clamav-update-signatures'])
+        self.assertEqual(self.stages('mw.test-state')[-1], ('approval', 'unavailable', 'provider-unavailable'))
+        self.journal = self.reports / 'repairs' / 'journal.jsonl'
+        self.run_engine('--approve', 'mw.test-state', catalog=cat)
+        self.assertEqual(self.calls()[0], 'rescue-test-fix --db=%s' % (self.reports / 'clamav'))
 
 
 # --------------------------------------------------------------------- device picker
@@ -709,20 +632,6 @@ class ParityTests(unittest.TestCase):
         self.assertIn("reason = 'needs-root'", PS1)
         self.assertIn("""ex[reason]='"needs-root"'""", JXA)
         self.assertNotIn("reason = 'not-applicable' }", PS1.split('function Invoke-RepairProposal')[1].split('function ConvertTo-RepairParamMap')[0])
-
-    def test_native_engines_accept_the_bundle_config_type_but_never_run_it(self):
-        self.assertIn("@('enum', 'integer', 'bundle_config', ", PS1)
-        self.assertIn("['enum', 'integer', 'bundle_config', ", JXA)
-        types = set(json.loads((ROOT / 'rescue-ai/v1/repair-catalog.schema.json').read_text())
-                    ['$defs']['param']['properties']['type']['enum'])
-        self.assertIn('bundle_config', types)
-        self.assertEqual(set(re.findall(r"'([a-z0-9_]+)'", re.search(r"@\('enum', 'integer'[^)]*\) -cnotcontains \$pt", PS1).group(0))), types)
-        self.assertEqual(set(re.findall(r"'([a-z0-9_]+)'", re.search(r"\['enum', 'integer'[^\]]*\]\.indexOf\(p\.type\)", JXA).group(0))), types)
-        # the batch helpers use the same "a host cannot run this" list as the engines' own unsupported check
-        ps_list = re.search(r"\$unsupported = @\(\$action\.params \| Where-Object \{(.*?)\}\)", PS1).group(1)
-        self.assertIn(ps_list, PS1.split('function Test-RepairUnsupported')[1].split('function Test-RepairBatchable')[0])
-        zsh_list = '(block_device|target_root|android_device|fastboot_device|fastboot_slot|firmware_file|sha256|printer_ref|bundle_root)'
-        self.assertEqual(JXA.count(zsh_list), 2)
 
     def test_batch_decisions_are_journaled_by_every_engine(self):
         self.assertIn("'operator-approved-batch'", PS1)

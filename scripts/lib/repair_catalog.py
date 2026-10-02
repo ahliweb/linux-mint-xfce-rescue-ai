@@ -30,8 +30,6 @@ Printer actions (docs/printer.md) add two more engine-provided types, Python eng
 CUPS queue name of the printer named by the proposal's ``prn-N`` target_ref, resolved by the engine at execution
 time by running the printer discovery again; it exists only inside the child argv) and ``bundle_root`` (the
 rescue bundle directory, used only as ``{name}/scripts/lib/...`` for a closed list of shipped fixed files).
-``bundle_config`` (Python engine only, malware domain) is one fixed configuration file of the bundle's ``config/``
-directory (a closed list, BUNDLE_CONFIG_FILES), usable only as ``--config-file={name}``; it can never name another path.
 A ``printer_ref`` may also appear as ``ipp://localhost/printers/{name}``, the only URI an action may build.
 """
 from __future__ import annotations
@@ -58,11 +56,7 @@ DOMAIN_PLATFORMS = {'os-linux': {'live-linux', 'linux-host'}, 'os-windows': {'li
 # launchers (they list the types as unsupported), so they are limited to the Python engine's platforms.
 PYTHON_ENGINE_PLATFORMS = {'live-linux', 'linux-host'}
 ENGINE_ONLY_PARAMS = frozenset({'android_device', 'fastboot_device', 'fastboot_slot', 'firmware_file', 'sha256',
-                                'printer_ref', 'bundle_root', 'bundle_config'})
-# bundle_config (docs/malware.md): a fixed configuration file shipped in the bundle's config/ directory. The
-# parameter's single ``values`` entry names the file; the engine renders <bundle>/config/<file>, never a free path.
-BUNDLE_CONFIG_FILES = ('freshclam-user.conf',)
-BUNDLE_CONFIG_OPTION = '--config-file='
+                                'printer_ref', 'bundle_root'})
 GUARDS = ('bootloader-unlocked', 'image-matches-device', 'single-download-mode-device')
 # What an Android action may send to the phone (docs/android.md). adb is always addressed with
 # ``-t {android_device}``; the sub-command and the on-device program are closed lists, so a catalog change
@@ -192,8 +186,6 @@ def _placeholder_errors(where, argv, params):
                 continue
         if i == 0:
             errors.append('%s argv[0] must be a literal program name' % where)
-        if params.get(name, {}).get('type') == 'bundle_config' and not (PREFIXED.match(element) and element.startswith(BUNDLE_CONFIG_OPTION)):
-            errors.append('%s argv[%d]: a bundle_config parameter is only allowed as %s{name}' % (where, i, BUNDLE_CONFIG_OPTION))
         if name not in params:
             errors.append('%s argv[%d]: parameter {%s} is not declared' % (where, i, name))
         used.add(name)
@@ -387,17 +379,11 @@ def action_errors(action, domain, check_ids):
         elif kind == 'state_dir':
             if p.get('values') not in (['clamav'], ['quarantine']):
                 say('%s: state_dir parameter %s needs exactly one value: clamav or quarantine' % (aid, p['name']))
-        elif kind == 'bundle_config':
-            if p.get('values') not in [[f] for f in BUNDLE_CONFIG_FILES]:
-                say('%s: bundle_config parameter %s needs exactly one value out of: %s'
-                    % (aid, p['name'], ', '.join(BUNDLE_CONFIG_FILES)))
-            if domain != 'malware':
-                say('%s: bundle_config parameters exist only in the malware domain' % aid)
         elif kind == 'firmware_file':
             if p.get('values') not in (['image'], ['zip']):
                 say('%s: firmware_file parameter %s needs exactly one value: image or zip' % (aid, p['name']))
         elif 'values' in p:
-            say('%s: only enum, state_dir, bundle_config and firmware_file parameters take values (%s)' % (aid, p['name']))
+            say('%s: only enum, state_dir and firmware_file parameters take values (%s)' % (aid, p['name']))
         if kind == 'integer':
             lo, hi = p.get('minimum'), p.get('maximum')
             if lo is None or hi is None or lo > hi:
@@ -407,7 +393,7 @@ def action_errors(action, domain, check_ids):
         elif 'minimum' in p or 'maximum' in p:
             say('%s: only integer parameters take minimum/maximum (%s)' % (aid, p['name']))
         if kind in ('block_device', 'target_root', 'detection_ref', 'state_dir', 'android_device', 'fastboot_device',
-                    'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root', 'bundle_config') and 'default' in p:
+                    'fastboot_slot', 'firmware_file', 'sha256', 'printer_ref', 'bundle_root') and 'default' in p:
             say('%s: %s parameters cannot have a default (%s)' % (aid, kind, p['name']))
         if kind in ENGINE_ONLY_PARAMS and not set(action['platforms']) <= PYTHON_ENGINE_PLATFORMS:
             say('%s: %s parameters exist only on %s (the host launchers cannot resolve them)'
@@ -815,8 +801,6 @@ def validate_param(param, value, packages=None):
         raise ValueError('is resolved by the engine from the printer discovery, never by the operator')
     if kind == 'bundle_root':
         raise ValueError('is the rescue bundle directory, provided by the engine, never by the operator')
-    if kind == 'bundle_config':
-        raise ValueError('is a fixed configuration file of the rescue bundle, provided by the engine, never by the operator')
     if kind == 'sha256':
         if not SHA256_RE.match(text):
             raise ValueError('must be the 64 hexadecimal characters of the official SHA-256')

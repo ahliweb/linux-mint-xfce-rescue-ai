@@ -111,8 +111,7 @@ MAX_ZIP_MEMBERS = 2000
 OUTER_FACTORY_SCRIPTS = ('flash-all.sh', 'flash-all.bat', 'flash-base.sh')
 FORBIDDEN_IMAGE_STEMS = frozenset({'bootloader', 'radio', 'modem', 'persist', 'efs', 'frp', 'devinfo', 'fsg',
                                    'modemst1', 'modemst2', 'userdata'})
-ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'printer_ref', 'bundle_root',
-                'bundle_config')
+ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'printer_ref', 'bundle_root')
 SUDO_PROBE_SECONDS = 8
 SUDO_CACHE = {}              # search path -> is `sudo -n true` usable (probed at most once per run)
 PICKER_MAX = 32              # at most this many disks are offered by the device picker
@@ -1029,8 +1028,6 @@ class Engine:
                 shown[p['name']] = '<printer %s>' % proposal.get('target_ref', '?')
             elif p['type'] == 'bundle_root':
                 shown[p['name']] = '<bundle>'
-            elif p['type'] == 'bundle_config':
-                shown[p['name']] = '<bundle>/config/' + p['values'][0]
             elif p['type'] == 'firmware_file':
                 shown[p['name']] = '<firmware %s file>' % p['values'][0]
             elif p['type'] == 'detection_ref':
@@ -1163,8 +1160,6 @@ class Engine:
                 out[p['name']] = os.path.join(self.state_root or '', p['values'][0])
             elif p['type'] == 'bundle_root':
                 out[p['name']] = str(rc.ROOT)
-            elif p['type'] == 'bundle_config':
-                out[p['name']] = str(rc.ROOT / 'config' / p['values'][0])
         return out
 
     def show(self, action, result, limit=15):
