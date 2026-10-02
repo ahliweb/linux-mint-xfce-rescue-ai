@@ -345,6 +345,76 @@ def check_usb(min_usb: float) -> dict:
                              "the chain shows where resolution stopped; not blocking")
 
 
+PERSISTENT_FS = ("ext2", "ext3", "ext4", "btrfs", "xfs")
+_OCTAL = re.compile(r"\\([0-7]{3})")
+
+
+def _proc_path(env_name: str, default: str) -> pathlib.Path:
+    """/proc file, overridable for tests (RESCUE_PROC_MOUNTINFO, RESCUE_PROC_CMDLINE); read-only either way."""
+    return pathlib.Path(os.environ.get(env_name) or default)
+
+
+def _unescape(field: str) -> str:
+    return _OCTAL.sub(lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _parse_mountinfo(text: str) -> list[dict]:
+    rows = []
+    for line in text.splitlines():
+        head, sep, tail = line.partition(" - ")
+        left, right = head.split(), tail.split()
+        if not sep or len(left) < 5 or len(right) < 3:
+            continue
+        rows.append({"mountpoint": _unescape(left[4]), "fstype": right[0], "source": _unescape(right[1]),
+                     "options": right[2]})
+    return rows
+
+
+def check_persistence() -> dict:
+    """Advisory: is the live root overlay's upper layer on a persistent filesystem (casper/Ventoy persistence)?
+    pass = upperdir on a block/loop device with ext2/3/4/btrfs/xfs, or the 'persistent' parameter with a mounted
+    casper-rw/persistence backend; warn = tmpfs upper layer (state is lost at power-off); unknown otherwise."""
+    minimum = "overlay upper layer on a persistent filesystem (not tmpfs)"
+    note_lost = ("results and Hermes state on the RAM overlay are lost at power-off; copy them to the USB data "
+                 "area or set up persistence (docs/persistence.md)")
+    try:
+        mounts = _parse_mountinfo(_proc_path("RESCUE_PROC_MOUNTINFO", "/proc/self/mountinfo").read_text(errors="replace"))
+    except OSError:
+        mounts = []
+    try:
+        cmdline = _proc_path("RESCUE_PROC_CMDLINE", "/proc/cmdline").read_text(errors="replace").split()
+    except OSError:
+        cmdline = []
+    root = next((m for m in reversed(mounts) if m["mountpoint"] == "/"), None)
+    upper = ""
+    if root and root["fstype"] in ("overlay", "aufs"):
+        found = re.search(r"(?:^|,)upperdir=([^,]+)", root["options"])
+        upper = _unescape(found.group(1)) if found else ""
+    if upper:
+        backing = None
+        for m in mounts:
+            point = m["mountpoint"].rstrip("/")
+            if point and (upper == point or upper.startswith(point + "/")):
+                if backing is None or len(point) >= len(backing["mountpoint"].rstrip("/")):
+                    backing = m
+        if backing is not None:
+            fstype, source = backing["fstype"], backing["source"]
+            if fstype in ("tmpfs", "ramfs"):
+                return check_result("persistence-active", "warn", f"upper layer on {fstype} (RAM only)", minimum,
+                                    required=False, note=note_lost)
+            if fstype in PERSISTENT_FS and source.startswith("/dev/"):
+                kind = "loop device" if source.startswith("/dev/loop") else "block device"
+                return check_result("persistence-active", "pass", f"upper layer on {fstype} ({kind})", minimum,
+                                    required=False, note="persistence is active")
+    if "persistent" in cmdline:
+        for m in mounts:
+            if m["fstype"] in PERSISTENT_FS and re.search(r"casper-rw|persistence", m["mountpoint"] + " " + m["source"]):
+                return check_result("persistence-active", "pass", f"persistent parameter + {m['fstype']} backend",
+                                    minimum, required=False, note="persistence is active")
+    return check_result("persistence-active", "unknown", "overlay upper layer could not be determined", minimum,
+                        required=False, note="advisory only; not a live session or an unrecognised layout")
+
+
 def write_private(destination: pathlib.Path, text: str) -> None:
     """Create/replace the report atomically; the file is 0600 from creation (no chmod window)."""
     tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
@@ -411,6 +481,7 @@ def main() -> int:
         ("internet-connectivity", f"IP/default route + DNS + HTTPS to {args.internet_url}",
          lambda: check_network(args.internet_url)),
         ("usb-boot-media", f"USB transport and >= {args.min_usb_gib:.1f} GiB", lambda: check_usb(args.min_usb_gib)),
+        ("persistence-active", "overlay upper layer on a persistent filesystem (advisory)", check_persistence),
     ]
     bar = _NoBar() if args.mode == "wizard" else _make_progress(len(definitions))  # a bar would clash with the prompts
     for check_id, minimum_text, fn in definitions:

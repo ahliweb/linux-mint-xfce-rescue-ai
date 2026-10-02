@@ -45,6 +45,19 @@ flowchart TD
 - **Tidak pernah menutup diam-diam.** Pada keluar non-nol (dan saat selesai offline) di terminal, launcher mencetak ringkasan dwibahasa beserta lokasi laporan lalu menunggu Enter (EOF tidak membuatnya menggantung).
 - **Log lokal.** stdout/stderr launcher juga ditulis ke `<state-dir>/reports/launcher-<utc>.log` (`0600`, hanya lokal, tidak pernah dikirim; launcher tidak pernah mencetak API key). Langkah persetujuan perbaikan interaktif (`rescue-repair.py`) hanya tampil di terminal karena butuh tty; jurnalnya tetap menjadi catatan resminya.
 
+<a id="persistence-active-status-persistensi"></a>
+## persistence-active: status persistensi
+
+`scripts/check-hardware-readiness.py` memuat check **advisory** `persistence-active` (`required: false`; tidak pernah memblokir dan tidak mengubah READY/NOT READY, hanya `warn` yang menjadikan `summary.overall` `ready_with_warnings`). Ia membaca `/proc/self/mountinfo` dan `/proc/cmdline` (hanya baca; untuk tes dapat dialihkan lewat `RESCUE_PROC_MOUNTINFO` dan `RESCUE_PROC_CMDLINE`):
+
+| Status | Aturan |
+|---|---|
+| `pass` | `upperdir` overlay root (`/cow/upper` pada casper) berada di mount ber-`/dev/...` (perangkat blok atau loop, mis. `.dat` Ventoy) dengan sistem berkas ext2/3/4, btrfs, atau xfs; atau parameter `persistent` ada dan backend `casper-rw`/`persistence` ter-mount |
+| `warn` | lapisan atas ada di `tmpfs`/`ramfs`: perubahan hanya di RAM (keberadaan `/cow` saja BUKAN bukti RAM-only; yang menentukan adalah sistem berkas di bawahnya) |
+| `unknown` | bukan sesi live, atau susunan mount tidak dikenal |
+
+Bila `warn`, launcher mencetak peringatan dwibahasa sebelum Hermes: hasil, laporan, dan state Hermes di sesi ini hilang saat dimatikan kecuali disalin ke area data USB. Yang perlu dilakukan: salin `<state-dir>/reports` ke USB yang dapat ditulis (atau host) sebelum mematikan, atau boot ulang dengan entri persistence Ventoy ([Menyalin ke USB](#menyalin-ke-usb)). Berkas tindak lanjut `followup-<run_id>.json` membawa `persistence.active` sehingga Hermes tidak menebak dari keberadaan `/cow`.
+
 ## Membangun image
 
 Prasyarat di host: `docker` (user ada di grup `docker`), `7z` atau `xorriso`, `e2fsprogs`, `python3`; `unsquashfs` + `fakeroot` dipakai bila ada (kalau tidak, dipakai container `alpine`). Tidak perlu `sudo`, tidak menyentuh block device.
