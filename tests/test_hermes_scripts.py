@@ -412,8 +412,12 @@ class TestLiveKickoff(HermesScriptTestCase):
         kickoff = self.src / "profiles" / "rescue-hermes" / "kickoff.md"
         self.assertTrue(kickoff.is_file())
         args = [line[len("HERMES-ARG "):] for line in out.splitlines() if line.startswith("HERMES-ARG ")]
-        self.assertEqual(args, ["chat", "--cli", "--provider", "custom", "--model", "mimo-v2.6-flash",
-                                "-s", "rescue-autorun", "--query-file", str(kickoff)])
+        # The shim prints one line per argument, so the multi-line kickoff text (the -q value) spans several lines.
+        text = kickoff.read_text(encoding="utf-8").rstrip("\n")
+        self.assertEqual(args[:10], ["chat", "--tui", "--provider", "custom", "--model", "mimo-v2.6-flash",
+                                     "-s", "rescue-autorun", "-q", text.splitlines()[0]])
+        self.assertIn(text, out)
+        self.assertNotIn("--query-file", args)
         self.assertIn("HERMES-PWD " + str(self.state / "reports"), out)
         self.assertIn("Hermes terbuka dan langsung menjalankan rekomendasi", out)
         self.assertIn("Hermes opens and starts on", out)

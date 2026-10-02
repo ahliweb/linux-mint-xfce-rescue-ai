@@ -501,10 +501,14 @@ kickoff="$root/profiles/rescue-hermes/kickoff.md"
 if [[ -r $kickoff && -d $report_dir ]]; then
   printf 'Hermes terbuka dan langsung menjalankan rekomendasi analisis (folder kerja: laporan).\n'
   printf 'Hermes opens and starts on the analysis recommendations right away (working folder: the reports).\n'
-  # Folder kerja = folder laporan, jadi Hermes memakai path relatif. `hermes chat --tui` membaca --query-file
-  # SESUDAH memulai TUI sehingga benih diabaikan; sesi `--cli` menjadikan kickoff giliran pertama (docs/design.md).
-  cd -- "$report_dir"
-  exec hermes chat --cli --provider custom --model mimo-v2.6-flash -s rescue-autorun --query-file "$kickoff"
+  # Working folder = the reports folder, so Hermes uses relative paths. The TUI takes its first turn only from -q
+  # (HERMES_TUI_QUERY; it reads --query-file after the TUI has started), so the fixed kickoff text from the bundle is
+  # passed with -q. It holds no secret and no path (docs/design.md).
+  kickoff_text=$(<"$kickoff")
+  if [[ -n ${kickoff_text//[[:space:]]/} && ${#kickoff_text} -le 8192 ]]; then
+    cd -- "$report_dir"
+    exec hermes chat --tui --provider custom --model mimo-v2.6-flash -s rescue-autorun -q "$kickoff_text"
+  fi
 fi
 # Old bundle without the kickoff file: the previous plain start.
 exec hermes --tui --provider custom --model mimo-v2.6-flash
