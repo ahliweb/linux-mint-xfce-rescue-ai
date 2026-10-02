@@ -608,12 +608,13 @@ class LinuxHermesTests(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in self.out.read_text().splitlines()] if self.out.exists() else []
 
+    # These tests are about Hermes, not repairs or detection: detect-only so no repair prompt waits on the
+    # pseudo-terminal (a CI runner with a failed unit triggers os-linux.restart-failed-units), and a narrow scope so
+    # the real host collection stays short on slow runners (package inventory, large journals).
+    FAST = ('--repair-policy', 'detect-only', '--scope', 'hardware.cpu')
+
     def pty_run(self, *args, **extra):
-        # detect-only: these tests are about Hermes, not repairs. On a CI runner with passwordless sudo the engine would
-        # otherwise offer root actions and wait at its approval prompt on the pseudo-terminal until the timeout.
-        # A narrow scope keeps the real host collection short on slow CI runners (package inventory, large journals).
-        return run_in_pty([str(self.script), '--repair-policy', 'detect-only', '--scope', 'hardware.cpu', *args],
-                          self.env(**extra), self.tmp, timeout=480)
+        return run_in_pty([str(self.script), *self.FAST, *args], self.env(**extra), self.tmp, timeout=480)
 
     def test_hermes_starts_on_a_terminal_with_the_fixed_argv_cwd_and_environment(self):
         self.add_runtime()
@@ -682,7 +683,7 @@ class LinuxHermesTests(unittest.TestCase):
         env_file.chmod(0o600)
         env = self.env()
         del env['OPENCODE_GO_API_KEY'], env['RESCUE_GITHUB_ISSUES_TOKEN']
-        rc, output = run_in_pty([str(self.script)], env, self.tmp)
+        rc, output = run_in_pty([str(self.script), *self.FAST], env, self.tmp, timeout=480)
         self.assertEqual(rc, 0, output)
         (rec,) = self.records()
         self.assertTrue(rec['key_matches'])
@@ -711,7 +712,7 @@ class LinuxHermesTests(unittest.TestCase):
         self.add_runtime()
         env = self.env()
         del env['OPENCODE_GO_API_KEY']
-        rc, output = run_in_pty([str(self.script)], env, self.tmp)
+        rc, output = run_in_pty([str(self.script), *self.FAST], env, self.tmp, timeout=480)
         self.assertEqual(rc, 3, output)
         self.assertEqual(self.records(), [])
 
