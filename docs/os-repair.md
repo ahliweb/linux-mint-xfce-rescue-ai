@@ -107,7 +107,7 @@ Ringkasan cara kerja (perintah persis ada di file katalog):
 
 ### linux-units
 
-`os-linux.restart-failed-units` (host): `systemctl restart {unit}` untuk satu unit yang dipilih operator (`--param os-linux.restart-failed-units.unit=NAMA`; tidak ada default, jadi `auto-safe` melewatinya). Verifikasi: `systemctl is-failed --quiet` harus keluar dengan kode 1 (unit tidak lagi gagal).
+`os-linux.restart-failed-units` (host): `systemctl restart {unit}` untuk satu unit yang dipilih operator (`--param os-linux.restart-failed-units.unit=NAMA`; tidak ada default, jadi `auto-safe` melewatinya). Verifikasi: `systemctl is-failed --quiet` harus keluar dengan kode 1 (unit tidak lagi gagal). Pada run interaktif (mesin Python) tanpa `--param`, engine membaca sendiri unit yang gagal lewat `systemctl --failed --no-legend --plain --type=service` (hanya baca, tanpa root, maks. 30 nama yang lolos aturan `service_name`) dan operator memilih dengan nomor; Enter = lewati (`missing-param`), nomor di luar daftar = `invalid-param`. Jika daftar kosong atau `systemctl` tidak ada, prompt teks bebas tetap dipakai. Daftar tidak pernah berasal dari evidence atau model; journal hanya menyimpan nama yang dipilih seperti nilai `--param`. Lihat [framework](repair-framework.md#pengalaman-operator-precheck-root-pemilih-disk-persetujuan-massal).
 
 ### windows-sfc
 

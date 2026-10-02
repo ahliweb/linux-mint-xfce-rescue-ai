@@ -114,6 +114,7 @@ FORBIDDEN_IMAGE_STEMS = frozenset({'bootloader', 'radio', 'modem', 'persist', 'e
 ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'printer_ref', 'bundle_root')
 SUDO_PROBE_SECONDS = 8
 SUDO_CACHE = {}              # search path -> is `sudo -n true` usable (probed at most once per run)
+UNIT_PICKER_MAX = 30         # at most this many failed units are offered by the unit picker
 PICKER_MAX = 32              # at most this many disks are offered by the device picker
 
 
@@ -967,6 +968,49 @@ class Engine:
             self.removable_ok.add(choice)
         return choice
 
+    def failed_units(self, action):
+        """Names of the currently failed services, read from the host's systemd now (screen only), or None.
+
+        Only for a host-scoped action (no target_root parameter: a mounted target has no running systemd to ask, and
+        listing it would need new privileges, so those keep the free-text prompt). `systemctl --failed` needs no root."""
+        if any(p['type'] == 'target_root' for p in action.get('params') or []):
+            return None
+        program = shutil.which('systemctl', path=self.path)
+        if program is None:
+            return None
+        try:
+            proc = subprocess.run([program, '--failed', '--no-legend', '--plain', '--type=service'], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'PATH': self.path, 'LC_ALL': 'C.UTF-8'},
+                                  timeout=20, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        names = []
+        for line in proc.stdout.decode('utf-8', 'replace').splitlines():
+            fields = line.replace('\u25cf', ' ').split()
+            if fields and rc.SERVICE_RE.match(fields[0]) and fields[0].endswith('.service') and fields[0] not in names:
+                names.append(fields[0])
+        return names[:UNIT_PICKER_MAX]
+
+    def pick_failed_unit(self, action, param):
+        """The operator's choice from the engine's own failed-unit list: a unit name, '' (rejected) or None (skipped).
+
+        False means there is nothing to choose from (empty or unreadable list): the caller keeps the free-text prompt."""
+        units = self.failed_units(action)
+        if not units:
+            return False
+        say('  Pilih unit yang gagal untuk / choose the failed unit for %s %s:' % (action['action_id'], param['name']))
+        for n, name in enumerate(units, 1):
+            say('    %2d) %s' % (n, name))
+        answer = self.ask('  Nomor / number (Enter = lewati / skip): ')
+        if not answer:
+            return None
+        if not answer.isdigit() or not 1 <= int(answer) <= len(units):
+            warn('  %s %s: not one of the listed numbers' % (action['action_id'], param['name']))
+            return ''
+        return units[int(answer) - 1]
+
     def resolve_params(self, action, allow_prompt, proposal=None):
         """(values, problem) where problem is None, 'missing-param' or 'invalid-param'."""
         values, aid = {}, action['action_id']
@@ -984,10 +1028,16 @@ class Engine:
                 if raw == '':
                     return None, 'invalid-param'
             elif raw is None and allow_prompt:
-                hint = ', '.join(p['values']) if p['type'] == 'enum' else p['type']
-                if p['type'] == 'detection_ref':
-                    self.show_detections(proposal)
-                raw = self.ask('  Nilai untuk / value for %s (%s): ' % (p['name'], hint)) or None
+                picked = self.pick_failed_unit(action, p) if p['type'] == 'service_name' else False
+                if picked == '':
+                    return None, 'invalid-param'
+                if picked is False:
+                    hint = ', '.join(p['values']) if p['type'] == 'enum' else p['type']
+                    if p['type'] == 'detection_ref':
+                        self.show_detections(proposal)
+                    raw = self.ask('  Nilai untuk / value for %s (%s): ' % (p['name'], hint)) or None
+                else:
+                    raw = picked
             if raw is None:
                 return None, 'missing-param'
             try:
