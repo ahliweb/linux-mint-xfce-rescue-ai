@@ -430,6 +430,9 @@ class HardwareReadinessTests(unittest.TestCase):
             mock.patch.object(self.hw, "check_vga", fake("vga-display", statuses["vga"])),
             mock.patch.object(self.hw, "check_network", fake("internet-connectivity", statuses["net"])),
             mock.patch.object(self.hw, "check_usb", fake("usb-boot-media", statuses["usb"])),
+            mock.patch.object(self.hw, "check_persistence",
+                              lambda: self.hw.check_result("persistence-active", statuses.get("persist", "pass"),
+                                                           "fake", "fake", required=False)),
             mock.patch.object(sys, "argv", ["check-hardware-readiness.py", *argv]),
         ]
         with contextlib.ExitStack() as stack:
@@ -471,6 +474,53 @@ class HardwareReadinessTests(unittest.TestCase):
             self.assertEqual(json.loads(out.read_text())["summary"]["overall"], "ready_with_warnings")
             self.assertEqual([p.name for p in out.parent.iterdir()], ["report.json"])
 
+    def test_persistence_warn_is_advisory_and_never_blocks(self):
+        ok = dict(cpu="pass", ram="pass", vga="pass", net="pass", usb="pass")
+        for status in ("warn", "unknown"):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "report.json"
+                code, _ = self._run_main(["--output", str(out)], dict(ok, persist=status))
+                summary = json.loads(out.read_text())["summary"]
+                self.assertEqual(code, 0)
+                self.assertEqual(summary["unknown_required"], 0)
+                self.assertEqual(summary["failures"], 0)
+                self.assertEqual(summary["overall"], "ready_with_warnings" if status == "warn" else "ready")
+
+    def _persistence(self, mountinfo, cmdline="BOOT_IMAGE=/casper/vmlinuz boot=casper quiet"):
+        with tempfile.TemporaryDirectory() as tmp:
+            mi, cl = Path(tmp) / "mountinfo", Path(tmp) / "cmdline"
+            if mountinfo is not None:
+                mi.write_text(mountinfo)
+            cl.write_text(cmdline)
+            with mock.patch.dict(os.environ, {"RESCUE_PROC_MOUNTINFO": str(mi), "RESCUE_PROC_CMDLINE": str(cl)}):
+                return self.hw.check_persistence()
+
+    OVERLAY = ("30 1 0:26 / / rw - overlay overlay rw,lowerdir=/ro,upperdir=/cow/upper,workdir=/cow/work\n")
+
+    def test_persistence_tmpfs_upper_warns(self):
+        check = self._persistence(self.OVERLAY + "31 30 0:27 / /cow rw - tmpfs tmpfs rw\n")
+        self.assertEqual((check["check_id"], check["status"], check["required"]), ("persistence-active", "warn", False))
+        self.assertIn("power-off", check["note"])
+
+    def test_persistence_ext4_on_loop_passes(self):
+        check = self._persistence(self.OVERLAY + "31 30 7:3 / /cow rw - ext4 /dev/loop3 rw\n")
+        self.assertEqual((check["status"], check["required"]), ("pass", False))
+        self.assertIn("loop", check["observed"])
+
+    def test_persistence_ext4_on_block_device_passes(self):
+        check = self._persistence(self.OVERLAY + "31 30 8:2 / /cow rw - ext4 /dev/sdb2 rw\n")
+        self.assertEqual(check["status"], "pass")
+
+    def test_persistence_persistent_param_with_backend_passes(self):
+        check = self._persistence("30 1 0:26 / / rw - aufs aufs rw\n31 1 8:2 / /media/casper-rw rw - ext4 /dev/sdb2 rw\n",
+                                  "boot=casper persistent quiet")
+        self.assertEqual(check["status"], "pass")
+
+    def test_persistence_garbage_or_missing_is_unknown(self):
+        for text in ("not a mountinfo at all\n\x00\xff", "", None):
+            check = self._persistence(text)
+            self.assertEqual((check["status"], check["required"]), ("unknown", False))
+
     def test_wizard_prompt_shows_real_minimum(self):
         prompts = []
 
@@ -483,7 +533,7 @@ class HardwareReadinessTests(unittest.TestCase):
             code, _ = self._run_main(["--mode", "wizard", "--min-cpu", "3", "--min-ram-gib", "6",
                                       "--min-usb-gib", "16", "--output", str(Path(tmp) / "r.json")], ok)
             report = json.loads((Path(tmp) / "r.json").read_text())
-        self.assertEqual(len(prompts), 5)
+        self.assertEqual(len(prompts), 6)
         joined = "\n".join(prompts)
         self.assertIn(">= 3 logical CPU(s)", joined)
         self.assertIn(">= 6.0 GiB", joined)
@@ -498,7 +548,7 @@ class HardwareReadinessTests(unittest.TestCase):
                                      dict(cpu="pass", ram="pass", vga="pass", net="pass", usb="pass"))
             report = json.loads((Path(tmp) / "r.json").read_text())
         self.assertEqual(code, 0)
-        self.assertEqual(report["summary"]["warnings"], 5)
+        self.assertEqual(report["summary"]["warnings"], 6)
 
 
 if __name__ == "__main__":

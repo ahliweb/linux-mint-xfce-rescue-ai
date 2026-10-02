@@ -8,6 +8,17 @@ source "$root/scripts/lib/rescue-env.sh"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/live-launcher.sh
 source "$root/scripts/lib/live-launcher.sh"
+# Terminal progress (#67): phase headers and elapsed/budget bars on /dev/tty. An old bundle without the helper
+# falls back to plain phase lines and plain command runs.
+if [[ -r $root/scripts/lib/progress.sh ]]; then
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=lib/progress.sh
+  source "$root/scripts/lib/progress.sh"
+else
+  rescue_progress_step() { printf '[%s/%s] %s\n' "${1:-}" "${2:-}" "${3:-}"; }
+  rescue_progress_run() { shift 2 || true; [[ ${1:-} != -- ]] || shift; "$@"; }
+fi
+total_steps=10
 
 # Never close silently (docs/persistence.md): the autostart terminal closes with the launcher, so any
 # non-zero exit on a terminal prints a bilingual summary and waits for Enter (EOF never hangs).
@@ -127,9 +138,11 @@ emit_report() {
 trap 'run_outcome=interrupted; exit 130' INT TERM HUP
 # The network is advisory: autostart runs at login, before Wi-Fi is connected. Wait briefly, then on a
 # terminal offer to connect or continue offline. Offline only skips the cloud analysis and Hermes.
+rescue_progress_step 1 "$total_steps" 'Menunggu jaringan / Waiting for the network'
 if ! rescue_wait_for_route "${RESCUE_NET_WAIT_SECONDS:-60}" && [[ -t 0 ]]; then
   rescue_offline_prompt || true
 fi
+rescue_progress_step 2 "$total_steps" 'Preflight perangkat keras / Hardware preflight'
 printf 'Running hardware readiness preflight (mode: %s) ...\n' "$hardware_mode"
 if ! python3 "$root/scripts/check-hardware-readiness.py" \
   --mode "$hardware_mode" \
@@ -156,6 +169,18 @@ except (OSError, ValueError, AttributeError):
 sys.exit(0 if all(c.get("status") == "pass" for c in checks if c.get("check_id") == "internet-connectivity") else 1)
 ' "$report_file"; then
   offline=1
+fi
+# Persistence (advisory): warn = the live root overlay is on RAM, so results and Hermes state vanish at power-off.
+persistence_warn=0
+if [[ -s $report_file ]] && python3 -c '
+import json, sys
+try:
+    checks = json.load(open(sys.argv[1])).get("checks", [])
+except (OSError, ValueError, AttributeError):
+    sys.exit(1)
+sys.exit(0 if any(c.get("check_id") == "persistence-active" and c.get("status") == "warn" for c in checks if isinstance(c, dict)) else 1)
+' "$report_file"; then
+  persistence_warn=1
 fi
 if ((offline)); then
   printf 'Tanpa internet: pemindaian lokal read-only tetap berjalan; analisis OpenCode Go dan Hermes dilewati.\n'
@@ -198,6 +223,7 @@ else
   ts=$(date -u +%Y%m%d-%H%M%S)
   evidence_file="$report_dir/target-evidence-$ts.json"
   analysis_file="$report_dir/analysis-$ts.md"
+  rescue_progress_step 3 "$total_steps" 'Memindai sistem operasi (read-only; bisa belasan menit) / Scanning operating systems (read-only; can take ~10+ min)'
   printf 'Memindai sistem operasi di disk internal (read-only) ...\n'
   printf 'Scanning installed operating systems on internal disks (read-only) ...\n'
   if scan_once "$evidence_file"; then
@@ -206,6 +232,7 @@ else
     cp -f -- "$evidence_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
     chmod 0600 -- "$report_dir/latest-evidence.json" 2>/dev/null || true
     printf 'Bukti tersimpan: %s\n' "$evidence_file"
+    rescue_progress_step 4 "$total_steps" 'Analisis OpenCode Go / OpenCode Go analysis'
     if ((offline)); then
       # No network: skip the cloud analysis; the catalog-trigger proposals below still work.
       run_outcome=network-error
@@ -230,6 +257,7 @@ else
     fi
     # Catalog repairs under the operator's policy (default approve-each: nothing runs without
     # approval). Catalog-trigger proposals work without the cloud analysis. Never blocks Hermes.
+    rescue_progress_step 5 "$total_steps" 'Perbaikan terkatalog (butuh persetujuan Anda) / Catalog repairs (your approval needed)'
     repair_args=(--evidence "$evidence_file" --policy "$repair_policy" --scope "$scope" --state-dir "$state_dir")
     [[ ! -s $analysis_file ]] || repair_args+=(--analysis "$analysis_file")
     [[ -z $packages ]] || repair_args+=(--packages "$packages")
@@ -250,16 +278,22 @@ else
     esac
     # Before/after: when at least one action executed, re-scan with the same scope so the report can
     # list the checks whose status changed. A failed re-scan only leaves the comparison empty.
-    if [[ -s $run_journal ]] && ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence_file" 2>/dev/null) &&
-      grep -F -- "\"run_id\":\"$ev_run_id\"" "$run_journal" | grep -Fq -- '"stage":"execute"'; then
+    # Only an action of THIS run that reached stage "execute" with outcome "ok" justifies a re-scan.
+    if ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence_file" 2>/dev/null) &&
+      rescue_journal_executed_ok "$run_journal" "$ev_run_id"; then
+      rescue_progress_step 6 "$total_steps" 'Pindai ulang setelah perbaikan / Re-scan after repairs'
       printf 'Memindai ulang setelah perbaikan (scope sama) ...\nRe-scanning after repairs (same scope) ...\n'
       after_file="$report_dir/target-evidence-$ts-after.json"
       if scan_once "$after_file"; then
         run_evidence_after=$after_file
+        # Hermes and the follow-up work from the state AFTER the successful repair.
+        cp -f -- "$after_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
       else
         rm -f -- "$after_file" 2>/dev/null || true
         printf 'PERINGATAN: pemindaian ulang gagal; perbandingan sebelum/sesudah tidak tersedia.\nWARNING: the re-scan failed; no before/after comparison.\n' >&2
       fi
+    else
+      rescue_progress_step 6 "$total_steps" 'Pindai ulang dilewati (tidak ada perbaikan yang berhasil dijalankan) / Re-scan skipped (no repair action executed ok)'
     fi
   else
     rm -f -- "$evidence_file" 2>/dev/null || true
@@ -268,6 +302,21 @@ else
   fi
 fi
 
+# Read-only follow-up (scripts/rescue-followup.py): the analysis' recommended SMART detail, self-test result and
+# journal/malware reasons, collected as root so Hermes can start on them at once. It is local (offline runs do it
+# too), writes followup-<run_id>.json (which carries persistence.active) and never blocks Hermes.
+rescue_progress_step 7 "$total_steps" 'Tindak lanjut read-only (SMART, self-test, alasan) / Read-only follow-up (SMART, self-test, reasons)'
+if [[ -n $run_evidence && -s $run_evidence ]]; then
+  if ! rescue_progress_run 'tindak lanjut / follow-up' 120 -- sudo -n python3 "$root/scripts/rescue-followup.py" \
+    --evidence "${run_evidence_after:-$run_evidence}" --reports-dir "$report_dir" --mode live-linux --state-dir "$state_dir"; then
+    printf 'PERINGATAN: tindak lanjut read-only gagal atau tidak diizinkan (sudo -n); Hermes tetap dijalankan.\n' >&2
+    printf 'WARNING: the read-only follow-up failed or was not permitted (sudo -n); starting Hermes anyway.\n' >&2
+  fi
+else
+  printf 'Tindak lanjut dilewati (tidak ada bukti pemindaian).\nFollow-up skipped (no scan evidence).\n'
+fi
+
+rescue_progress_step 8 "$total_steps" 'Tawaran ponsel Android dan printer / Android phone and printer offers'
 # Android phone or tablet over USB (docs/android.md). After the OS scan, when the USB inventory shows a
 # phone, print the table of every USB device and ask (default: no; a non-interactive run skips it) whether to
 # scan the phone. The scan is read-only, runs as the desktop user (adb keeps its key in ~/.android), writes its
@@ -329,8 +378,8 @@ android_phase() {
       printf 'WARNING: an Android repair action failed or was rolled back; see %s\n' "$state_dir/repairs/journal.jsonl" >&2
       ;;
   esac
-  if [[ -s $state_dir/repairs/journal.jsonl ]] && ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
-    grep -F -- "\"run_id\":\"$ev_run_id\"" "$state_dir/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
+  if ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
+    rescue_journal_executed_ok "$state_dir/repairs/journal.jsonl" "$ev_run_id"; then
     printf 'Memindai ulang ponsel setelah perbaikan ...\nRe-scanning the phone after repairs ...\n'
     after="$report_dir/android-evidence-$ts-after.json"
     python3 "$root/scripts/scan-android.py" --output "$after" --source-platform live-linux --repair-policy "$repair_policy" || true
@@ -407,8 +456,8 @@ printer_phase() {
       printf 'WARNING: a printer repair action failed or was rolled back; see %s\n' "$state_dir/repairs/journal.jsonl" >&2
       ;;
   esac
-  if [[ -s $state_dir/repairs/journal.jsonl ]] && ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
-    grep -F -- "\"run_id\":\"$ev_run_id\"" "$state_dir/repairs/journal.jsonl" | grep -Fq -- '"stage":"execute"'; then
+  if ev_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$evidence" 2>/dev/null) &&
+    rescue_journal_executed_ok "$state_dir/repairs/journal.jsonl" "$ev_run_id"; then
     printf 'Memindai ulang printer setelah perbaikan ...\nRe-scanning the printer after repairs ...\n'
     after="$report_dir/printer-evidence-$ts-after.json"
     python3 "$root/scripts/scan-printers.py" --output "$after" --source-platform live-linux --repair-policy "$repair_policy" ${net[@]+"${net[@]}"} || true
@@ -424,6 +473,7 @@ printer_phase() {
 printer_phase || true
 
 # Write the report now (Hermes reads the latest one first); the EXIT trap covers every other exit.
+rescue_progress_step 9 "$total_steps" 'Menulis laporan proses / Writing the run report'
 emit_report
 
 if ((offline)); then
@@ -444,4 +494,23 @@ fi
 unset RESCUE_GITHUB_ISSUES_TOKEN
 # Hermes needs the real terminal, not the log pipes.
 exec 1>&3 2>&4
+rescue_progress_step 10 "$total_steps" 'Membuka Hermes / Opening Hermes'
+if ((persistence_warn)); then
+  printf '\nPERINGATAN: persistensi TIDAK aktif; hasil di sesi RAM ini hilang saat dimatikan kecuali disalin ke USB.\n' >&2
+  printf 'WARNING: persistence is NOT active; results in this RAM session are lost at power-off unless copied to the USB.\n' >&2
+fi
+kickoff="$root/profiles/rescue-hermes/kickoff.md"
+if [[ -r $kickoff && -d $report_dir ]]; then
+  printf 'Hermes terbuka dan langsung menjalankan rekomendasi analisis (folder kerja: laporan).\n'
+  printf 'Hermes opens and starts on the analysis recommendations right away (working folder: the reports).\n'
+  # Working folder = the reports folder, so Hermes uses relative paths. The TUI takes its first turn only from -q
+  # (HERMES_TUI_QUERY; it reads --query-file after the TUI has started), so the fixed kickoff text from the bundle is
+  # passed with -q. It holds no secret and no path (docs/design.md).
+  kickoff_text=$(<"$kickoff")
+  if [[ -n ${kickoff_text//[[:space:]]/} && ${#kickoff_text} -le 8192 ]]; then
+    cd -- "$report_dir"
+    exec hermes chat --tui --provider custom --model mimo-v2.6-flash -s rescue-autorun -q "$kickoff_text"
+  fi
+fi
+# Old bundle without the kickoff file: the previous plain start.
 exec hermes --tui --provider custom --model mimo-v2.6-flash

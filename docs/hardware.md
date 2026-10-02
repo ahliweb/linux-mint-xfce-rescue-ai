@@ -126,6 +126,7 @@ Ganti `/dev/sdX` setelah memeriksa `lsblk` (model, ukuran, transport, status mou
 | `cpu`, `ram`, `vga-display` | ya | di atas minimum | dilewati operator (mode wizard) | di bawah minimum |
 | `usb-boot-media` | ya | sumber live ter-resolve ke disk fisik `TRAN=usb` dengan ukuran >= `--min-usb-gib` | sumber tidak dapat di-resolve, transport bukan USB, atau ukuran tidak terbaca | disk USB ter-resolve tetapi lebih kecil dari minimum |
 | `internet-connectivity` | **tidak** | default route + DNS + HTTPS | salah satunya gagal; catatan: dibutuhkan untuk analisis OpenCode Go dan Hermes, pemindaian lokal tetap berjalan offline | tidak pernah |
+| `persistence-active` | **tidak** | lapisan atas overlay root (`upperdir`) berada di perangkat blok/loop dengan ext2/3/4, btrfs atau xfs, atau parameter kernel `persistent` dengan backend `casper-rw`/`persistence` ter-mount | lapisan atas ada di `tmpfs`/`ramfs`: hasil dan state Hermes hilang saat dimatikan (lihat [persistence](persistence.md#persistence-active-status-persistensi)); `unknown` bila tidak dapat ditentukan | tidak pernah |
 
 Resolusi media live (hanya baca, argv tetap). Sumber mount `/run/live/medium`, `/cdrom`, atau `/media` diikuti ke disk fisiknya dengan dua jalur, sysfs lebih dulu dan `lsblk` sebagai cadangan:
 
