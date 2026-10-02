@@ -425,6 +425,117 @@ class PickerTests(EngineBase):
         self.assertNotIn('Pilih disk', r.stdout)
 
 
+# --------------------------------------------------------------------- failed-unit picker
+
+FAILED = (
+    '\u25cf nginx.service loaded failed failed A high performance web server\n'
+    'cups.service loaded failed failed CUPS Scheduler\n'
+    'bad;name.service loaded failed failed injected\n'
+    '-rf.service loaded failed failed option-like\n'
+    'user@1000.service loaded failed failed User Manager\n'
+    'cups.service loaded failed failed duplicate\n')
+
+
+class UnitPickerTests(EngineBase):
+    UNIT = 'os-linux.restart-failed-units'
+    make_engine = PickerTests.make_engine
+
+    def make_units(self, output=FAILED, answers=(), code=0):
+        eng = self.make_engine(answers=answers)
+        self.tool('systemctl', 'echo "systemctl $*" >> "%s"\n/bin/cat <<\'EOT\'\n%sEOT\nexit %d\n' % (self.log, output, code))
+        return eng
+
+    def units_evidence(self):
+        path = self.host_evidence([('linux-failed-units', 'warn')])
+        ev = json.loads(path.read_text())
+        ev['checks'][0]['target_ref'] = 'os-0'
+        path.write_text(json.dumps(ev))
+        return path
+
+    def unit_action(self):
+        return CATALOG.get(self.UNIT)
+
+    def test_only_valid_failed_services_are_listed_and_the_call_is_read_only(self):
+        eng = self.make_units()
+        self.assertEqual(eng.failed_units(self.unit_action()), ['nginx.service', 'cups.service', 'user@1000.service'])
+        self.assertEqual(self.calls(), ['systemctl --failed --no-legend --plain --type=service'])
+
+    def test_the_list_is_capped(self):
+        out = ''.join('u%d.service loaded failed failed x\n' % n for n in range(60))
+        self.assertEqual(len(self.make_units(out).failed_units(self.unit_action())), engine_mod.UNIT_PICKER_MAX)
+
+    def test_a_picked_number_becomes_the_validated_value(self):
+        eng = self.make_units(answers=['2'])
+        self.assertEqual(eng.resolve_params(self.unit_action(), True, {}), ({'unit': 'cups.service'}, None))
+
+    def test_a_value_outside_the_list_is_rejected(self):
+        for answer in ('9', '0', '-1', 'sshd.service', 'bad;name.service', '1;reboot'):
+            eng = self.make_units(answers=[answer])
+            self.assertEqual(eng.resolve_params(self.unit_action(), True, {}), (None, 'invalid-param'), answer)
+
+    def test_enter_skips_and_a_param_wins_over_the_picker(self):
+        eng = self.make_units(answers=[''])
+        self.assertEqual(eng.resolve_params(self.unit_action(), True, {}), (None, 'missing-param'))
+        eng = self.make_units(answers=['1'])
+        eng.params = {(self.UNIT, 'unit'): 'sshd.service'}
+        self.assertEqual(eng.resolve_params(self.unit_action(), True, {}), ({'unit': 'sshd.service'}, None))
+
+    def test_an_empty_or_unavailable_list_keeps_the_free_text_prompt(self):
+        for eng in (self.make_units(''), self.make_units(code=1)):
+            eng.ask = lambda prompt: 'sshd.service' if 'value for unit' in prompt else ''
+            self.assertEqual(eng.resolve_params(self.unit_action(), True, {}), ({'unit': 'sshd.service'}, None))
+        eng = self.make_engine()
+        eng.ask = lambda prompt: 'sshd.service'
+        self.assertEqual(eng.resolve_params(self.unit_action(), True, {}), ({'unit': 'sshd.service'}, None))
+
+    def test_an_action_with_a_target_root_never_lists_the_host(self):
+        eng = self.make_units()
+        act = copy.deepcopy(self.unit_action())
+        act['params'].append({'name': 'root', 'type': 'target_root'})
+        self.assertIsNone(eng.failed_units(act))
+        self.assertEqual(self.calls(), [])
+
+    @unittest.skipIf(os.geteuid() == 0, 'running as root')
+    def test_interactive_run_lists_picks_runs_and_journals_only_the_chosen_value(self):
+        self.sudo(usable=True)
+        self.tool('systemctl', 'echo "systemctl $*" >> "%s"\n[ "$1" = --failed ] && printf \'%%s\\n\' '
+                  '"secretsvc.service loaded failed failed Secret Description" "othersvc.service loaded failed failed x" && exit 0\n[ "$1" = is-failed ] && exit 1\nexit 0\n' % self.log)
+        ev = self.units_evidence()
+        code, out = self.pty_engine(['1', 'ya'], '--policy', 'approve-each', evidence=ev)
+        self.assertEqual(code, 0, out)
+        self.assertIn('secretsvc.service', out)
+        self.assertNotIn('Secret Description', out)
+        self.assertIn('systemctl restart secretsvc.service', ' '.join(self.calls()))
+        self.assertEqual(self.stages(self.UNIT)[-1], ('verify', 'ok', None))
+        # the journal keeps what it has always kept for a parameter (the chosen, validated value, as for --param):
+        # not the other listed units, not the description
+        text = self.journal.read_text()
+        self.assertEqual([r['params'] for r in self.records() if r.get('params')], [{'unit': 'secretsvc.service'}])
+        self.assertNotIn('othersvc', text)
+        self.assertNotIn('Secret Description', text)
+
+    @unittest.skipIf(os.geteuid() == 0, 'running as root')
+    def test_interactive_skip_is_missing_param(self):
+        self.sudo(usable=True)
+        self.tool('systemctl', 'echo "systemctl $*" >> "%s"\necho "nginx.service loaded failed failed x"\n' % self.log)
+        ev = self.units_evidence()
+        code, out = self.pty_engine([''], '--policy', 'approve-each', evidence=ev)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stages(self.UNIT)[-1], ('approval', 'skipped', 'missing-param'))
+        self.assertNotIn('restart', ' '.join(self.calls()))
+
+    @unittest.skipIf(os.geteuid() == 0, 'running as root')
+    def test_non_interactive_runs_keep_missing_param(self):
+        self.sudo(usable=True)
+        self.tool('systemctl', 'echo "systemctl $*" >> "%s"\necho "nginx.service loaded failed failed x"\n' % self.log)
+        ev = self.units_evidence()
+        r = self.run_engine('--approve', self.UNIT, evidence=ev)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.stages(self.UNIT)[-1], ('approval', 'skipped', 'missing-param'))
+        self.assertNotIn('Pilih unit', r.stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith('systemctl')], [])
+
+
 # --------------------------------------------------------------------- batch approval
 
 class BatchTests(EngineBase):
