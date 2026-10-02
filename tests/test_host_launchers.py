@@ -609,7 +609,9 @@ class LinuxHermesTests(unittest.TestCase):
         return [json.loads(line) for line in self.out.read_text().splitlines()] if self.out.exists() else []
 
     def pty_run(self, *args, **extra):
-        return run_in_pty([str(self.script), *args], self.env(**extra), self.tmp)
+        # detect-only: these tests are about Hermes, not repairs. On a CI runner with passwordless sudo the engine would
+        # otherwise offer root actions and wait at its approval prompt on the pseudo-terminal until the timeout.
+        return run_in_pty([str(self.script), '--repair-policy', 'detect-only', *args], self.env(**extra), self.tmp)
 
     def test_hermes_starts_on_a_terminal_with_the_fixed_argv_cwd_and_environment(self):
         self.add_runtime()
