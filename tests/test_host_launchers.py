@@ -965,12 +965,14 @@ class PowerShellLauncherTests(unittest.TestCase):
         proc = self.pwsh('-File', str(script), '-EvidenceOnly')  # layout: <bundle>/host/ -> ../
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         reports = sorted((bundle / 'reports').iterdir())
-        # evidence + the run report (run-<utc>/ and index.md, docs/run-report.md); nothing else on the USB
-        self.assertEqual([p.name for p in reports if not p.name.startswith('run-') and p.name != 'index.md'],
-                         [p.name for p in reports if p.name.startswith('windows-')])
+        # evidence + latest-evidence.json + the follow-up + the run report (run-<utc>/ and index.md,
+        # docs/run-report.md); nothing else on the USB (#72)
+        self.assertEqual([p.name for p in reports if not p.name.startswith('run-') and p.name not in (
+            'index.md', 'latest-evidence.json') and not p.name.startswith('followup-')],
+            [p.name for p in reports if p.name.startswith('windows-')])
         evidence = one(bundle.joinpath('reports').glob('windows-*-evidence.json'), self)
         self.assertEqual(len([p for p in reports if p.name.startswith('run-')]), 1, [p.name for p in reports])
-        self.assertEqual(len(reports), 3, [p.name for p in reports])
+        self.assertEqual(len(reports), 5, [p.name for p in reports])
         validate_evidence(self, evidence)
         text = evidence.read_text(encoding='utf-8')
         assert_no_identity(self, text, self.tmp)
@@ -1535,6 +1537,535 @@ class MacModuleHookTests(unittest.TestCase):
         for args in (('--scope', 'all,os'), ('--scope', 'hardware,hardware.cpu'), ('--repair-policy', 'x')):
             with self.subTest(args=args):
                 self.assertEqual(self.run_launcher('--evidence-only', *args).returncode, 64)
+
+
+# ---------------------------------------------------------------------------------------
+# Windows launcher continues into Hermes (ahliweb/linux-mint-xfce-rescue-ai#72)
+# ---------------------------------------------------------------------------------------
+
+def followup_schema():
+    """The follow-up schema: the repository file when it exists (after #69), otherwise an equivalent built here."""
+    path = REPO / 'rescue-ai' / 'v1' / 'followup.schema.json'
+    if path.exists():
+        return json.loads(path.read_text(encoding='utf-8'))
+    number = {'type': 'number', 'minimum': 0, 'maximum': 1000000000000000}
+    enum = lambda *names: {'type': 'string', 'enum': list(names)}  # noqa: E731
+    values = {k: number for k in (
+        'reallocated', 'pending', 'offline_uncorrectable', 'power_on_hours', 'temperature_c', 'selftest_percent_remaining',
+        'nvme_percentage_used', 'nvme_media_errors', 'nvme_critical_warning', 'nvme_available_spare', 'total', 'sampled',
+        'detections', 'signature_age_days', 'restore_points', 'kernel', 'storage', 'filesystem', 'network', 'display_gpu',
+        'audio', 'usb', 'bluetooth', 'power_acpi', 'systemd', 'security_auth', 'application', 'other')}
+    for key in ('smart_passed', 'truncated', 'signature_stale', 'db_present', 'persistence_active', 'cmdline_persistent'):
+        values[key] = {'type': 'boolean'}
+    values['selftest'] = enum('completed-ok', 'in-progress', 'failed', 'aborted', 'none', 'unknown')
+    values['coverage'] = enum('complete', 'incomplete', 'stale-signatures', 'not-scanned', 'budget-exhausted',
+                              'detections-found', 'unknown')
+    values['upper_backing'] = enum('block', 'loop', 'tmpfs', 'unknown')
+    values['encryption_state'] = enum('on', 'off', 'suspended', 'unknown')
+    values['boot_config'] = enum('ok', 'missing', 'unreadable', 'unknown')
+    item = {
+        'type': 'object', 'additionalProperties': False,
+        'required': ['check_id', 'followup_id', 'status', 'reason', 'values'],
+        'properties': {
+            'check_id': enum('smart-health', 'nvme-health', 'linux-journal-errors', 'malware-scan', 'malware-signatures',
+                             'persistence', 'windows-event-log-errors', 'encryption-status', 'windows-boot-config',
+                             'windows-restore-points'),
+            'target_ref': {'type': 'string', 'pattern': '^(os|disk|and|prn)-[0-9]{1,2}$'},
+            'followup_id': enum('disk.attributes', 'disk.selftest-result', 'journal.categories', 'malware.coverage',
+                                'malware.signatures', 'persistence.active', 'windows.event-log-categories',
+                                'windows.encryption-state', 'windows.boot-config', 'windows.restore-points'),
+            'status': enum('pass', 'warn', 'fail', 'unknown', 'not_applicable'),
+            'reason': enum('ok', 'attention', 'needs-root', 'needs-admin', 'tool-missing', 'no-data', 'in-progress',
+                           'timeout', 'unsupported', 'not-mounted', 'no-journal', 'not-scanned', 'budget', 'db-missing',
+                           'db-stale', 'detections', 'incomplete', 'other'),
+            'values': {'type': 'object', 'additionalProperties': False, 'properties': values},
+        },
+    }
+    return {
+        '$schema': 'https://json-schema.org/draft/2020-12/schema', 'type': 'object', 'additionalProperties': False,
+        'required': ['schema_version', 'run_id', 'mode', 'generated_at', 'items'],
+        'properties': {
+            'schema_version': {'type': 'string', 'const': '1.0'},
+            'run_id': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$'},
+            'mode': enum('live-linux', 'linux-host', 'windows-host'),
+            'generated_at': {'type': 'string', 'pattern': r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'},
+            'items': {'type': 'array', 'maxItems': 200, 'items': item},
+        },
+    }
+
+
+def validate_followup(testcase, document):
+    if not HAVE_JSONSCHEMA:
+        return
+    import jsonschema
+    jsonschema.Draft202012Validator(followup_schema()).validate(document)
+
+
+class WindowsHermesStaticTests(unittest.TestCase):
+    """Source-level checks that need no PowerShell."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ps = PS1.read_text(encoding='utf-8')
+        cls.cmd = (HOST / 'RESCUE-WINDOWS.cmd').read_text(encoding='ascii')
+
+    def function_body(self, name):
+        start = self.ps.index('function %s ' % name) if ('function %s ' % name) in self.ps else self.ps.index('function %s{' % name)
+        nxt = re.search(r'^function ', self.ps[start + 10:], re.M)
+        return self.ps[start:start + 10 + nxt.start()] if nxt else self.ps[start:]
+
+    def test_params_and_wrapper_pass_through(self):
+        param_block = self.ps[self.ps.index('param('):self.ps.index('$script:Endpoint')]
+        self.assertIn('[switch]$NoHermes', param_block)
+        self.assertIn('[switch]$HermesOnly', param_block)
+        self.assertIn('%*', self.cmd)
+        self.assertIn('-NoHermes', self.cmd)
+        self.assertIn('-HermesOnly', self.cmd)
+        self.assertRegex(self.cmd, r'(?im)^pause\b')
+
+    def test_no_dynamic_code_no_elevation_no_dot_sourced_config(self):
+        for pattern in (r'Invoke-Expression', r'\biex\b', r'-Verb\b', r'RunAs', r'Start-Process', r'gsudo',
+                        r'\bsource\b.*rescue\.env', r'^\s*\.\s+[\$"\']'):
+            self.assertIsNone(re.search(pattern, self.ps, re.M | re.I), pattern)
+
+    def test_hermes_argv_is_exactly_the_documented_one(self):
+        body = self.function_body('Get-RescueHermesLaunch')
+        argv = re.search(r"Argv\s*=\s*@\((.*?)\)\n", body, re.S).group(1)
+        parts = [p.strip() for p in re.sub(r'\s+', ' ', argv).split(',')]
+        self.assertEqual(parts, ["'-m'", "'hermes_cli.main'", "'chat'", "'--cli'", "'--provider'", "'custom'", "'--model'",
+                                 '$script:ModelId', "'-s'", "'rescue-autorun'", "'--query-file'", '$kickoff'])
+        self.assertIn("$script:ModelId = 'mimo-v2.6-flash'", self.ps)
+        self.assertIn("'windows-x86_64'", body)
+        self.assertIn("'hermes-portable'", body)
+        self.assertIn("'python.exe'", body)
+        self.assertIn("'kickoff.md'", body)
+        self.assertEqual(body.count('$ApiKey'), 3)  # parameter, emptiness test, environment entry: never the argv
+
+    def test_the_key_is_only_in_the_child_environment(self):
+        launch = self.function_body('Get-RescueHermesLaunch')
+        start = self.function_body('Start-RescueHermes')
+        self.assertIn("$envMap['OPENCODE_GO_API_KEY'] = $ApiKey", launch)
+        self.assertNotIn('ApiKey', start)
+        self.assertNotIn('-ArgumentList', start)
+        self.assertIn('ConvertTo-CommandLine -Argv ([string[]]$Launch.Argv)', start)
+        self.assertIn('$psi.EnvironmentVariables[[string]$k]', start)
+        self.assertIn('UseShellExecute = $false', start)
+        # nothing in this process's own environment is changed to start Hermes
+        phase = self.function_body('Invoke-HermesPhase') + start + launch
+        self.assertIsNone(re.search(r'\$env:\w+\s*=', phase))
+        self.assertIsNone(re.search(r'SetEnvironmentVariable', phase))
+        # nothing prints the key
+        for line in self.ps.splitlines():
+            if re.search(r'(?i)write-host|write-output', line):
+                self.assertNotRegex(line, r'(?i)\$\{?(key|apikey)\b')
+
+    def test_the_issues_token_is_removed_from_the_child_environment(self):
+        launch = self.function_body('Get-RescueHermesLaunch')
+        self.assertRegex(launch, r"RemoveEnv\s*=\s*@\('RESCUE_GITHUB_ISSUES_TOKEN'")
+        self.assertIn('RemoveEnv', self.function_body('Start-RescueHermes'))
+        self.assertNotIn('RESCUE_GITHUB_ISSUES_TOKEN', self.function_body('Initialize-HermesHome'))
+
+    def test_process_scoped_environment_names(self):
+        launch = self.function_body('Get-RescueHermesLaunch')
+        for name in ('HERMES_HOME', 'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+                     'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'PYTHONDONTWRITEBYTECODE', 'PYTHONNOUSERSITE', 'PYTHONUTF8'):
+            self.assertRegex(launch, r'\b%s\s*=' % name)
+        self.assertIn("Join-Path $Bundle 'hermes-home'", launch)
+        self.assertIn('WorkingDirectory = $Reports', launch)
+
+    def test_progress_for_every_phase_and_completed_before_hermes(self):
+        self.assertIn('Write-Progress', self.ps)
+        self.assertIn('-Completed', self.ps)
+        for phase in ('collect', 'validate', 'analyze', 'repairs', 'rescan', 'followup', 'report', 'hermes'):
+            self.assertIn("'%s'" % phase, self.ps)
+        enabled = self.function_body('Test-ProgressEnabled')
+        self.assertIn("RESCUE_PROGRESS", enabled)
+        self.assertIn("'dumb'", enabled)  # no bar (and no cursor query) on a dumb terminal or a test pseudo-terminal
+        phase_fn = self.function_body('Write-RescuePhase')
+        self.assertIn("Write-Host ('[' + $info.Index + '/' + $info.Total + '] ' + $info.Label)", phase_fn)
+        hermes = self.function_body('Invoke-HermesPhase')
+        self.assertLess(hermes.index('Complete-RescueProgress'), hermes.index('Start-RescueHermes'))
+        self.assertLess(hermes.rindex('Complete-RescueProgress'), hermes.index('Start-RescueHermes'))
+
+    def test_report_and_index_exist_before_hermes_and_hermes_never_sets_the_exit_code(self):
+        main = self.function_body('Invoke-RescueMain')
+        self.assertLess(main.index('Send-RunReport'), main.index('Invoke-HermesPhase'))
+        self.assertLess(main.index('Invoke-FollowupPhase'), main.index('Send-RunReport'))
+        for name in ('Invoke-HermesPhase', 'Start-RescueHermes', 'Initialize-HermesHome'):
+            self.assertNotIn('$script:ExitCode', self.function_body(name))
+        self.assertIn("-ccontains [string]$r.Outcome", main)
+        for gate in ('$NoHermesMode', '$offline', '$ListOnly'):
+            self.assertIn(gate, main)
+
+    def test_hermes_runs_in_this_console_and_gates_on_runtime_and_console(self):
+        phase = self.function_body('Invoke-HermesPhase')
+        for needle in ('Test-HermesInteractive', 'unsupported-arch', 'runtime-missing', 'hermes-portable.md', 'no-key'):
+            self.assertIn(needle, phase)
+        start = self.function_body('Start-RescueHermes')
+        for forbidden in ('RedirectStandard', 'CreateNoWindow', 'WindowStyle'):
+            self.assertNotIn(forbidden, start)
+        interactive = self.function_body('Test-HermesInteractive')
+        for needle in ('UserInteractive', 'IsInputRedirected', 'IsOutputRedirected'):
+            self.assertIn(needle, interactive)
+        self.assertIn("'x86_64'", self.function_body('Get-HostArch'))
+
+    def test_rescan_only_after_an_execute_ok_record(self):
+        tracked = self.function_body('Invoke-RepairTracked')
+        self.assertIn('Test-JournalExecutedOk', tracked)
+        self.assertNotIn('Contains(\'"stage":"execute"\')', tracked)
+        journal = self.function_body('Test-JournalExecutedOk')
+        for needle in ('ConvertFrom-Json', "'execute'", "'ok'", '$RunId'):
+            self.assertIn(needle, journal)
+
+    def test_followup_uses_only_closed_vocabulary(self):
+        model = self.function_body('New-FollowupModel')
+        self.assertIn("mode           = 'windows-host'", model)
+        self.assertIn("schema_version = '1.0'", model)
+        for needle in ("'windows.event-log-categories'", "'windows.encryption-state'", "'windows.boot-config'",
+                       "'windows.restore-points'", "'needs-admin'"):
+            self.assertIn(needle, model)
+        for forbidden in ('ProviderName', 'Message', 'FilePath'):
+            self.assertNotIn(forbidden, model)
+        job = self.function_body('Get-SystemEventProviders')
+        self.assertIn('Wait-Job', job)
+        self.assertIn('-Timeout', job)
+        self.assertIn('-MaxEvents', job)
+
+
+@unittest.skipUnless(PWSH, 'pwsh not installed')
+class WindowsHermesTests(unittest.TestCase):
+    """Run the launcher's new functions under pwsh (CI). Nothing here starts Hermes or touches a network."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='host-ps-hermes-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.usb, self.bundle = make_usb(self.tmp)
+        self.script = self.bundle / 'host' / 'rescue-windows.ps1'
+
+    def pwsh(self, *args, env=None):
+        return subprocess.run([PWSH, '-NoProfile', '-NonInteractive', *args], capture_output=True, text=True,
+                              env=env or clean_env(), cwd=self.tmp, timeout=300, stdin=subprocess.DEVNULL)
+
+    def library(self, body, **env):
+        """Dot-source the launcher in library mode, run `body`, return the JSON the body wrote to $env:RESCUE_OUT."""
+        driver = self.tmp / 'driver.ps1'
+        driver.write_text("$ErrorActionPreference = 'Stop'\n$env:RESCUE_PS_LIBRARY_ONLY = '1'\n. $env:RESCUE_PS1\n"
+                          "$res = [ordered]@{}\n" + body +
+                          "\n[System.IO.File]::WriteAllText($env:RESCUE_OUT, (ConvertTo-RescueJson -Value $res -Indent 2), "
+                          "(New-Object System.Text.UTF8Encoding($false)))\n", encoding='utf-8')
+        out = self.tmp / 'out.json'
+        if out.exists():
+            out.unlink()
+        proc = self.pwsh('-File', str(driver), env=clean_env(RESCUE_PS1=str(PS1), RESCUE_OUT=str(out),
+                                                             RESCUE_BUNDLE=str(self.bundle), RESCUE_TMP=str(self.tmp), **env))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(out.read_text(encoding='utf-8'))
+
+    def install_runtime(self, kickoff=True):
+        py = self.bundle / 'hermes-portable' / 'windows-x86_64' / 'python' / 'python.exe'
+        py.parent.mkdir(parents=True)
+        py.write_bytes(b'')
+        kick = self.bundle / 'profiles' / 'rescue-hermes' / 'kickoff.md'
+        if kickoff and not kick.exists():
+            kick.write_text('kickoff placeholder\n', encoding='utf-8')
+        return py, kick
+
+    # -- launch contract -------------------------------------------------------------------
+    def test_launch_argv_env_and_cwd(self):
+        py, kick = self.install_runtime()
+        reports = self.bundle / 'reports'
+        res = self.library("$l = Get-RescueHermesLaunch -Bundle $env:RESCUE_BUNDLE -Reports (Join-Path $env:RESCUE_BUNDLE 'reports') "
+                           "-ApiKey 'dummy-test-key-123' -HostArch 'x86_64'\n"
+                           "$res['status'] = $l.Status; $res['python'] = $l.Python; $res['argv'] = @($l.Argv); "
+                           "$res['env'] = $l.Env; $res['remove'] = @($l.RemoveEnv); $res['cwd'] = $l.WorkingDirectory; "
+                           "$res['cmdline'] = ConvertTo-CommandLine -Argv ([string[]]$l.Argv)")
+        self.assertEqual(res['status'], 'ready')
+        self.assertEqual(res['python'], str(py))
+        self.assertEqual(res['argv'], ['-m', 'hermes_cli.main', 'chat', '--cli', '--provider', 'custom', '--model',
+                                       'mimo-v2.6-flash', '-s', 'rescue-autorun', '--query-file', str(kick)])
+        self.assertNotIn(DUMMY_KEY, ' '.join(res['argv']) + res['cmdline'])
+        self.assertEqual(res['cwd'], str(reports))
+        hh = self.bundle / 'hermes-home'
+        env = res['env']
+        self.assertEqual(env['HERMES_HOME'], str(hh))
+        self.assertEqual(env['TEMP'], str(hh / 'tmp'))
+        self.assertEqual(env['TMP'], str(hh / 'tmp'))
+        for name in ('LOCALAPPDATA', 'APPDATA', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
+            self.assertTrue(env[name].startswith(str(hh)), name)
+        self.assertEqual((env['PYTHONDONTWRITEBYTECODE'], env['PYTHONNOUSERSITE'], env['PYTHONUTF8']), ('1', '1', '1'))
+        self.assertEqual(env['OPENCODE_GO_API_KEY'], DUMMY_KEY)
+        self.assertIn('RESCUE_GITHUB_ISSUES_TOKEN', res['remove'])
+        self.assertNotIn('RESCUE_GITHUB_ISSUES_TOKEN', env)
+        for value in env.values():
+            if value != DUMMY_KEY and value != '1':
+                self.assertTrue(value.startswith(str(self.bundle)), value)
+
+    def test_launch_statuses(self):
+        call = ("$l = Get-RescueHermesLaunch -Bundle $env:RESCUE_BUNDLE -Reports $env:RESCUE_TMP -HostArch '%s'\n"
+                "$res['status'] = $l.Status; $res['has_key'] = $l.Env.Contains('OPENCODE_GO_API_KEY')")
+        self.assertEqual(self.library(call % 'x86_64')['status'], 'runtime-missing')
+        self.install_runtime(kickoff=False)
+        kick = self.bundle / 'profiles' / 'rescue-hermes' / 'kickoff.md'
+        kick.unlink(missing_ok=True)
+        res = self.library(call % 'x86_64')
+        self.assertEqual((res['status'], res['has_key']), ('kickoff-missing', False))
+        kick.write_text('x', encoding='utf-8')
+        self.assertEqual(self.library(call % 'x86_64')['status'], 'ready')
+        self.assertEqual(self.library(call % 'other')['status'], 'unsupported-arch')
+
+    def test_hermes_home_is_seeded_and_refreshed_without_touching_state(self):
+        self.install_runtime()
+        shutil.copytree(REPO / 'config', self.bundle / 'config', ignore=shutil.ignore_patterns('rescue.env', '.env'))
+        hh = self.bundle / 'hermes-home'
+        (hh / 'memories').mkdir(parents=True)
+        (hh / 'memories' / 'm.md').write_text('keep me', encoding='utf-8')
+        (hh / 'state.db').write_text('keep db', encoding='utf-8')
+        (hh / 'SOUL.md').write_text('stale', encoding='utf-8')
+        self.library("$l = Get-RescueHermesLaunch -Bundle $env:RESCUE_BUNDLE -Reports $env:RESCUE_TMP -HostArch 'x86_64'\n"
+                     "Initialize-HermesHome -Bundle $env:RESCUE_BUNDLE -Launch $l\n$res['ok'] = $true")
+        prof = self.bundle / 'profiles' / 'rescue-hermes'
+        self.assertEqual((hh / 'SOUL.md').read_bytes(), (prof / 'SOUL.md').read_bytes())
+        self.assertEqual((hh / 'AGENTS.md').read_bytes(), (prof / 'AGENTS.md').read_bytes())
+        self.assertEqual((hh / 'config.yaml').read_bytes(), (REPO / 'config' / 'hermes-rescue.config.yaml').read_bytes())
+        skills = [p.name for p in (prof / 'skills').iterdir() if (p / 'SKILL.md').exists()]
+        self.assertTrue(skills)
+        for name in skills:
+            self.assertEqual((hh / 'skills' / name / 'SKILL.md').read_bytes(), (prof / 'skills' / name / 'SKILL.md').read_bytes())
+        self.assertEqual((hh / 'memories' / 'm.md').read_text(encoding='utf-8'), 'keep me')
+        self.assertEqual((hh / 'state.db').read_text(encoding='utf-8'), 'keep db')
+        for sub in ('tmp', 'localappdata', 'appdata', 'xdg/cache', 'xdg/data', 'xdg/config', 'xdg/state'):
+            self.assertTrue((hh / sub).is_dir(), sub)
+
+    # -- journal trigger ---------------------------------------------------------------------
+    def test_rescan_trigger_needs_an_execute_ok_record_of_this_run(self):
+        def rec(run, stage, outcome, seq):
+            return json.dumps({'run_id': run, 'stage': stage, 'outcome': outcome, 'seq': seq})
+        cases = {
+            'ok': [rec('r1', 'proposed', 'ok', 1), rec('r1', 'execute', 'ok', 2)],
+            'failed': [rec('r1', 'execute', 'fail', 1), rec('r1', 'rollback', 'ok', 2)],
+            'unavailable': [rec('r1', 'execute', 'unavailable', 1)],
+            'other_run': [rec('r0', 'execute', 'ok', 1)],
+            'no_execute': [rec('r1', 'verify', 'ok', 1), rec('r1', 'approval', 'declined', 2)],
+            'garbage': ['not json', '', '{"run_id":"r1"}'],
+            'mixed': ['not json', rec('r0', 'execute', 'ok', 1), rec('r1', 'execute', 'fail', 2), rec('r1', 'execute', 'ok', 3)],
+        }
+        (self.tmp / 'cases.json').write_text(json.dumps(cases), encoding='utf-8')
+        res = self.library("$cases = Get-Content -Raw -LiteralPath (Join-Path $env:RESCUE_TMP 'cases.json') | ConvertFrom-Json\n"
+                           "foreach ($p in $cases.PSObject.Properties) { $res[$p.Name] = (Test-JournalExecutedOk -Lines ([string[]]@($p.Value)) -RunId 'r1') }")
+        self.assertEqual({k for k, v in res.items() if v}, {'ok', 'mixed'}, res)
+
+    # -- follow-up -------------------------------------------------------------------------------
+    EVENT_PROVIDERS = ['disk', 'disk', 'Ntfs', 'Tcpip', 'Microsoft-Windows-Kernel-Power', 'Service Control Manager',
+                       'nvlddmkm', 'Microsoft-Windows-Kernel-General', 'USBHUB3', 'BTHUSB', 'Schannel', 'Audiosrv',
+                       'Microsoft-Windows-Audio', 'WeirdVendorService-X']
+
+    FOLLOWUP_DRIVER = r'''
+$checks = @(
+  (New-Check -Id 'os-detection' -Status 'pass'),
+  (New-Check -Id 'encryption-status' -Status 'unknown'),
+  (New-Check -Id 'windows-event-log-errors' -Status 'warn' -Kind 'count' -Number 14),
+  (New-Check -Id 'windows-boot-config' -Status $env:RESCUE_BOOT),
+  (New-Check -Id 'windows-restore-points' -Status $env:RESCUE_RESTORE -Kind 'count' -Number 0),
+  (New-Check -Id 'disk-free-space' -Status 'pass' -Kind 'percent' -Number 40)
+)
+$ev = New-RescueEvidence -Checks $checks -Release 'Windows 11 Pro' -Architecture 'x86_64' -OpaqueSeed 'seed'
+$sample = @{ Ok = $true; Reason = ''; Providers = [string[]]@(Get-Content -LiteralPath (Join-Path $env:RESCUE_TMP 'providers.txt')); Truncated = $false }
+if ($env:RESCUE_EVENTS -eq 'timeout') { $sample = @{ Ok = $false; Reason = 'timeout'; Providers = @(); Truncated = $false } }
+$admin = ($env:RESCUE_ADMIN -eq '1')
+$model = New-FollowupModel -Evidence $ev -RunId $ev['run_id'] -IsAdmin $admin -EventResult $sample
+$res['run_id'] = $ev['run_id']
+$res['path'] = Write-FollowupFile -Reports (Join-Path $env:RESCUE_TMP 'reports') -Model $model
+$bad = New-FollowupModel -Evidence $ev -RunId 'bad id' -IsAdmin $admin -EventResult $sample
+$res['bad_is_null'] = ($null -eq $bad)
+'''
+
+    def run_followup(self, boot='unknown', restore='unknown', admin='0', events='ok', providers=None):
+        (self.tmp / 'reports').mkdir(exist_ok=True)
+        names = self.EVENT_PROVIDERS if providers is None else providers
+        (self.tmp / 'providers.txt').write_text(''.join(n + '\n' for n in names), encoding='utf-8')
+        res = self.library(self.FOLLOWUP_DRIVER, RESCUE_BOOT=boot, RESCUE_RESTORE=restore, RESCUE_ADMIN=admin, RESCUE_EVENTS=events)
+        self.assertTrue(res['bad_is_null'])
+        path = Path(res['path'])
+        self.assertEqual(path.name, 'followup-%s.json' % res['run_id'])
+        text = path.read_text(encoding='utf-8')
+        return json.loads(text), text
+
+    def test_followup_without_admin_is_schema_valid_bounded_and_anonymous(self):
+        doc, text = self.run_followup()
+        validate_followup(self, doc)
+        self.assertEqual((doc['schema_version'], doc['mode']), ('1.0', 'windows-host'))
+        items = {i['followup_id']: i for i in doc['items']}
+        self.assertEqual(set(items), {'windows.event-log-categories', 'windows.encryption-state', 'windows.boot-config',
+                                      'windows.restore-points'})
+        event = items['windows.event-log-categories']
+        self.assertEqual((event['check_id'], event['status'], event['reason']), ('windows-event-log-errors', 'warn', 'attention'))
+        self.assertEqual(event['values'], {'storage': 2, 'filesystem': 1, 'network': 1, 'power_acpi': 1, 'application': 1,
+                                           'display_gpu': 1, 'kernel': 1, 'usb': 1, 'bluetooth': 1, 'security_auth': 1,
+                                           'audio': 2, 'other': 1, 'total': 14, 'sampled': 14, 'truncated': False})
+        for name in ('encryption-state', 'boot-config'):
+            item = items['windows.' + name]
+            self.assertEqual((item['status'], item['reason']), ('unknown', 'needs-admin'))
+        self.assertEqual(items['windows.encryption-state']['values'], {'encryption_state': 'unknown'})
+        self.assertEqual(items['windows.boot-config']['values'], {'boot_config': 'unknown'})
+        self.assertEqual(items['windows.restore-points']['reason'], 'needs-admin')
+        # a provider name or any other free text never reaches the file
+        for needle in self.EVENT_PROVIDERS + ['seed', 'Windows 11']:
+            self.assertNotIn(needle, text)
+        assert_no_identity(self, text, self.tmp)
+
+    def test_followup_values_from_the_evidence_and_admin_session(self):
+        doc, _ = self.run_followup(boot='fail', restore='warn', admin='1')
+        validate_followup(self, doc)
+        items = {i['followup_id']: i for i in doc['items']}
+        self.assertEqual((items['windows.boot-config']['status'], items['windows.boot-config']['values']),
+                         ('fail', {'boot_config': 'missing'}))
+        self.assertEqual((items['windows.restore-points']['status'], items['windows.restore-points']['values']),
+                         ('warn', {'restore_points': 0}))
+        self.assertEqual(items['windows.encryption-state']['reason'], 'no-data')  # elevated but still unreadable
+
+    def test_followup_timeout_and_unflagged_checks(self):
+        doc, _ = self.run_followup(boot='pass', restore='pass', events='timeout')
+        validate_followup(self, doc)
+        ids = {i['followup_id']: i for i in doc['items']}
+        self.assertEqual(set(ids), {'windows.event-log-categories', 'windows.encryption-state'})
+        self.assertEqual((ids['windows.event-log-categories']['status'], ids['windows.event-log-categories']['reason']),
+                         ('unknown', 'timeout'))
+        self.assertEqual(ids['windows.event-log-categories']['values'], {})
+        doc, _ = self.run_followup(boot='pass', restore='pass', providers=[])
+        validate_followup(self, doc)
+        event = [i for i in doc['items'] if i['followup_id'] == 'windows.event-log-categories'][0]
+        self.assertEqual((event['status'], event['reason'], event['values']),
+                         ('pass', 'ok', {'total': 0, 'sampled': 0, 'truncated': False}))
+
+    # -- whole launcher --------------------------------------------------------------------------
+    def test_evidence_only_writes_latest_evidence_followup_and_phase_lines(self):
+        proc = self.pwsh('-File', str(self.script), '-EvidenceOnly')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        reports = self.bundle / 'reports'
+        evidence = one(reports.glob('windows-*-evidence.json'), self)
+        latest = reports / 'latest-evidence.json'
+        self.assertEqual(latest.read_bytes(), evidence.read_bytes())
+        data = json.loads(latest.read_text(encoding='utf-8'))
+        follow = one(reports.glob('followup-*.json'), self)
+        self.assertEqual(follow.name, 'followup-%s.json' % data['run_id'])
+        validate_followup(self, json.loads(follow.read_text(encoding='utf-8')))
+        self.assertTrue((reports / 'index.md').exists())
+        for line in ('[1/5] ', '[2/5] ', '[3/5] ', '[4/5] ', '[5/5] '):
+            self.assertIn(line, proc.stdout)
+        self.assertNotIn('Hermes is opening', proc.stdout)  # -EvidenceOnly never continues into Hermes
+        self.assertFalse((self.bundle / 'hermes-home').exists())
+
+    def test_without_a_key_the_launcher_writes_the_report_and_does_not_start_hermes(self):
+        self.install_runtime()
+        proc = self.pwsh('-File', str(self.script))
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertNotIn('Hermes is opening', proc.stdout)
+        self.assertTrue((self.bundle / 'reports' / 'index.md').exists())
+        self.assertFalse((self.bundle / 'hermes-home').exists())
+
+    def test_hermes_only_usage_and_non_interactive_behavior(self):
+        self.assertEqual(self.pwsh('-File', str(self.script), '-HermesOnly', '-EvidenceOnly').returncode, 64)
+        self.assertEqual(self.pwsh('-File', str(self.script), '-HermesOnly', '-NoHermes').returncode, 64)
+        proc = self.pwsh('-File', str(self.script), '-HermesOnly')  # no reports yet
+        self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+        reports = self.bundle / 'reports'
+        reports.mkdir()
+        (reports / 'index.md').write_text('# index\n', encoding='utf-8')
+        proc = self.pwsh('-File', str(self.script), '-HermesOnly', env=clean_env(OPENCODE_GO_API_KEY=DUMMY_KEY))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)  # redirected console: a note, not a failure
+        self.assertIn('no interactive console', proc.stdout)
+        self.assertNotIn(DUMMY_KEY, proc.stdout + proc.stderr)
+        self.assertFalse((self.bundle / 'hermes-home').exists())
+
+
+    def run_on_pty(self, env, *args):
+        """Run the launcher with a real pseudo-terminal as stdin and stdout (the 'interactive console' case)."""
+        import select
+        master, slave = os.openpty()
+        proc = subprocess.Popen([PWSH, '-NoProfile', '-File', str(self.script), *args], stdin=slave, stdout=slave,
+                                stderr=slave, env=env, cwd=self.tmp, close_fds=True, start_new_session=True)
+        os.close(slave)
+        out = b''
+        deadline = time.time() + 240
+        while time.time() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.2)
+            if ready:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            elif proc.poll() is not None:
+                break
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        os.close(master)
+        return proc.returncode, out.decode('utf-8', 'replace')
+
+    def test_hermes_only_starts_the_runtime_with_the_documented_argv_environment_and_cwd(self):
+        py, kick = self.install_runtime()
+        record = self.tmp / 'record.txt'
+        py.write_text('#!/bin/bash\n{ for a in "$@"; do printf "ARG<%s>\\n" "$a"; done; printf "CWD<%s>\\n" "$PWD"; env; } '
+                      '> "$RESCUE_FAKE_RECORD"\nexit 7\n', encoding='utf-8')
+        py.chmod(0o755)
+        reports = self.bundle / 'reports'
+        reports.mkdir()
+        (reports / 'index.md').write_text('# index\n', encoding='utf-8')
+        memories = self.bundle / 'hermes-home' / 'memories'
+        memories.mkdir(parents=True)
+        (memories / 'keep.md').write_text('kept', encoding='utf-8')
+        env = clean_env(OPENCODE_GO_API_KEY=DUMMY_KEY, RESCUE_GITHUB_ISSUES_TOKEN='dummy-issues-token-value',
+                        PYTHONPATH='/host/pythonpath', PROCESSOR_ARCHITECTURE='AMD64', TERM='dumb',
+                        RESCUE_FAKE_RECORD=str(record), RESCUE_PROGRESS='0')
+        rc, out = self.run_on_pty(env, '-HermesOnly')
+        self.assertEqual(rc, 0, out)  # Hermes exited 7; the launcher's own code is unchanged
+        self.assertIn('[1/1] Hermes', out)
+        self.assertIn('Hermes is opening', out)
+        self.assertIn('Hermes ended (code 7)', out)
+        self.assertNotIn(DUMMY_KEY, out)
+        text = record.read_text(encoding='utf-8')
+        lines = text.splitlines()
+        args = [line[4:-1] for line in lines if line.startswith('ARG<')]
+        self.assertEqual(args, ['-m', 'hermes_cli.main', 'chat', '--cli', '--provider', 'custom', '--model',
+                                'mimo-v2.6-flash', '-s', 'rescue-autorun', '--query-file', str(kick)])
+        self.assertIn('CWD<%s>' % os.path.realpath(reports), lines)
+        child_env = dict(line.split('=', 1) for line in lines if '=' in line and not line.startswith(('ARG<', 'CWD<')))
+        hh = str(self.bundle / 'hermes-home')
+        self.assertEqual(child_env['HERMES_HOME'], hh)
+        self.assertEqual((child_env['TEMP'], child_env['TMP']), (hh + os.sep + 'tmp',) * 2)
+        self.assertEqual((child_env['PYTHONDONTWRITEBYTECODE'], child_env['PYTHONNOUSERSITE'], child_env['PYTHONUTF8']),
+                         ('1', '1', '1'))
+        self.assertEqual(child_env['OPENCODE_GO_API_KEY'], DUMMY_KEY)
+        for removed in ('RESCUE_GITHUB_ISSUES_TOKEN', 'PYTHONPATH'):
+            self.assertNotIn(removed, child_env)
+        self.assertNotIn('dummy-issues-token-value', text)
+        self.assertEqual((memories / 'keep.md').read_text(encoding='utf-8'), 'kept')
+        self.assertTrue((self.bundle / 'hermes-home' / 'SOUL.md').exists())
+
+    def test_no_key_and_wrong_architecture_are_notes_not_failures(self):
+        self.install_runtime()
+        reports = self.bundle / 'reports'
+        reports.mkdir()
+        (reports / 'index.md').write_text('# index\n', encoding='utf-8')
+        rc, out = self.run_on_pty(clean_env(PROCESSOR_ARCHITECTURE='AMD64', TERM='dumb', RESCUE_PROGRESS='0'), '-HermesOnly')
+        self.assertEqual(rc, 3, out)  # no key
+        self.assertNotIn('Hermes is opening', out)
+        rc, out = self.run_on_pty(clean_env(OPENCODE_GO_API_KEY=DUMMY_KEY, PROCESSOR_ARCHITECTURE='ARM64', TERM='dumb',
+                                            RESCUE_PROGRESS='0'), '-HermesOnly')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('64-bit PowerShell', out)
+        self.assertFalse((self.bundle / 'hermes-home').exists())
+        (self.bundle / 'hermes-portable' / 'windows-x86_64' / 'python' / 'python.exe').unlink()
+        rc, out = self.run_on_pty(clean_env(OPENCODE_GO_API_KEY=DUMMY_KEY, PROCESSOR_ARCHITECTURE='AMD64', TERM='dumb',
+                                            RESCUE_PROGRESS='0'), '-HermesOnly')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('hermes-portable.md', out)
+        self.assertNotIn(DUMMY_KEY, out)
 
 
 if __name__ == '__main__':
