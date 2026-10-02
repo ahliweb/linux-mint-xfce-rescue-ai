@@ -611,7 +611,9 @@ class LinuxHermesTests(unittest.TestCase):
     def pty_run(self, *args, **extra):
         # detect-only: these tests are about Hermes, not repairs. On a CI runner with passwordless sudo the engine would
         # otherwise offer root actions and wait at its approval prompt on the pseudo-terminal until the timeout.
-        return run_in_pty([str(self.script), '--repair-policy', 'detect-only', *args], self.env(**extra), self.tmp)
+        # A narrow scope keeps the real host collection short on slow CI runners (package inventory, large journals).
+        return run_in_pty([str(self.script), '--repair-policy', 'detect-only', '--scope', 'hardware.cpu', *args],
+                          self.env(**extra), self.tmp, timeout=480)
 
     def test_hermes_starts_on_a_terminal_with_the_fixed_argv_cwd_and_environment(self):
         self.add_runtime()
