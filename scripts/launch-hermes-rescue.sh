@@ -286,6 +286,8 @@ else
       after_file="$report_dir/target-evidence-$ts-after.json"
       if scan_once "$after_file"; then
         run_evidence_after=$after_file
+        # Hermes and the follow-up work from the state AFTER the successful repair.
+        cp -f -- "$after_file" "$report_dir/latest-evidence.json" 2>/dev/null || true
       else
         rm -f -- "$after_file" 2>/dev/null || true
         printf 'PERINGATAN: pemindaian ulang gagal; perbandingan sebelum/sesudah tidak tersedia.\nWARNING: the re-scan failed; no before/after comparison.\n' >&2
@@ -306,7 +308,7 @@ fi
 rescue_progress_step 7 "$total_steps" 'Tindak lanjut read-only (SMART, self-test, alasan) / Read-only follow-up (SMART, self-test, reasons)'
 if [[ -n $run_evidence && -s $run_evidence ]]; then
   if ! rescue_progress_run 'tindak lanjut / follow-up' 120 -- sudo -n python3 "$root/scripts/rescue-followup.py" \
-    --evidence "$run_evidence" --reports-dir "$report_dir" --mode live-linux --state-dir "$state_dir"; then
+    --evidence "${run_evidence_after:-$run_evidence}" --reports-dir "$report_dir" --mode live-linux --state-dir "$state_dir"; then
     printf 'PERINGATAN: tindak lanjut read-only gagal atau tidak diizinkan (sudo -n); Hermes tetap dijalankan.\n' >&2
     printf 'WARNING: the read-only follow-up failed or was not permitted (sudo -n); starting Hermes anyway.\n' >&2
   fi
