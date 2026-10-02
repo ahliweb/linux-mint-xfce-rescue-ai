@@ -13,6 +13,8 @@ Label status: **Implemented** (level source, dicakup `make check`), **Hardware-r
 | `host/RESCUE-MACOS.command`: sintaks `zsh -n` dan eksekusi dengan shim perintah macOS | **Implemented** (dilewati bila `zsh` tidak terpasang) |
 | Menjalankan launcher di **Windows 10/11 sungguhan** (CIM, BitLocker, Event Log, Defender, `powershell.exe` 5.1, SmartScreen) | **Hardware-required**, **tidak dijalankan** di lingkungan pengembangan |
 | Menjalankan launcher di **macOS sungguhan** (`fdesetup`, `csrutil`, `diskutil`, `plutil`, `osascript`, Gatekeeper) | **Hardware-required**, **tidak dijalankan** di lingkungan pengembangan |
+| Launcher Linux melanjutkan ke Hermes portabel di USB (argv, cwd, isolasi lingkungan, seeding `hermes-home/`, `--no-hermes`, `--hermes-only`; runtime palsu di uji) | **Implemented** di level source |
+| Hermes portabel sungguhan dari USB (`hermes-portable/linux-x86_64`) di PC Linux nyata, termasuk sesi dengan provider | **Hardware-required** dan **Environment-blocked** (API key, jaringan, biaya provider) |
 | Panggilan cloud sungguhan ke OpenCode Go | **Environment-blocked** (butuh API key dan jaringan; uji otomatis memakai server loopback palsu) |
 | Perbaikan katalog, journal, dan laporan proses dari launcher | **Implemented** di level source; lihat [host-repair.md](host-repair.md) dan [run-report.md](run-report.md) |
 | Menyalin launcher ke root USB | ditangani oleh `prepare-ventoy-usb.sh` (di luar dokumen ini) |
@@ -29,7 +31,10 @@ flowchart TD
     C --> E["Evidence schema 1.2 -> rescue-omes/reports/*-evidence.json"]
     E --> A["OpenCode Go (mimo-v2.6-flash) + analysis-prompt.md"]
     A --> R["Layar + rescue-omes/reports/*-analysis.md"]
-    R --> X["Perbaikan katalog dengan persetujuan + laporan run-UTC/report.md"]
+    R --> X["Perbaikan katalog dengan persetujuan, scan ulang hanya bila ada aksi yang berhasil"]
+    X --> F["Follow-up read-only + laporan run-UTC/report.md + latest-evidence.json"]
+    F -->|"hanya Linux, terminal interaktif, kunci dan runtime ada"| H["Hermes portabel dari USB: kickoff dan skill rescue-autorun"]
+    F -. "--no-hermes / tanpa terminal / tanpa kunci / runtime tidak ada" .-> Z[Selesai, kode keluar run]
     A -. tanpa kunci / jaringan gagal .-> G[Panduan dwibahasa, evidence tetap tersimpan, exit tidak nol]
 ```
 
@@ -86,6 +91,14 @@ Launcher tidak memerlukan Python; hanya alat bawaan macOS (`sw_vers`, `fdesetup`
 
 Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tambahkan `--pause` bila dijalankan lewat "Run in terminal". Launcher memanggil `scripts/opencode-go-analyze.py` dari bundle (validasi schema dan panggilan cloud dilakukan di sana) dan memerlukan `python3` serta `python3-jsonschema` di komputer host.
 
+**Hermes otomatis (Linux).** Setelah laporan proses ditulis, launcher membuka Hermes portabel dari USB dan Hermes langsung mengerjakan rekomendasi (kickoff `profiles/rescue-hermes/kickoff.md`, skill `rescue-autorun`). Keluar dengan `Ctrl+D` atau `/exit`. Urutan fase (`[N/8]`): kumpulkan evidence (bar waktu), validasi, analisis AI, perbaikan katalog, scan ulang, follow-up read-only (`scripts/rescue-followup.py --mode linux-host`), laporan proses, Hermes. Hermes dibuka hanya bila **semua** ini benar: stdin dan stdout adalah terminal, bukan `--no-hermes`, `--evidence-only`, atau `--dry-run`, kunci API ada, analisis tidak berakhir `no-key` atau `network-error`, journal perbaikan bisa dipakai, dan runtime `hermes-portable/linux-x86_64/python/bin/python3` ada di USB (`uname -m` = `x86_64`). Tanpa runtime, launcher mencetak catatan dwibahasa yang menunjuk dokumen Hermes portabel (berkas hermes-portable dari #68, `prepare-ventoy-usb.sh --hermes-portable`); itu bukan kegagalan dan kode keluar tidak berubah. Arsitektur lain mendapat catatan "runtime untuk arsitektur ini tidak ada di USB". Kode keluar Hermes sendiri hanya dicatat di log; kode keluar launcher tetap kode run.
+
+- Perintah yang dijalankan (tanpa shell, kunci tidak pernah ada di argv): `<bundle>/hermes-portable/linux-x86_64/python/bin/python3 -m hermes_cli.main chat --cli --provider custom --model mimo-v2.6-flash -s rescue-autorun --query-file <bundle>/profiles/rescue-hermes/kickoff.md`, dengan cwd `reports/` (Hermes hanya melihat path relatif) dan stdout/stderr langsung ke terminal asli, bukan lewat log tee.
+- Lingkungan hanya untuk proses Hermes: `HERMES_HOME=<bundle>/hermes-home`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` di bawah `hermes-home/xdg/`, `TMPDIR=<bundle>/reports`, `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, `PYTHONSAFEPATH=1`. `HOME` tidak diubah: diuji dengan runtime sungguhan dan `HOME` palsu (`--version`, `chat --cli --help`, dan sesi kickoff nyata), tidak ada satu pun berkas dibuat di `HOME`. `OPENCODE_GO_API_KEY` diekspor hanya di lingkungan proses itu, dibaca sebagai data dari `config/rescue.env` lewat `scripts/lib/rescue-env.sh` (tidak pernah di-`source`), dan `RESCUE_GITHUB_ISSUES_TOKEN` di-`unset`.
+- `hermes-home/` di USB diisi ulang di setiap run dari bundle: `SOUL.md`, `AGENTS.md`, `skills/<nama>/SKILL.md` untuk semua skill profil, dan `config.yaml` dari `config/hermes-rescue.config.yaml` (berkas milik profil ditimpa; memori, sesi, `state.db`, dan log dipertahankan). Mode `0700`/`0600` bila sistem file mendukung (exFAT tidak). Kunci tidak disalin ke `hermes-home/`.
+- `--no-hermes`: jangan buka Hermes. `--hermes-only`: lewati pemindaian, analisis, dan perbaikan; buka Hermes pada laporan yang sudah ada di USB (untuk membuka Hermes lagi nanti). Tanpa laporan sebelumnya kode keluar `5`; Hermes tidak bisa dibuka (tanpa runtime, terminal, atau arsitektur) kode `6`; tanpa kunci kode `3`. Tidak boleh digabung dengan `--no-hermes`, `--evidence-only`, atau `--dry-run` (kode `64`).
+- Scan ulang setelah perbaikan hanya terjadi bila minimal satu aksi run ini mencapai `stage: execute` dengan `outcome: ok` di journal (diparse sebagai JSON). Aksi yang gagal atau tidak tersedia tidak lagi memicu scan ulang. `latest-evidence.json` (salinan evidence run ini, setelah validasi) ditulis ke `reports/` untuk skill `rescue-autorun`.
+
 **Tanpa `python3-jsonschema`** (diperiksa sekali di awal): launcher **tidak memasang apa pun** di host. Ia mencetak catatan dwibahasa (ID/EN) bahwa validasi schema, analisis AI, dan perbaikan katalog membutuhkannya; evidence tetap dikumpulkan (hanya pemeriksaan struktur internal), disimpan di USB, dan tidak ada panggilan jaringan. Analyzer dan engine perbaikan tidak dijalankan (bahkan `--list` tidak). Hasil run `dependency-missing`, kode keluar `6`, dan laporan memuat penanda Kejujuran `host-dependency-missing`. Analisis evidence itu dengan boot dari live USB rescue, atau dari PC lain yang punya `python3-jsonschema`. Dengan `--evidence-only` hasilnya tetap `evidence-only` dan kode `0` (daftar perbaikan dilewati).
 
 ### Opsi
@@ -99,6 +112,8 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `-Scope LIST` | `--scope LIST` | `--scope LIST` | Cakupan deteksi: `all` (default), `hardware`, `hardware.cpu`, ..., `os`, `software`, `software.selected`, `malware` |
 | | | `--malware-full-disk` | Hanya Linux: pindai seluruh sistem (lambat) dengan ClamAV; Windows dan macOS memakai mesin bawaan OS ([malware.md](malware.md)) |
 | `-Packages LIST` | `--packages LIST` | `--packages LIST` | Paket untuk `software.selected` |
+| | | `--no-hermes` | Hanya Linux: jangan buka Hermes di akhir (bawaan: dibuka di terminal interaktif) |
+| | | `--hermes-only` | Hanya Linux: lewati pemindaian, analisis, dan perbaikan; buka Hermes pada laporan yang ada |
 | `-RepairPolicy P` | `--repair-policy P` | `--repair-policy P` | `detect-only`, `approve-each` (default), `auto-safe`. Linux menjalankan `scripts/rescue-repair.py` (persetujuan interaktif; launcher Linux tidak punya `--approve`, jalankan `rescue-repair.py` langsung bila perlu `--approve`, `--param`, atau `--backup-ref`); Windows dan macOS menjalankan engine native ([host-repair.md](host-repair.md)). Journal ada di `reports/repairs/` |
 
 ### Kode keluar
@@ -112,7 +127,7 @@ Manajer file biasanya membuka skrip di editor; jalankan dari terminal, atau tamb
 | `4` | Jaringan atau HTTP error; evidence tetap tersimpan, panduan dwibahasa dicetak. Hasil di laporan proses: `network-error` (tanpa jawaban yang dapat dipakai, atau HTTP 401/403/408/429/5xx) atau `provider-rejected` (provider menjawab HTTP 4xx lain, mis. 400 `MissingSessionID`; pesan memuat kode HTTP dan tipe galat bila berupa token pendek, tidak pernah isi respons) |
 | `5` | Bundle tidak ditemukan, `reports/` di USB tidak bisa ditulis (USB write-protect?), atau journal perbaikan tidak bisa ditulis |
 | `6` | (Linux) `scripts/opencode-go-analyze.py` tidak ada di bundle (`analyzer-missing`), atau `python3-jsonschema` tidak ada di host (`dependency-missing`); evidence tetap tersimpan |
-| `64` | Argumen salah (termasuk `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
+| `64` | Argumen salah (termasuk `--hermes-only` bersama `--no-hermes`, `--evidence-only`, atau `--dry-run`; `--scope`/`--packages`/`--repair-policy` yang tidak valid), atau launcher macOS dijalankan bukan di macOS |
 
 Kode `3` dan `4` didahulukan atas `1` dan `2`: bila analisis gagal, kode analisis yang dilaporkan, dan hasil perbaikan tetap ada di journal dan laporan proses.
 
@@ -128,7 +143,9 @@ Semua output ada di `rescue-omes/reports/`; stempel waktu adalah UTC `YYYYMMDDTH
 | `launcher-linux-<utc>.log` | Hanya Linux: semua yang dicetak launcher dan alat anak (stdout dan stderr) ditambahkan ke sini, `0600` bila sistem file mendukung mode (exFAT tidak), tidak pernah di disk host. Alat-alat itu tidak mencetak kunci API (diuji). Bila engine perbaikan berjalan interaktif (terminal), stdout-nya tampil di terminal saja (journal adalah catatannya); stderr-nya, tempat pesan galat, tetap masuk log |
 | `reports/repairs/journal.jsonl`, `reports/malware-detections-<run>.json` | Journal perbaikan berantai hash; daftar deteksi malware LOKAL (`0600`, berisi path; jangan dibagikan) |
 | `windows-<utc>-analysis.md`, `macos-<utc>-analysis.md`, `linux-<utc>-analysis.md` | Analisis model (Bahasa Indonesia) dengan catatan bahwa isinya hanya untuk dibaca |
-| `*-evidence-after.json` | Evidence pemindaian ulang setelah minimal satu aksi perbaikan dieksekusi (untuk perbandingan sebelum/sesudah) |
+| `*-evidence-after.json` | Evidence pemindaian ulang setelah minimal satu aksi perbaikan dieksekusi **dengan hasil `ok`** (untuk perbandingan sebelum/sesudah) |
+| `latest-evidence.json`, `followup-<run_id>.json` | Hanya Linux: salinan evidence run ini dan hasil follow-up read-only ([learning loop](hermes-learning-loop.md)); dibaca skill `rescue-autorun` |
+| `../hermes-home/` | Hanya Linux: `HERMES_HOME` Hermes portabel (profil, memori, sesi, `state.db`, log, `xdg/`), di `rescue-omes/`, bukan di `reports/` |
 | `run-<utc>/report.md`, `run-<utc>/report.json`, `index.md` | Laporan proses lengkap dan indeks semua run, ditulis di setiap akhir run termasuk yang gagal ([run-report.md](run-report.md)) |
 
 Keluaran model **hanya ditampilkan dan disimpan sebagai teks**; tidak pernah dijalankan atau diparse sebagai perintah. Sesuai [analysis-prompt.md](../profiles/rescue-hermes/analysis-prompt.md), model tidak boleh menyarankan perintah shell atau langkah destruktif sebagai langkah pertama.
@@ -155,13 +172,14 @@ Launcher membaca `rescue-omes/config/rescue.env` **sebagai data**, hanya kunci `
 
 ## Apa yang ditulis ke komputer host
 
-Launcher tidak memasang apa pun dan tidak menulis file ke disk host: tidak ada file sementara di host, evidence dan analisis langsung ke `rescue-omes/reports/` di USB, dan `TMPDIR` diarahkan ke `reports/` pada launcher Unix. Berkas permintaan sementara macOS dibuat di `reports/` dan dihapus setelah dipakai. Batasnya perlu dinyatakan jujur: sistem operasi host sendiri tetap dapat mencatat jejak yang tidak kami kendalikan (misalnya Prefetch dan cache modul PowerShell di Windows, unified log dan riwayat Terminal di macOS, riwayat shell dan jurnal di Linux, serta log keamanan atau EDR milik organisasi).
+Launcher tidak memasang apa pun dan tidak menulis file ke disk host (termasuk Hermes: `HERMES_HOME`, cache XDG, dan `TMPDIR` semuanya di USB): tidak ada file sementara di host, evidence dan analisis langsung ke `rescue-omes/reports/` di USB, dan `TMPDIR` diarahkan ke `reports/` pada launcher Unix. Berkas permintaan sementara macOS dibuat di `reports/` dan dihapus setelah dipakai. Batasnya perlu dinyatakan jujur: sistem operasi host sendiri tetap dapat mencatat jejak yang tidak kami kendalikan (misalnya Prefetch dan cache modul PowerShell di Windows, unified log dan riwayat Terminal di macOS, riwayat shell dan jurnal di Linux, serta log keamanan atau EDR milik organisasi).
 
 ## Verifikasi
 
 `make check` menjalankan `tests/test_host_launchers.py`. Yang **sudah** diverifikasi di level source:
 
 - Linux: evidence valid terhadap schema, tidak memuat hostname/username, `--dry-run` lewat `opencode-go-analyze.py` yang asli, kode keluar 3/4/5/6, server loopback palsu (tanpa jaringan nyata); log launcher (ada, `0600`, tanpa kunci), satu `run_id` untuk evidence dan laporan (evidence sesudah perbaikan memakai `<run_id>-after`), SHA-256 katalog di header laporan (juga tanpa `python3-jsonschema`), dan urutan hasil di atas (analyzer 4/5 dan `no-key` dengan engine kode 2, `journal-unusable` mengalahkan); tanpa `python3-jsonschema` (stub yang gagal diimpor): catatan ID/EN, tidak ada permintaan ke server palsu, engine tidak jalan, hasil `dependency-missing`.
+- Linux dan Hermes (`LinuxHermesTests`, runtime palsu di `hermes-portable/linux-x86_64/python/bin/python3` yang merekam argv, cwd, dan nama lingkungan, pada pseudo-terminal): argv persis, cwd `reports/`, `HERMES_HOME` dan XDG di bundle, kunci hanya di lingkungan (bukan argv, bukan log), `RESCUE_GITHUB_ISSUES_TOKEN` tidak ada, seeding `hermes-home/` (berkas profil ditimpa, memori dipertahankan), laporan, `index.md`, `latest-evidence.json`, dan follow-up sudah ada sebelum Hermes mulai, Hermes tidak dibuka dengan `--no-hermes`, `--evidence-only`, `--dry-run`, tanpa terminal, tanpa kunci, tanpa runtime, atau arsitektur lain (kode keluar tidak berubah), `--hermes-only`, dan scan ulang dilewati setelah aksi gagal tetapi dijalankan setelah aksi `ok`.
 - Urutan hasil di Windows, macOS, dan live USB (`tests/test_run_report.py`, kelas `WindowsReportTests`, `MacReportTests`, `LiveLauncherReportTests`): `-Select`/`--select` yang tidak valid (engine kode 2) dengan `no-key`, `provider-rejected`, atau `network-error` mempertahankan hasil dan kode keluar pertama dan menambah butir `repair-engine-failed`; tanpa kegagalan sebelumnya hasilnya `repair-invalid` (kode 2); journal yang tidak bisa dipakai menghasilkan `journal-unusable` (kode 5) dan butir `exit-3`. Uji statis di `tests/test_host_launchers.py` memeriksa pola ini di keempat launcher tanpa `pwsh` atau `zsh`.
 - PowerShell (bila `pwsh` ada): parse, parser env-file sama dengan `rescue-env.sh` pada 22 kasus, serializer JSON, evidence yang dibangun valid terhadap schema, `-EvidenceOnly` end-to-end di Linux (semua check khusus Windows menjadi `unknown`).
 - zsh (bila `zsh` ada): `zsh -n`, eksekusi penuh dengan shim untuk perintah macOS, kunci hanya di stdin `curl`, isi request JSON benar, parser kunci sama dengan bash.
