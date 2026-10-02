@@ -163,7 +163,8 @@ def run_pty(cmd, env, cwd, answers, timeout=180):
                             start_new_session=True)
     os.close(slave)
     out, fed = b'', 0
-    prompt = re.compile(rb'(Jalankan\? / Run\?|type the action_id to approve: |value for [a-z_]+ \([^)]*\): )')
+    prompt = re.compile(rb'(Jalankan\? / Run\?|type the action_id to approve: |value for [a-z_]+ \([^)]*\): |'
+                        rb'Approve all [0-9]+ safe actions at once\? \[Y/n\]: )')
     deadline = time.time() + timeout
     while time.time() < deadline:
         ready, _, _ = select.select([master], [], [], 0.2)
@@ -290,7 +291,7 @@ class Scenarios:
         catalog = self.load_python_catalog()
         evidence = json.loads(self.evidence_file().read_text(encoding='utf-8'))
         expected = rc.triggered(catalog, evidence, ('all',))
-        listed = re.findall(r'^  - (\S+)\s+(\S+)\s+(\S+)\s+(\S+)$', proc.stdout, re.M)
+        listed = re.findall(r'^  - (\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:  \(perlu root / needs root\))?$', proc.stdout, re.M)
         self.assertEqual([(a, o, t) for a, _r, o, t in listed],
                          [(e['action_id'], e['origin'], e.get('target_ref', '-')) for e in expected])
         self.assertGreaterEqual(len(expected), 6)
@@ -372,7 +373,7 @@ class Scenarios:
         self.assertEqual(self.stage_list('safe-param')[1], ('approval', 'skipped', 'missing-param'))  # never prompted
         self.assertEqual(self.stage_list('rev-fail')[1], ('approval', 'declined', 'not-interactive'))
         self.assertEqual(self.stage_list('destructive')[1], ('backup', 'unavailable', 'missing-backup'))
-        self.assertEqual(self.stage_list('needs-root')[1], ('approval', 'unavailable', 'not-applicable'))
+        self.assertEqual(self.stage_list('needs-root')[1], ('approval', 'unavailable', 'needs-root'))
         self.assertEqual(stages(self.records(), 'hw.disk-fake')[1], ('target-rw', 'unavailable', 'provider-unavailable'))
         verify_with_python(self, self.journal)
 
@@ -481,7 +482,7 @@ class Scenarios:
 
     def test_root_action_is_unavailable_without_elevation_and_never_prompts(self):
         self.repair(self.flag('approve'), self.p('needs-root'))
-        self.assertEqual(self.stage_list('needs-root'), [('proposed', 'ok', None), ('approval', 'unavailable', 'not-applicable')])
+        self.assertEqual(self.stage_list('needs-root'), [('proposed', 'ok', None), ('approval', 'unavailable', 'needs-root')])
 
     def test_journal_unusable_gives_5(self):
         (self.bundle / 'reports').mkdir(exist_ok=True)
@@ -504,12 +505,30 @@ class Scenarios:
         return self._pty(answers, *args)
 
     def test_interactive_yes_no(self):
-        rc_, out = self.interactive(['ya', 'no'], self.flag('select'), '%s,%s' % (self.p('safe-ok'), self.p('slow')),
+        # two safe actions are pending: decline the one-question batch, then answer each action on its own
+        rc_, out = self.interactive(['n', 'ya', 'no'], self.flag('select'), '%s,%s' % (self.p('safe-ok'), self.p('slow')),
                                     self.flag('scope'), 'os')
         self.assertIn('Jalankan?', out)
         self.assertEqual(self.stage_list('slow')[-1], ('approval', 'declined', 'operator-declined'))
         self.assertEqual(self.stage_list('safe-ok')[1], ('approval', 'ok', 'operator-approved'))
         self.assertIn('verified', out)
+
+    def test_interactive_batch_approves_only_the_safe_actions_at_once(self):
+        picks = '%s,%s,%s' % (self.p('safe-ok'), self.p('quote-test'), self.p('rev-fail'))
+        rc_, out = self.interactive(['', 'no'], self.flag('select'), picks, self.flag('scope'), 'os')
+        self.assertIn('Approve all 2 safe actions at once? [Y/n]: ', out)
+        self.assertEqual(self.stage_list('safe-ok')[1], ('approval', 'ok', 'operator-approved-batch'))
+        self.assertEqual(self.stage_list('quote-test')[1], ('approval', 'ok', 'operator-approved-batch'))
+        self.assertEqual(self.stage_list('rev-fail')[-1], ('approval', 'declined', 'operator-declined'))
+        self.assertIn('[1/3] ' + self.p('safe-ok'), out)
+        self.assertIn('[2/3] ' + self.p('quote-test'), out)
+        self.assertNotIn('[3/3]', out)
+        verify_with_python(self, self.journal)
+
+    def test_interactive_batch_is_not_offered_for_a_single_safe_action_and_no_means_per_action(self):
+        rc_, out = self.interactive(['ya'], self.flag('select'), self.p('safe-ok'), self.flag('scope'), 'os')
+        self.assertNotIn('safe actions at once', out)
+        self.assertEqual(self.stage_list('safe-ok')[1], ('approval', 'ok', 'operator-approved'))
 
     def test_interactive_destructive_requires_the_action_id(self):
         d = self.p('destructive')

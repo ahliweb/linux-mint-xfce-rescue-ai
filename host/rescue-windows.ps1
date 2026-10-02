@@ -1568,6 +1568,62 @@ function Write-RepairCard {
     Write-Host ('   doc: ' + $Action.doc)
 }
 
+function Test-RepairUnsupported {
+    # Parameter types a host launcher cannot resolve (the Python engine does): such an action is never run here
+    # (same list as the $unsupported check of Invoke-RepairProposal).
+    param($Action)
+    $bad = @($Action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' -or $_.type -ceq 'fastboot_device' -or $_.type -ceq 'fastboot_slot' -or $_.type -ceq 'firmware_file' -or $_.type -ceq 'sha256' -or $_.type -ceq 'printer_ref' -or $_.type -ceq 'bundle_root' })
+    return ($bad.Count -gt 0)
+}
+
+function Test-RepairBatchable {
+    # Only a plain safe action may be part of the one-question approval: never a quarantine, a reversible,
+    # irreversible or destructive action, one that writes the target or needs a backup, one that needs administrator
+    # rights this session lacks, or one the host launcher cannot run.
+    param($Action)
+    if ($Action.risk -cne 'safe') { return $false }
+    if ($Action.id.StartsWith('mw.quarantine-', [System.StringComparison]::Ordinal)) { return $false }
+    if ($Action.requires_target_rw -or $Action.backup.required) { return $false }
+    if ($script:RepairApprove -ccontains $Action.id) { return $false }
+    if ($Action.requires_root -and -not (Test-IsAdmin)) { return $false }
+    if (Test-RepairUnsupported -Action $Action) { return $false }
+    return $true
+}
+
+function Read-RescueYesDefault {
+    # Empty answer = yes (only the safe-batch question uses it); end of input = no.
+    try { $l = [Console]::ReadLine() } catch { $l = $null }
+    if ($null -eq $l) { return $false }
+    $t = $l.Trim().ToLowerInvariant()
+    return ($t.Length -eq 0 -or @('ya', 'y', 'yes') -contains $t)
+}
+
+function Invoke-RepairBatchPlan {
+    # approve-each + interactive + two or more pending safe actions: show the table of all proposals, then ask once.
+    param($Catalog, $Proposals)
+    $script:RepairBatch = @{}
+    if ($script:RepairPolicy -cne 'approve-each' -or -not $script:RepairInteractive) { return }
+    $keys = @{}
+    foreach ($p in $Proposals) {
+        if (Test-RepairBatchable -Action $Catalog.Actions[$p.action_id]) { $keys[$p.action_id + '|' + [string]$p.target_ref] = $true }
+    }
+    if ($keys.Count -lt 2) { return }
+    Write-Host ''
+    Write-Host 'Menunggu persetujuan / pending approval:'
+    $n = 0
+    foreach ($p in $Proposals) {
+        $n++
+        $a = $Catalog.Actions[$p.action_id]
+        $mark = ' '
+        if ($keys.ContainsKey($p.action_id + '|' + [string]$p.target_ref)) { $mark = '*' }
+        Write-Host (('  {0}{1,2}. {2,-40} {3,-11} {4}' -f $mark, $n, $p.action_id, $a.risk, $a.title))
+    }
+    Write-Host '  (* = aman/safe: dapat disetujui sekaligus / can be approved at once; the others always ask)'
+    $count = $keys.Count
+    Write-Host -NoNewline ('Setujui semua ' + $count + ' aksi aman (safe) sekaligus? / Approve all ' + $count + ' safe actions at once? [Y/n]: ')
+    if (Read-RescueYesDefault) { $script:RepairBatch = $keys }
+}
+
 function Get-RepairApproval {
     # Returns @{ Values; Reason } (Values $null when not approved; the decision is journaled).
     param($Action, $Proposal)
@@ -1596,6 +1652,9 @@ function Get-RepairApproval {
         return @{ Values = $null; Reason = $r.Problem }
     }
     Write-RepairCard -Action $Action -Proposal $Proposal -Values $r.Values
+    if ($Action.risk -ceq 'safe' -and $null -ne $script:RepairBatch -and $script:RepairBatch.ContainsKey($aid + '|' + [string]$Proposal.target_ref)) {
+        return @{ Values = $r.Values; Reason = 'operator-approved-batch' }   # the operator answered yes for all safe actions
+    }
     if ($Action.risk -ceq 'destructive') {
         Write-Host -NoNewline '  Ketik action_id untuk menyetujui / type the action_id to approve: '
         $ok = ((Read-RescueLine) -ceq $aid)
@@ -1612,6 +1671,8 @@ function Get-RepairApproval {
 
 function Invoke-RepairAction {
     param($Action, $Proposal, $Values)
+    Write-Host ''
+    Write-Host ('[' + $script:RepairIndex + '/' + $script:RepairTotal + '] ' + $Action.id + '  risk=' + $Action.risk + '  menjalankan / running')
     $n = 0
     foreach ($pre in @($Action.preconditions)) {
         $r = Invoke-RepairStep -Action $Action -Proposal $Proposal -Stage ('precondition/' + $n) -Step $pre -Values $Values
@@ -1651,8 +1712,8 @@ function Invoke-RepairProposal {
         return 'proposed'
     }
     if ($action.requires_root -and -not (Test-IsAdmin)) {
-        Write-Host ('  ' + $aid + ' needs administrator rights; this launcher never elevates. Run it from an elevated session you opened yourself. / butuh hak administrator; launcher tidak pernah meminta elevasi.') -ForegroundColor Yellow
-        Write-RepairLog -Action $action -Proposal $Proposal -Stage 'approval' -Outcome 'unavailable' -Extra @{ reason = 'not-applicable' }
+        Write-Host ('  ' + $aid + ' needs administrator rights (perlu root / needs root); this launcher never elevates. Run it from an elevated session you opened yourself. / butuh hak administrator; launcher tidak pernah meminta elevasi.') -ForegroundColor Yellow
+        Write-RepairLog -Action $action -Proposal $Proposal -Stage 'approval' -Outcome 'unavailable' -Extra @{ reason = 'needs-root' }
         return 'skipped'
     }
     $unsupported = @($action.params | Where-Object { $_.type -ceq 'block_device' -or $_.type -ceq 'target_root' -or $_.type -ceq 'android_device' -or $_.type -ceq 'fastboot_device' -or $_.type -ceq 'fastboot_slot' -or $_.type -ceq 'firmware_file' -or $_.type -ceq 'sha256' -or $_.type -ceq 'printer_ref' -or $_.type -ceq 'bundle_root' }).Count -gt 0
@@ -1728,6 +1789,9 @@ function Invoke-RepairPhase {
     $script:RepairParams = $ParamMap
     $script:RepairPackages = @($PackageList)
     $script:RepairInteractive = Test-RepairInteractive
+    $script:RepairBatch = @{}
+    $script:RepairIndex = 0
+    $script:RepairTotal = 0
     $families = Get-EvidenceFamilies -Evidence $Evidence
     $proposals = Get-CatalogTriggers -Catalog $Catalog -Evidence $Evidence -Scope $Scope
     $proposals = @($proposals)
@@ -1765,7 +1829,10 @@ function Invoke-RepairPhase {
     foreach ($p in $unique) {
         $tr = '-'
         if ($p.target_ref) { $tr = $p.target_ref }
-        Write-Host ('  - {0,-40} {1,-11} {2,-15} {3}' -f $p.action_id, $Catalog.Actions[$p.action_id].risk, $p.origin, $tr)
+        $rootNote = ''
+        if ($Catalog.Actions[$p.action_id].requires_root -and -not (Test-IsAdmin)) { $rootNote = '  (perlu root / needs root)' }
+        $listLine = '  - {0,-40} {1,-11} {2,-15} {3}' -f $p.action_id, $Catalog.Actions[$p.action_id].risk, $p.origin, $tr
+        Write-Host ($listLine + $rootNote)
     }
     if ($PlanOnly -or $unique.Count -eq 0) { return 0 }
 
@@ -1774,7 +1841,12 @@ function Invoke-RepairPhase {
     try {
         $evSha = Get-Sha256HexBytes -Bytes ([System.IO.File]::ReadAllBytes($EvidencePath))
         Open-RepairJournal -Path $journalPath -RunId ([string]$Evidence['run_id']) -CatalogSha $Catalog.Sha256 -Policy $Policy -EvidenceSha $evSha
-        foreach ($p in $unique) { $outcomes += , @($p, (Invoke-RepairProposal -Catalog $Catalog -Proposal $p -BackupRef $BackupRef)) }
+        $script:RepairTotal = $unique.Count
+        Invoke-RepairBatchPlan -Catalog $Catalog -Proposals $unique
+        foreach ($p in $unique) {
+            $script:RepairIndex = $script:RepairIndex + 1
+            $outcomes += , @($p, (Invoke-RepairProposal -Catalog $Catalog -Proposal $p -BackupRef $BackupRef))
+        }
     } catch {
         Write-Host ('ERROR: ' + $_.Exception.Message) -ForegroundColor Red
         return 5
@@ -1810,7 +1882,7 @@ $script:RrOrigins = @('catalog-trigger', 'ai-proposal', 'operator')
 $script:RrRisks = @('safe', 'reversible', 'irreversible', 'destructive')
 $script:RrStages = @('proposed', 'approval', 'precondition', 'backup', 'target-rw', 'execute', 'verify', 'rollback')
 $script:RrRecordOutcomes = @('ok', 'fail', 'declined', 'skipped', 'timeout', 'unavailable')
-$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch', 'printer-absent', 'printer-mismatch', 'printer-ambiguous')
+$script:RrReasons = @('policy-detect-only', 'not-interactive', 'operator-declined', 'operator-approved', 'cli-approved', 'auto-safe', 'missing-param', 'invalid-param', 'missing-backup', 'provider-unavailable', 'exit-code', 'timeout', 'program-not-found', 'verify-failed', 'rolled-back', 'manual-rollback-required', 'not-applicable', 'device-absent', 'device-not-authorized', 'device-ambiguous', 'device-mismatch', 'bootloader-locked', 'identity-mismatch', 'firmware-invalid', 'firmware-hash-mismatch', 'printer-absent', 'printer-mismatch', 'printer-ambiguous', 'needs-root', 'operator-approved-batch')
 $script:RrTargetEnums = @{
     family = @('linuxmint', 'linux-other', 'windows', 'macos', 'unknown', 'android', 'printer')
     architecture = @('x86_64', 'arm64', 'unknown')

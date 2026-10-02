@@ -48,6 +48,20 @@ jobs: nothing stored is lost but it cannot be undone) always asks, like every cl
 This Python engine executes on the live-linux and linux-host platforms. Windows and macOS
 evidence can be planned here (--list) but is executed by the host launchers' own engines.
 
+Root precheck: an action with ``requires_root`` run by a non-root engine needs non-interactive sudo. The engine probes
+``sudo -n true`` once per run (short timeout, cached); when it is unusable the action is never proposed for approval, nothing
+is prompted or executed, and the journal gets ``approval unavailable needs-root``. The plan listing shows
+"perlu root / needs root". A host launcher never elevates itself, so on a desktop host those actions are skipped.
+
+Batch approval (approve-each, interactive): when two or more ``safe`` actions are pending the engine shows the table of all
+proposals and asks once to approve all of them (default yes on Enter); each is then journaled ``approval ok`` with reason
+``operator-approved-batch``. reversible, irreversible, destructive and quarantine actions are never part of the batch.
+
+Device picker (live-linux and linux-host, interactive only): a ``block_device`` parameter the operator has not supplied is
+chosen from a numbered list of whole disks that the ENGINE reads from lsblk at that moment (the rescue USB, the live media,
+loop/rom devices and removable media are left out unless no other disk exists). The value never comes from evidence, the
+analysis or the model, and is checked against the same list again.
+
 Exit codes: 0 finished, nothing failed | 1 an action failed or was rolled back, or the
 journal chain is broken (--verify-journal) | 2 invalid arguments, evidence, catalog,
 or analysis file | 3 journal not writable
@@ -98,6 +112,9 @@ OUTER_FACTORY_SCRIPTS = ('flash-all.sh', 'flash-all.bat', 'flash-base.sh')
 FORBIDDEN_IMAGE_STEMS = frozenset({'bootloader', 'radio', 'modem', 'persist', 'efs', 'frp', 'devinfo', 'fsg',
                                    'modemst1', 'modemst2', 'userdata'})
 ENGINE_TYPES = ('target_root', 'state_dir', 'android_device', 'fastboot_device', 'fastboot_slot', 'printer_ref', 'bundle_root')
+SUDO_PROBE_SECONDS = 8
+SUDO_CACHE = {}              # search path -> is `sudo -n true` usable (probed at most once per run)
+PICKER_MAX = 32              # at most this many disks are offered by the device picker
 
 
 def utc_now():
@@ -228,6 +245,39 @@ def resolve_argv(argv, requires_root, path):
     return full
 
 
+def sudo_usable(path):
+    """Is non-interactive sudo usable? Probed once per run (`sudo -n true`, short timeout) and cached. Root needs none."""
+    if os.geteuid() == 0:
+        return True
+    if path != SAFE_PATH and os.environ.get('RESCUE_REPAIR_TEST_SUDO_PROBE') != '1':
+        return True      # offline tests with RESCUE_REPAIR_TEST_PATH only probe when they ask for it (fake sudo)
+    if path not in SUDO_CACHE:
+        ok = False
+        sudo = shutil.which('sudo', path=path)
+        if sudo is not None:
+            try:
+                ok = subprocess.run([sudo, '-n', 'true'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, env={'PATH': path, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'},
+                                    timeout=SUDO_PROBE_SECONDS, check=False).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+        SUDO_CACHE[path] = ok
+    return SUDO_CACHE[path]
+
+
+def lacks_root(action, path):
+    """True when *action* needs root, this engine is not root, and non-interactive sudo is not available."""
+    return bool(action.get('requires_root')) and os.geteuid() != 0 and not sudo_usable(path)
+
+
+def human_size(nbytes):
+    size = float(nbytes or 0)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if size < 1000 or unit == 'TB':
+            return ('%d %s' % (size, unit)) if unit == 'B' else ('%.1f %s' % (size, unit))
+        size /= 1000.0
+
+
 def output_has_line(output, expected):
     """Does the combined output contain a line exactly equal to *expected* (control characters stripped)?"""
     for line in output.decode('utf-8', 'replace').splitlines():
@@ -298,8 +348,11 @@ def backup_fingerprint(path):
     return {'size_bytes': st.st_size, 'fingerprint_sha256': digest.hexdigest()}
 
 
-def block_device_eligible(path):
-    """An existing internal disk/partition that is not the rescue USB or other removable media."""
+def block_device_eligible(path, allow_removable=False, keep=()):
+    """An existing internal disk/partition that is not the rescue USB or other removable media.
+
+    *allow_removable* is only for a path the device picker listed because no internal disk exists: removable media then
+    pass, but the live media, the rescue USB, loop/rom devices and Ventoy volumes never do."""
     try:
         if not stat.S_ISBLK(os.stat(path).st_mode):
             return False
@@ -316,18 +369,45 @@ def block_device_eligible(path):
     records = []
     scanner._flatten(tree, None, records)
     bad = scanner.excluded_disks(records)
+    if allow_removable:
+        bad = hard_excluded(scanner, records, keep)
     real = os.path.realpath(path)
     return any(r['path'] in (path, real) and r['disk'] not in bad and r['type'] in ('disk', 'part', 'lvm')
                for r in records)
 
 
 def state_root(args):
-    """The USB state: --state-dir (live) or the reports directory that holds repairs/journal.jsonl (host)."""
+    """The USB state directory (``state_dir`` parameters resolve below it): --state-dir (live), else the reports
+    directory that holds ``repairs/<journal>`` when only --journal is given (host launcher:
+    ``<usb>/rescue-omes/reports/repairs/journal.jsonl`` -> ``<usb>/rescue-omes/reports``). A journal that does not sit in a
+    directory named ``repairs`` gives no state directory (None): the engine refuses state_dir actions instead of
+    guessing a directory next to an arbitrary file."""
     if args.state_dir:
         return args.state_dir
     if args.journal:
-        return os.path.dirname(os.path.dirname(os.path.abspath(args.journal)))
+        parent = os.path.dirname(os.path.abspath(args.journal))
+        if os.path.basename(parent) == 'repairs':
+            return os.path.dirname(parent)
     return None
+
+
+def hard_excluded(scanner, records, keep=()):
+    """Disks that are never a target even when no internal disk exists: loop/rom/zram, the live media, Ventoy
+    volumes, and the disk holding the rescue bundle or the USB state (the rescue USB itself)."""
+    bad = set()
+    here = [str(rc.ROOT)] + [k for k in keep if k]
+    for rec in records:
+        disk, path = rec['disk'], rec['path'] or ''
+        if rec['type'] in ('loop', 'rom') or path.startswith(('/dev/zram', '/dev/loop', '/dev/sr', '/dev/ram')):
+            bad.add(disk)
+        if any(mp in scanner.LIVE_MOUNTPOINTS or mp.startswith('/run/live/') for mp in rec['mountpoints']):
+            bad.add(disk)
+        if (rec['label'] or '').lower() in scanner.VENTOY_LABELS:
+            bad.add(disk)
+        for mp in rec['mountpoints']:
+            if mp != '/' and any(h == mp or h.startswith(mp.rstrip('/') + '/') for h in here):
+                bad.add(disk)
+    return bad
 
 
 def target_provider():
@@ -359,6 +439,9 @@ class Engine:
         self.fb_port = None          # USB port of the fastboot device bound for the current action
         self.android_wait = ANDROID_WAIT_SECONDS
         self.printer_network = bool(getattr(args, 'printer_network', False))   # opt-in for this run (docs/printer.md)
+        self.batch = set()           # (action_id, target_ref) of the safe proposals the operator approved at once
+        self.index, self.total = 0, 0
+        self.removable_ok = set()    # picker choices that are removable media (no internal disk existed)
         self.apply_test_hooks()
 
     def apply_test_hooks(self):
@@ -783,6 +866,107 @@ class Engine:
         except EOFError:
             return ''
 
+    def ask_yes(self, prompt):
+        """A prompt whose empty answer means yes (only the safe-batch question uses it); end of input means no."""
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            return False
+        return answer == '' or answer in YES
+
+    # ------------------------------------------------------------ batch approval
+
+    def batchable(self, proposal):
+        """May this proposal be part of the one-question approval? Only a plain `safe` action: never a quarantine, a
+        reversible/irreversible/destructive one, one that writes the target, needs a backup, or lacks root."""
+        action = self.catalog.get(proposal['action_id'])
+        return (action['risk'] == 'safe' and not action['action_id'].startswith('mw.quarantine-')
+                and not action.get('requires_target_rw') and not action['backup']['required']
+                and action['action_id'] not in self.args.approve and not lacks_root(action, self.path))
+
+    def plan_batch(self, proposals, total=None):
+        """approve-each + interactive + two or more pending safe actions: show the table of all proposals, then ask once."""
+        self.total = total or len(proposals)
+        if self.args.policy != 'approve-each' or not self.interactive:
+            return False
+        pending = [p for p in proposals if self.batchable(p)]
+        if len(pending) < 2:
+            return False
+        keys = {(p['action_id'], p.get('target_ref')) for p in pending}
+        say('')
+        say('Menunggu persetujuan / pending approval:')
+        for n, p in enumerate(proposals, 1):
+            action = self.catalog.get(p['action_id'])
+            mark = '*' if (p['action_id'], p.get('target_ref')) in keys else ' '
+            say('  %s%2d. %-40s %-11s %s' % (mark, n, p['action_id'], action['risk'], action['title']))
+        say('  (* = aman/safe: dapat disetujui sekaligus / can be approved at once; the others always ask)')
+        if self.ask_yes('Setujui semua %d aksi aman (safe) sekaligus? / Approve all %d safe actions at once? [Y/n]: '
+                        % (len(pending), len(pending))):
+            self.batch = keys
+            return True
+        return False
+
+    # ------------------------------------------------------------ device picker
+
+    def disk_candidates(self):
+        """(candidates, removable_fallback): whole disks read from lsblk now, [{'path','size','tran','model'}], or None.
+
+        Left out: the rescue USB (the disk holding the bundle or the USB state), the live media, loop/rom/zram devices and
+        removable or USB media - unless no other disk exists, in which case the removable ones (still never the rescue USB)
+        are offered and flagged. Model strings are for the screen only."""
+        program = shutil.which('lsblk', path=self.path)
+        if program is None:
+            return None
+        scanner = load_module('rescue_scan_target_os', HERE / 'scan-target-os.py')
+        try:
+            proc = subprocess.run([program, '-J', '-b', '-o', scanner.LSBLK_COLUMNS + ',MODEL'], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'PATH': self.path, 'LC_ALL': 'C.UTF-8'},
+                                  timeout=20, check=False)
+            tree = json.loads(proc.stdout.decode('utf-8', 'replace')).get('blockdevices') or []
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+            return None
+        if proc.returncode != 0:
+            return None
+        models = {n.get('path'): n.get('model') for n in tree if isinstance(n, dict)}
+        records = []
+        scanner._flatten(tree, None, records)
+        keep = (self.state_root,)
+        internal = scanner.excluded_disks(records)
+        hard = hard_excluded(scanner, records, keep)
+        disks = [r for r in records if r['type'] == 'disk' and r['path'] and rc.BLOCK_RE.match(r['path'])]
+
+        def entry(rec):
+            model = CONTROL.sub('', str(models.get(rec['path']) or '')).strip()
+            return {'path': rec['path'], 'size': human_size(rec['size']), 'tran': (rec['tran'] or '-'), 'model': model[:24]}
+
+        main = [entry(r) for r in disks if r['disk'] not in internal][:PICKER_MAX]
+        if main:
+            return main, False
+        return [entry(r) for r in disks if r['disk'] not in hard][:PICKER_MAX], True
+
+    def pick_block_device(self, action, param):
+        """The operator's choice from the engine's own disk list: a /dev path, or None (skipped / nothing to choose)."""
+        found = self.disk_candidates()
+        if not found or not found[0]:
+            warn('  %s %s: no eligible disk found to choose from' % (action['action_id'], param['name']))
+            return None
+        candidates, removable = found
+        say('  Pilih disk untuk / choose the disk for %s %s:' % (action['action_id'], param['name']))
+        if removable:
+            say('  (tidak ada disk internal; media lepasan ditampilkan / no internal disk, removable media shown)')
+        for n, c in enumerate(candidates, 1):
+            say('    %2d) %-12s %-10s %-6s %s' % (n, c['path'], c['size'], c['tran'], c['model']))
+        answer = self.ask('  Nomor / number (Enter = lewati / skip): ')
+        if not answer:
+            return None
+        if not answer.isdigit() or not 1 <= int(answer) <= len(candidates):
+            warn('  %s %s: not one of the listed numbers' % (action['action_id'], param['name']))
+            return ''
+        choice = candidates[int(answer) - 1]['path']
+        if removable:
+            self.removable_ok.add(choice)
+        return choice
+
     def resolve_params(self, action, allow_prompt, proposal=None):
         """(values, problem) where problem is None, 'missing-param' or 'invalid-param'."""
         values, aid = {}, action['action_id']
@@ -795,7 +979,11 @@ class Engine:
                 raw = self.params.get((aid, p['name']))
             if raw is None and 'default' in p:
                 raw = p['default']
-            if raw is None and allow_prompt:
+            if raw is None and allow_prompt and p['type'] == 'block_device':
+                raw = self.pick_block_device(action, p)
+                if raw == '':
+                    return None, 'invalid-param'
+            elif raw is None and allow_prompt:
                 hint = ', '.join(p['values']) if p['type'] == 'enum' else p['type']
                 if p['type'] == 'detection_ref':
                     self.show_detections(proposal)
@@ -809,7 +997,7 @@ class Engine:
                 return None, 'invalid-param'
             if p['type'] == 'detection_ref' and self.detection_entry(value, action, proposal) is None:
                 return None, 'invalid-param'
-            if p['type'] == 'block_device' and not block_device_eligible(value):
+            if p['type'] == 'block_device' and not block_device_eligible(value, value in self.removable_ok, (self.state_root,)):
                 warn('  %s %s: %s is not an eligible internal block device (rescue USB and removable media '
                      'are never targets)' % (aid, p['name'], value))
                 return None, 'invalid-param'
@@ -883,6 +1071,8 @@ class Engine:
             self.log(action, proposal, 'approval', 'skipped', reason=problem)
             return None, problem
         self.card(action, proposal, values)
+        if (aid, proposal.get('target_ref')) in self.batch and risk == 'safe':
+            return values, 'operator-approved-batch'     # the operator answered yes for all safe actions (plan_batch)
         if risk == 'destructive':
             answer = self.ask('  Ketik action_id untuk menyetujui / type the action_id to approve: ')
             ok = answer == aid
@@ -900,6 +1090,15 @@ class Engine:
         if self.args.policy == 'detect-only':
             self.log(action, proposal, 'approval', 'skipped', reason='policy-detect-only')
             return 'proposed'
+        if lacks_root(action, self.path):
+            warn('  %s: perlu root, sudo tanpa kata sandi tidak tersedia; tidak dijalankan / needs root and non-interactive '
+                 'sudo is not available; not run (this launcher never elevates).' % aid)
+            self.log(action, proposal, 'approval', 'unavailable', reason='needs-root')
+            return 'skipped'
+        if any(p['type'] == 'state_dir' for p in action.get('params') or []) and not self.state_root:
+            warn('  %s needs the USB state directory (--state-dir, or --journal inside a "repairs" directory); not run.' % aid)
+            self.log(action, proposal, 'approval', 'unavailable', reason='provider-unavailable')
+            return 'skipped'
         backup = None
         if action['backup']['required']:
             if not self.args.backup_ref:
@@ -1031,6 +1230,8 @@ class Engine:
         return result
 
     def run_action(self, action, proposal, values):
+        say('')
+        say('[%d/%d] %s  risk=%s  menjalankan / running' % (self.index, self.total, action['action_id'], action['risk']))
         for i, pre in enumerate(action.get('preconditions') or []):
             if self.step(action, proposal, 'precondition/%d' % i, pre, values)['outcome'] != 'ok':
                 say('  precondition not met; action not run / prasyarat tidak terpenuhi')
@@ -1147,11 +1348,21 @@ def main(argv=None):
             return EXIT_INVALID
         if not action.get('target_families'):
             target = None
-        ok, why = rc.applicable(action, platform, scope, target, families)
-        if not ok:
-            warn('rescue-repair: --select %s does not apply here (%s)' % (item, why))
-            return EXIT_INVALID
-        proposals.append(dict({'action_id': item, 'origin': 'operator'}, **({'target_ref': target} if target else {})))
+        # --select ACTION without :TARGET for a target action means "the targets the evidence already triggers it for"
+        # (only those: a selection narrows to what the evidence proposed or names one target explicitly)
+        targets = [target]
+        if action.get('target_families') and target is None:
+            triggered_for = [p.get('target_ref') for p in proposals
+                             if p['action_id'] == item and p['origin'] == 'catalog-trigger' and p.get('target_ref')]
+            targets = list(dict.fromkeys(triggered_for)) or [None]
+        for target in targets:
+            ok, why = rc.applicable(action, platform, scope, target, families)
+            if not ok:
+                warn('rescue-repair: --select %s does not apply here (%s)' % (item, why))
+                return EXIT_INVALID
+            # a duplicate of a catalog-trigger proposal is dropped below, so that proposal keeps origin catalog-trigger
+            # (and auto-safe may run it); an action the evidence does not trigger stays an operator proposal that asks
+            proposals.append(dict({'action_id': item, 'origin': 'operator'}, **({'target_ref': target} if target else {})))
     unique, seen = [], set()
     for p in proposals:
         key = (p['action_id'], p.get('target_ref'))
@@ -1174,7 +1385,8 @@ def main(argv=None):
         say('  Tidak ada tindakan katalog yang berlaku / no applicable catalog actions.')
     for p in proposals:
         a = catalog.get(p['action_id'])
-        say('  - %-40s %-11s %-15s %s' % (p['action_id'], a['risk'], p['origin'], p.get('target_ref', '-')))
+        root = '  (perlu root / needs root)' if platform in EXECUTING_PLATFORMS and lacks_root(a, search_path()) else ''
+        say('  - %-40s %-11s %-15s %s%s' % (p['action_id'], a['risk'], p['origin'], p.get('target_ref', '-'), root))
     if args.list or not proposals:
         return EXIT_OK
     if platform not in EXECUTING_PLATFORMS and args.policy != 'detect-only':
@@ -1192,7 +1404,9 @@ def main(argv=None):
         engine = Engine(args, evidence, hashlib.sha256(raw).hexdigest(), catalog, platform, journal)
         outcomes = []
         try:
-            for proposal in proposals:
+            engine.plan_batch(proposals)
+            for number, proposal in enumerate(proposals, 1):
+                engine.index = number
                 try:
                     outcome = engine.process(proposal)
                 finally:
