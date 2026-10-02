@@ -15,6 +15,12 @@
   Repairs: typed catalog actions only (rescue-ai\v1\catalog), run under -RepairPolicy, journaled
   to <bundle>\reports\repairs\journal.jsonl (docs/host-repair.md). Never elevates.
 
+  After the report is written the launcher continues into Hermes (the portable runtime on the USB,
+  docs/hermes-portable.md) in the same console, unless -NoHermes, -EvidenceOnly, -DryRun, -ListRepairs,
+  no interactive console, no API key or no runtime. Hermes never changes the exit code. It runs with a
+  process-scoped environment only (HERMES_HOME, TEMP, APPDATA ... under <bundle>\hermes-home); the API
+  key reaches it through that environment, never through an argument (docs/host-launchers.md).
+
   Exit codes: 0 ok | 1 a repair action failed or was rolled back | 2 invalid evidence, catalog
               or -Select | 3 no API key | 4 network/HTTP error (run outcome network-error, or
               provider-rejected for an HTTP 4xx other than 401/403/408/429) | 5 bundle/reports/journal
@@ -62,6 +68,12 @@
 
 .PARAMETER ListRepairs
   Show the repair plan only: nothing is executed and nothing is journaled.
+
+.PARAMETER NoHermes
+  Do not continue into Hermes after the report (the pre-0.7 behavior).
+
+.PARAMETER HermesOnly
+  Skip collection, analysis and repairs; start Hermes on the existing reports in <bundle>\reports.
 #>
 [CmdletBinding()]
 param(
@@ -76,7 +88,9 @@ param(
     [string[]]$Param = @(),
     [string]$BackupRef = '',
     [string[]]$Select = @(),
-    [switch]$ListRepairs
+    [switch]$ListRepairs,
+    [switch]$NoHermes,
+    [switch]$HermesOnly
 )
 
 $script:Endpoint = 'https://opencode.ai/zen/go/v1/chat/completions'
@@ -723,6 +737,7 @@ function Get-MachineSeed {
 function Invoke-HostCollection {
     param([bool]$SkipNetwork, [bool]$Authenticated, [string]$Destination, [string]$Bundle,
         [string[]]$Scope = @('all'), [string[]]$PackageList = @(), [string]$RepairPolicy = 'approve-each')
+    Set-RescueStatus -Text 'Windows / encryption'
     $os = Get-OsInfo
     $encryption = Get-EncryptionState
     $encStatus = 'pass'
@@ -731,18 +746,24 @@ function Invoke-HostCollection {
     if ($os.Ok) { $osStatus = 'pass' }
     $checks = @(
         (New-Check -Id 'os-detection' -Status $osStatus),
-        (New-Check -Id 'encryption-status' -Status $encStatus),
-        (Get-DiskFreeCheck),
-        (Get-FastStartupCheck),
-        (Get-PendingUpdatesCheck),
-        (Get-CrashDumpsCheck),
-        (Get-EventLogErrorsCheck),
-        (Get-DefenderCheck),
-        (Get-UpdateServiceCheck)
+        (New-Check -Id 'encryption-status' -Status $encStatus)
     )
+    Set-RescueStatus -Text 'disk, updates, crash dumps'
+    $checks += (Get-DiskFreeCheck)
+    $checks += (Get-FastStartupCheck)
+    $checks += (Get-PendingUpdatesCheck)
+    $checks += (Get-CrashDumpsCheck)
+    Set-RescueStatus -Text 'event log'
+    $checks += (Get-EventLogErrorsCheck)
+    Set-RescueStatus -Text 'Defender, Windows Update'
+    $checks += (Get-DefenderCheck)
+    $checks += (Get-UpdateServiceCheck)
     # smart-health is a disk check: only within the operator's hardware.disk scope.
+    Set-RescueStatus -Text 'disk health'
     if ($Scope -contains 'all' -or $Scope -contains 'hardware' -or $Scope -contains 'hardware.disk') { $checks += (Get-SmartCheck) }
+    Set-RescueStatus -Text 'network'
     $checks += (Get-NetworkCheck -Skip $SkipNetwork)
+    Set-RescueStatus -Text 'detection modules'
     $checks += Invoke-RescueModules -Bundle $Bundle -Scope $Scope -PackageList $PackageList
     if ($checks.Count -gt $script:MaxChecks) { $checks = $checks[0..($script:MaxChecks - 1)] }
     return New-RescueEvidence -Checks $checks -Family $os.Family -Release $os.Release `
@@ -3013,6 +3034,8 @@ function Invoke-RepairTracked {
     # Repair phase + run-report bookkeeping: outcome for an unusable catalog/journal, and (when an action
     # executed in this run) a re-scan with the same scope so the report can list before/after changes.
     param($RepairArgs, [string]$AnalysisText, [bool]$Rescan)
+    # The progress record is completed at once: the engine prompts the operator and a bar would cover it.
+    Write-RescuePhase 'repairs' -Brief
     $rc = Invoke-RepairPhase @RepairArgs -AnalysisText $AnalysisText
     # Keep the first failure (evidence/key/network/provider): only a run that has not failed yet takes
     # repair-invalid; an unusable journal outranks everything. The engine failure goes to the report as
@@ -3028,22 +3051,27 @@ function Invoke-RepairTracked {
     if ($Rescan -and $script:Rep.Collect -and $script:Rep.Evidence -and ($rc -eq 0 -or $rc -eq 1)) {
         try {
             $lines = Get-RrFileLines -Path (Join-Path (Join-Path $script:Rep.Reports 'repairs') 'journal.jsonl')
-            $ran = $false
+            $texts = New-Object System.Collections.Generic.List[string]
             if ($null -ne $lines) {
-                $needle = '"run_id":"' + [string]$script:Rep.RunEvidenceId + '"'
-                foreach ($l in $lines) {
-                    $t = [System.Text.Encoding]::UTF8.GetString($l)
-                    if ($t.Contains($needle) -and $t.Contains('"stage":"execute"')) { $ran = $true }
-                }
+                foreach ($l in $lines) { $texts.Add([System.Text.Encoding]::UTF8.GetString($l)) }
             }
+            # Only an action of THIS run whose execute step ended ok triggers the re-scan.
+            $ran = Test-JournalExecutedOk -Lines $texts.ToArray() -RunId ([string]$script:Rep.RunEvidenceId)
             if ($ran) {
+                Write-RescuePhase 'rescan'
                 Write-Host 'Memindai ulang setelah perbaikan (scope sama) / re-scanning after repairs (same scope)...'
                 $c = $script:Rep.Collect
                 $again = Invoke-HostCollection -SkipNetwork $c.SkipNetwork -Authenticated $c.Authenticated -Destination $c.Destination `
                     -Bundle $c.Bundle -Scope $c.Scope -PackageList $c.PackageList -RepairPolicy $c.Policy
                 $afterPath = $script:Rep.Evidence -replace '-evidence\.json$', '-evidence-after.json'
-                Write-Utf8File -Path $afterPath -Text ((ConvertTo-RescueJson -Value $again -Indent 2) + "`n")
+                $afterJson = (ConvertTo-RescueJson -Value $again -Indent 2) + "`n"
+                Write-Utf8File -Path $afterPath -Text $afterJson
                 $script:Rep.After = $afterPath
+                $script:Rep.AfterObj = $again
+                Write-LatestEvidence -Reports $script:Rep.Reports -Json $afterJson
+            } else {
+                Write-RescuePhase 'rescan' -Brief
+                Write-Host 'Tidak ada perbaikan yang berhasil dijalankan; tidak perlu memindai ulang / no repair ran ok; no re-scan needed.'
             }
         } catch {
             Write-Host 'PERINGATAN / WARNING: the re-scan failed; no before/after comparison.' -ForegroundColor Yellow
@@ -3056,6 +3084,7 @@ function Send-RunReport {
     # Called from finally{} of Invoke-RescueMain: every exit after the reports folder is known writes the report.
     $r = $script:Rep
     if ($null -eq $r -or -not $r.Ready) { return }
+    Write-RescuePhase 'report'
     try {
         $counts = $null
         if ($r.AnalysisText -and $r.Catalog -and $r.Catalog.Present -and $r.Catalog.Ok -and $r.EvidenceObj) {
@@ -3076,20 +3105,564 @@ function Send-RunReport {
     }
 }
 
+# ----------------------------------------------------------------------------------------
+# Phases and progress (ahliweb/linux-mint-xfce-rescue-ai#72). A plain "[N/T] label" line for the
+# screen and the transcript, plus a Write-Progress record per phase. Every record is completed
+# before Hermes starts so the bar never overlays it.
+# ----------------------------------------------------------------------------------------
+
+$script:PhaseNames = @('collect', 'validate', 'analyze', 'repairs', 'rescan', 'followup', 'report', 'hermes')
+$script:PhaseLabels = @{
+    collect  = 'Pemeriksaan read-only / read-only checks'
+    validate = 'Validasi evidence / validating the evidence'
+    analyze  = 'Analisis OpenCode Go / OpenCode Go analysis'
+    repairs  = 'Perbaikan bertipe / typed repairs'
+    rescan   = 'Pindai ulang setelah perbaikan / re-scan after repairs'
+    followup = 'Tindak lanjut read-only / read-only follow-up'
+    report   = 'Laporan run / run report'
+    hermes   = 'Hermes'
+}
+$script:CurrentPhase = ''
+
+function Set-RescuePhases {
+    param([string[]]$Names)
+    $script:PhaseNames = @($Names)
+}
+
+function Get-RescuePhaseInfo {
+    param([string]$Name)
+    $names = [string[]]@($script:PhaseNames)
+    $idx = [Array]::IndexOf($names, $Name) + 1
+    if ($idx -lt 1) { return $null }
+    $total = $names.Count
+    return @{ Index = $idx; Total = $total; Label = [string]$script:PhaseLabels[$Name]
+        Percent = [int][Math]::Floor((($idx - 1) * 100) / $total) }
+}
+
+function Test-ProgressEnabled {
+    # The bar is drawn unless RESCUE_PROGRESS=0 or TERM=dumb (a terminal that cannot draw one; PowerShell 7
+    # on a pseudo-terminal queries the cursor position there). The "[N/T]" lines are always printed.
+    return (($env:RESCUE_PROGRESS -ne '0') -and ($env:TERM -ne 'dumb'))
+}
+
+function Complete-RescueProgress {
+    $script:CurrentPhase = ''
+    if (-not (Test-ProgressEnabled)) { return }
+    for ($i = 1; $i -le 8; $i++) {
+        try { Write-Progress -Id $i -Activity 'Rescue' -Completed } catch { }
+    }
+    $script:CurrentPhase = ''
+}
+
+function Write-RescuePhase {
+    param([string]$Name, [switch]$Brief)
+    $info = Get-RescuePhaseInfo -Name $Name
+    if ($null -eq $info) { return }
+    Complete-RescueProgress
+    Write-Host ('[' + $info.Index + '/' + $info.Total + '] ' + $info.Label)
+    $script:CurrentPhase = $Name
+    if ($Brief -or -not (Test-ProgressEnabled)) { return }
+    try {
+        Write-Progress -Id $info.Index -Activity ('Rescue ' + $info.Index + '/' + $info.Total + ' - ' + $Name) `
+            -Status $info.Label -PercentComplete $info.Percent
+    } catch { }
+}
+
+function Set-RescueStatus {
+    # Updates the status text of the running phase (e.g. which check is being collected).
+    param([string]$Text)
+    if (-not $script:CurrentPhase) { return }
+    $info = Get-RescuePhaseInfo -Name $script:CurrentPhase
+    if ($null -eq $info -or -not (Test-ProgressEnabled)) { return }
+    try {
+        Write-Progress -Id $info.Index -Activity ('Rescue ' + $info.Index + '/' + $info.Total + ' - ' + $script:CurrentPhase) `
+            -Status ($info.Label + ': ' + $Text) -PercentComplete $info.Percent
+    } catch { }
+}
+
+# ----------------------------------------------------------------------------------------
+# latest-evidence.json, re-scan trigger and the native read-only follow-up
+# (rescue-ai/v1/followup.schema.json, mode windows-host)
+# ----------------------------------------------------------------------------------------
+
+function Test-JournalExecutedOk {
+    # $Lines: journal lines (JSON text). True when this run (run_id) has an action whose stage
+    # 'execute' ended with outcome 'ok'. A failed or unavailable action does not count.
+    param([string[]]$Lines, [string]$RunId)
+    foreach ($l in @($Lines)) {
+        if ([string]::IsNullOrWhiteSpace($l)) { continue }
+        $o = $null
+        try { $o = $l | ConvertFrom-Json } catch { continue }
+        if ($null -eq $o) { continue }
+        if (([string]$o.run_id -ceq $RunId) -and ([string]$o.stage -ceq 'execute') -and ([string]$o.outcome -ceq 'ok')) { return $true }
+    }
+    return $false
+}
+
+function Write-LatestEvidence {
+    # Copy of this run's evidence under a fixed name, for the Hermes skill (its cwd is the reports folder).
+    param([string]$Reports, [string]$Json)
+    try {
+        Write-Utf8File -Path (Join-Path $Reports 'latest-evidence.json') -Text $Json
+    } catch {
+        Write-Host 'PERINGATAN / WARNING: latest-evidence.json could not be written.' -ForegroundColor Yellow
+    }
+}
+
+# Internal provider-name table: a provider name is only ever mapped to one of the schema's closed
+# categories; neither the name nor any message leaves this function. First match wins.
+$script:EventProviderRules = [ordered]@{
+    power_acpi    = '^(Microsoft-Windows-)?(Kernel-Power|Power-Troubleshooter|UserModePowerService)$|^ACPI'
+    filesystem    = '^(Ntfs|Microsoft-Windows-Ntfs|volsnap|ReFS|Microsoft-Windows-ReFS|FilterManager|Microsoft-Windows-FilterManager|fvevol|exfat|fastfat|Chkdsk)$'
+    storage       = '^(disk|stornvme|storahci|storport|Microsoft-Windows-StorPort|volmgr|partmgr|iaStor\w*|nvme|vhdmp|Microsoft-Windows-Storage\S*|Microsoft-Windows-Disk\S*)$'
+    display_gpu   = '^(Display|nvlddmkm|amdkmdag|amdkmdap|atikmdag|igfx\w*|Microsoft-Windows-Dxgkrnl|Microsoft-Windows-DxgKrnl\S*|Microsoft-Windows-Win32k|Microsoft-Windows-Dwm\S*|dwm)$'
+    network       = '^(Tcpip|Microsoft-Windows-TCPIP|Dhcp|DhcpV6|Microsoft-Windows-DHCP\S*|Microsoft-Windows-DNS-Client|DNS Client Events|Netlogon|Microsoft-Windows-NDIS|NDIS|Microsoft-Windows-WLAN\S*|WLAN-AutoConfig|Microsoft-Windows-NlaSvc|NlaSvc|RasClient|Microsoft-Windows-Iphlpsvc|Netwtw\w*|e1\w+|bcmwl\w*|Microsoft-Windows-NetworkProfile|Microsoft-Windows-Wired-AutoConfig|Microsoft-Windows-SMBClient|Microsoft-Windows-SMBServer|mrxsmb\S*)$'
+    audio         = '^(Microsoft-Windows-Audio\S*|AudioSrv|HDAudBus|Microsoft-Windows-MMDevices\S*|IntcAzAudAddService|Microsoft-Windows-UsbAudio)$'
+    usb           = '^(usbhub\d*|USBHUB3|usbxhci|usbehci|usbccgp|usbport|Microsoft-Windows-USB\S*|USBSTOR)$'
+    bluetooth     = '^(BTHUSB|BTHPORT|bthserv|BTHMODEM|BthLEEnum|BTHENUM|Microsoft-Windows-Bluetooth\S*|Microsoft-Windows-Bth\S*)$'
+    security_auth = '^(Microsoft-Windows-Security\S*|LsaSrv|Schannel|Kerberos|Microsoft-Windows-Kerberos\S*|Microsoft-Windows-CertificateServicesClient\S*|CertificateServicesClient|Microsoft-Windows-GroupPolicy|Microsoft-Windows-Winlogon|Winlogon|Microsoft-Windows-TPM\S*|TPM|Microsoft-Windows-CAPI2|Microsoft-Windows-Crypto\S*|CertEnroll)$'
+    kernel        = '^(Microsoft-Windows-Kernel-\S+|Kernel-\S+|Microsoft-Windows-WHEA\S*|WHEA-Logger|BugCheck|Microsoft-Windows-Resource-Exhaustion\S*|Microsoft-Windows-Hyper-V\S*)$'
+    application   = '^(Service Control Manager|Application Error|Application Hang|Windows Error Reporting|Microsoft-Windows-WER\S*|DCOM|Microsoft-Windows-DistributedCOM|SideBySide|MsiInstaller|Microsoft-Windows-AppModel\S*|Microsoft-Windows-Search|Microsoft-Windows-RestartManager|Microsoft-Windows-Perflib|Microsoft-Windows-Immersive-Shell|Microsoft-Windows-WMI\S*|\.NET Runtime|Microsoft-Windows-TaskScheduler|Microsoft-Windows-WindowsUpdateClient|Microsoft-Windows-Store\S*)$'
+}
+$script:EventCategories = @('kernel', 'storage', 'filesystem', 'network', 'display_gpu', 'audio', 'usb', 'bluetooth',
+    'power_acpi', 'security_auth', 'application', 'other')
+$script:EventSampleMax = 1000
+$script:EventFailAt = 50
+
+function Get-EventCategory {
+    param([string]$Provider)
+    if (-not [string]::IsNullOrEmpty($Provider)) {
+        foreach ($cat in $script:EventProviderRules.Keys) {
+            if ([regex]::IsMatch($Provider, [string]$script:EventProviderRules[$cat], [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { return [string]$cat }
+        }
+    }
+    return 'other'
+}
+
+function ConvertTo-EventCounts {
+    # Provider names -> counts per closed category (all categories present, zero included).
+    param([string[]]$Providers)
+    $counts = [ordered]@{}
+    foreach ($c in $script:EventCategories) { $counts[$c] = 0 }
+    foreach ($p in @($Providers)) {
+        $cat = Get-EventCategory -Provider $p
+        $counts[$cat] = [int]$counts[$cat] + 1
+    }
+    return $counts
+}
+
+function Get-SystemEventProviders {
+    # System log, level 1 and 2, last 7 days, at most $script:EventSampleMax events. Runs in a background
+    # job so the time limit holds; only provider names come back and the caller turns them into counts.
+    # Returns @{ Ok; Reason; Providers; Truncated }. Never throws.
+    param([int]$TimeoutSeconds = 25)
+    if (-not (Get-Command -Name Get-WinEvent -ErrorAction SilentlyContinue)) {
+        return @{ Ok = $false; Reason = 'unsupported'; Providers = @(); Truncated = $false }
+    }
+    $job = $null
+    try {
+        $job = Start-Job -ScriptBlock {
+            param($Days, $Max)
+            $start = (Get-Date).AddDays(-$Days)
+            try {
+                $events = Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1, 2; StartTime = $start } -MaxEvents $Max -ErrorAction Stop
+                @($events | ForEach-Object { [string]$_.ProviderName })
+            } catch {
+                if ($_.FullyQualifiedErrorId -like '*NoMatchingEventsFound*' -or $_.Exception.Message -like 'No events were found*') { return }
+                throw
+            }
+        } -ArgumentList 7, $script:EventSampleMax
+        $done = Wait-Job -Job $job -Timeout $TimeoutSeconds
+        if ($null -eq $done) {
+            try { Stop-Job -Job $job -ErrorAction SilentlyContinue } catch { }
+            return @{ Ok = $false; Reason = 'timeout'; Providers = @(); Truncated = $false }
+        }
+        $names = @(Receive-Job -Job $job -ErrorAction Stop | ForEach-Object { [string]$_ })
+        return @{ Ok = $true; Reason = ''; Providers = $names; Truncated = ($names.Count -ge $script:EventSampleMax) }
+    } catch {
+        return @{ Ok = $false; Reason = 'other'; Providers = @(); Truncated = $false }
+    } finally {
+        if ($null -ne $job) { try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch { } }
+    }
+}
+
+function Get-FollowupCheck {
+    # The evidence check with this id, or $null.
+    param($Evidence, [string]$CheckId)
+    foreach ($c in @($Evidence['checks'])) {
+        if ([string]$c['check_id'] -ceq $CheckId) { return $c }
+    }
+    return $null
+}
+
+function Test-CheckFlagged {
+    # Flagged = present and neither pass nor not_applicable.
+    param($Evidence, [string]$CheckId)
+    $c = Get-FollowupCheck -Evidence $Evidence -CheckId $CheckId
+    if ($null -eq $c) { return $false }
+    $st = [string]$c['status']
+    return ($st -ne 'pass' -and $st -ne 'not_applicable')
+}
+
+function New-FollowupItem {
+    param([string]$CheckId, [string]$FollowupId, [string]$Status, [string]$Reason, $Values)
+    return [ordered]@{ check_id = $CheckId; target_ref = 'os-0'; followup_id = $FollowupId; status = $Status; reason = $Reason; values = $Values }
+}
+
+function New-FollowupModel {
+    # Pure: evidence + (optional) event sample -> the followup-<run_id>.json document, or $null when the
+    # run id does not fit the schema. Only closed-set names, numbers and booleans; never a provider
+    # name, message, path or identifier.
+    param($Evidence, [string]$RunId, [bool]$IsAdmin = $false, $EventResult = $null, [DateTime]$When = [DateTime]::UtcNow)
+    if ($RunId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$') { return $null }
+    $items = New-Object System.Collections.Generic.List[object]
+    $blocked = 'no-data'
+    if (-not $IsAdmin) { $blocked = 'needs-admin' }
+
+    if (Test-CheckFlagged -Evidence $Evidence -CheckId 'windows-event-log-errors') {
+        $values = [ordered]@{}
+        if ($null -ne $EventResult -and $EventResult.Ok) {
+            $counts = ConvertTo-EventCounts -Providers @($EventResult.Providers)
+            $total = 0
+            foreach ($c in $script:EventCategories) {
+                if ([int]$counts[$c] -gt 0) { $values[$c] = [int]$counts[$c]; $total += [int]$counts[$c] }
+            }
+            $values['total'] = $total
+            $values['sampled'] = $total
+            $values['truncated'] = [bool]$EventResult.Truncated
+            $status = 'pass'; $reason = 'ok'
+            if ($total -ge $script:EventFailAt) { $status = 'fail'; $reason = 'attention' }
+            elseif ($total -gt 0) { $status = 'warn'; $reason = 'attention' }
+            $items.Add((New-FollowupItem -CheckId 'windows-event-log-errors' -FollowupId 'windows.event-log-categories' -Status $status -Reason $reason -Values $values))
+        } else {
+            $reason = 'other'
+            if ($null -ne $EventResult) {
+                if ([string]$EventResult.Reason -eq 'timeout') { $reason = 'timeout' }
+                elseif ([string]$EventResult.Reason -eq 'unsupported') { $reason = 'unsupported' }
+            }
+            $items.Add((New-FollowupItem -CheckId 'windows-event-log-errors' -FollowupId 'windows.event-log-categories' -Status 'unknown' -Reason $reason -Values $values))
+        }
+    }
+
+    if (Test-CheckFlagged -Evidence $Evidence -CheckId 'encryption-status') {
+        $state = 'unknown'
+        foreach ($t in @($Evidence['target_systems'])) {
+            if ([string]$t['ref'] -ceq 'os-0') {
+                if ([string]$t['encryption'] -ceq 'bitlocker') { $state = 'on' }
+                elseif ([string]$t['encryption'] -ceq 'none') { $state = 'off' }
+            }
+        }
+        if ($state -eq 'unknown') {
+            $items.Add((New-FollowupItem -CheckId 'encryption-status' -FollowupId 'windows.encryption-state' -Status 'unknown' -Reason $blocked -Values ([ordered]@{ encryption_state = 'unknown' })))
+        } else {
+            $items.Add((New-FollowupItem -CheckId 'encryption-status' -FollowupId 'windows.encryption-state' -Status 'pass' -Reason 'ok' -Values ([ordered]@{ encryption_state = $state })))
+        }
+    }
+
+    if (Test-CheckFlagged -Evidence $Evidence -CheckId 'windows-boot-config') {
+        $st = [string](Get-FollowupCheck -Evidence $Evidence -CheckId 'windows-boot-config')['status']
+        if ($st -eq 'unknown') {
+            $items.Add((New-FollowupItem -CheckId 'windows-boot-config' -FollowupId 'windows.boot-config' -Status 'unknown' -Reason $blocked -Values ([ordered]@{ boot_config = 'unknown' })))
+        } elseif ($st -eq 'fail') {
+            $items.Add((New-FollowupItem -CheckId 'windows-boot-config' -FollowupId 'windows.boot-config' -Status 'fail' -Reason 'attention' -Values ([ordered]@{ boot_config = 'missing' })))
+        } else {
+            $items.Add((New-FollowupItem -CheckId 'windows-boot-config' -FollowupId 'windows.boot-config' -Status $st -Reason 'attention' -Values ([ordered]@{ boot_config = 'unknown' })))
+        }
+    }
+
+    if (Test-CheckFlagged -Evidence $Evidence -CheckId 'windows-restore-points') {
+        $chk = Get-FollowupCheck -Evidence $Evidence -CheckId 'windows-restore-points'
+        $st = [string]$chk['status']
+        if ($st -eq 'unknown') {
+            $items.Add((New-FollowupItem -CheckId 'windows-restore-points' -FollowupId 'windows.restore-points' -Status 'unknown' -Reason $blocked -Values ([ordered]@{})))
+        } else {
+            $values = [ordered]@{}
+            if ($chk.Contains('value')) {
+                $n = $chk['value']['number']
+                if (($n -is [int] -or $n -is [long] -or $n -is [double]) -and $n -ge 0) { $values['restore_points'] = $n }
+            }
+            $items.Add((New-FollowupItem -CheckId 'windows-restore-points' -FollowupId 'windows.restore-points' -Status $st -Reason 'attention' -Values $values))
+        }
+    }
+
+    return [ordered]@{
+        schema_version = '1.0'
+        run_id         = $RunId
+        mode           = 'windows-host'
+        generated_at   = (Get-UtcIso -When $When)
+        items          = $items.ToArray()
+    }
+}
+
+function Write-FollowupFile {
+    param([string]$Reports, $Model)
+    $path = Join-Path $Reports ('followup-' + [string]$Model['run_id'] + '.json')
+    Write-Utf8File -Path $path -Text ((ConvertTo-RescueJson -Value $Model -Indent 2) + "`n")
+    return $path
+}
+
+function Invoke-FollowupPhase {
+    # Native read-only follow-up of the flagged Windows checks; bounded and never fatal.
+    $r = $script:Rep
+    if ($null -eq $r -or -not $r.Ready -or $null -eq $r.EvidenceObj) { return }
+    Write-RescuePhase 'followup'
+    try {
+        $ev = $r.EvidenceObj
+        if ($null -ne $r.AfterObj) { $ev = $r.AfterObj }
+        $sample = $null
+        if (Test-CheckFlagged -Evidence $ev -CheckId 'windows-event-log-errors') {
+            Set-RescueStatus -Text 'event log'
+            $sample = Get-SystemEventProviders
+        }
+        $model = New-FollowupModel -Evidence $ev -RunId ([string]$r.RunEvidenceId) -IsAdmin (Test-IsAdmin) -EventResult $sample
+        if ($null -eq $model) { return }
+        $path = Write-FollowupFile -Reports $r.Reports -Model $model
+        Write-Host ('Tindak lanjut tersimpan / follow-up saved: ' + $path)
+    } catch {
+        Write-Host 'PERINGATAN / WARNING: the follow-up could not be written (not fatal).' -ForegroundColor Yellow
+    }
+}
+
+# ----------------------------------------------------------------------------------------
+# Hermes (portable runtime on the USB; docs/host-launchers.md, ahliweb/linux-mint-xfce-rescue-ai#72)
+# ----------------------------------------------------------------------------------------
+
+function Get-HostArch {
+    # 'x86_64' only for a 64-bit process on an AMD64 machine; anything else is 'other'.
+    $is64 = $false
+    try { $is64 = [Environment]::Is64BitProcess } catch { $is64 = $false }
+    if ($is64 -and $env:PROCESSOR_ARCHITECTURE -eq 'AMD64') { return 'x86_64' }
+    return 'other'
+}
+
+function Test-HermesInteractive {
+    try { return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) } catch { return $false }
+}
+
+function Get-RescueApiKey {
+    # The key from the process environment or the allowlisted rescue.env parser; '' when unusable.
+    param([string]$Bundle)
+    $k = $env:OPENCODE_GO_API_KEY
+    if ([string]::IsNullOrEmpty($k)) { $k = Get-ApiKeyFromEnvFile -Path (Join-Path (Join-Path $Bundle 'config') 'rescue.env') }
+    if (Test-KeyUsable -Key $k) { return $k }
+    return ''
+}
+
+function Get-RescueHermesLaunch {
+    # Pure: where Hermes lives and exactly how it is started. Starts nothing, touches nothing. Returns
+    # @{ Status; Python; Argv; Env; RemoveEnv; WorkingDirectory; HermesHome; Kickoff }.
+    # Status: ready | unsupported-arch | runtime-missing | kickoff-missing.
+    param([string]$Bundle, [string]$Reports, [string]$ApiKey = '', [string]$HostArch = '')
+    if (-not $HostArch) { $HostArch = Get-HostArch }
+    $hh = Join-Path $Bundle 'hermes-home'
+    $runtime = Join-Path (Join-Path $Bundle 'hermes-portable') 'windows-x86_64'
+    $py = Join-Path (Join-Path $runtime 'python') 'python.exe'
+    $kickoff = Join-Path (Join-Path (Join-Path $Bundle 'profiles') 'rescue-hermes') 'kickoff.md'
+    $tmpDir = Join-Path $hh 'tmp'
+    $xdg = Join-Path $hh 'xdg'
+    $envMap = [ordered]@{
+        HERMES_HOME             = $hh
+        TEMP                    = $tmpDir
+        TMP                     = $tmpDir
+        LOCALAPPDATA            = (Join-Path $hh 'localappdata')
+        APPDATA                 = (Join-Path $hh 'appdata')
+        XDG_CACHE_HOME          = (Join-Path $xdg 'cache')
+        XDG_DATA_HOME           = (Join-Path $xdg 'data')
+        XDG_CONFIG_HOME         = (Join-Path $xdg 'config')
+        XDG_STATE_HOME          = (Join-Path $xdg 'state')
+        PYTHONDONTWRITEBYTECODE = '1'
+        PYTHONNOUSERSITE        = '1'
+        PYTHONUTF8              = '1'
+    }
+    if (-not [string]::IsNullOrEmpty($ApiKey)) { $envMap['OPENCODE_GO_API_KEY'] = $ApiKey }
+    $status = 'ready'
+    if ($HostArch -ne 'x86_64') { $status = 'unsupported-arch' }
+    elseif (-not (Test-Path -LiteralPath $py -PathType Leaf)) { $status = 'runtime-missing' }
+    elseif (-not (Test-Path -LiteralPath $kickoff -PathType Leaf)) { $status = 'kickoff-missing' }
+    return @{
+        Status           = $status
+        Python           = $py
+        Argv             = @('-m', 'hermes_cli.main', 'chat', '--cli', '--provider', 'custom', '--model', $script:ModelId,
+            '-s', 'rescue-autorun', '--query-file', $kickoff)
+        Env              = $envMap
+        RemoveEnv        = @('RESCUE_GITHUB_ISSUES_TOKEN', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP')
+        WorkingDirectory = $Reports
+        HermesHome       = $hh
+        Kickoff          = $kickoff
+    }
+}
+
+function Initialize-HermesHome {
+    # Seeds/refreshes the profile-owned files from the bundle into <bundle>\hermes-home (on the USB).
+    # Memories, sessions, state.db and logs are never touched. Throws when the USB is not writable.
+    param([string]$Bundle, $Launch)
+    $hh = [string]$Launch.HermesHome
+    foreach ($d in @($hh, $Launch.Env['TEMP'], $Launch.Env['LOCALAPPDATA'], $Launch.Env['APPDATA'], $Launch.Env['XDG_CACHE_HOME'],
+            $Launch.Env['XDG_DATA_HOME'], $Launch.Env['XDG_CONFIG_HOME'], $Launch.Env['XDG_STATE_HOME'], (Join-Path $hh 'skills'))) {
+        if (-not (Test-Path -LiteralPath $d)) { [void](New-Item -ItemType Directory -Path $d -ErrorAction Stop) }
+    }
+    $prof = Join-Path (Join-Path $Bundle 'profiles') 'rescue-hermes'
+    foreach ($f in @('SOUL.md', 'AGENTS.md')) {
+        $src = Join-Path $prof $f
+        if (Test-Path -LiteralPath $src -PathType Leaf) { Copy-Item -LiteralPath $src -Destination (Join-Path $hh $f) -Force -ErrorAction Stop }
+    }
+    $skills = Join-Path $prof 'skills'
+    if (Test-Path -LiteralPath $skills -PathType Container) {
+        foreach ($dir in @(Get-ChildItem -LiteralPath $skills -Directory -ErrorAction Stop)) {
+            if ($dir.Name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { continue }
+            $src = Join-Path $dir.FullName 'SKILL.md'
+            if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+            $dst = Join-Path (Join-Path $hh 'skills') $dir.Name
+            if (-not (Test-Path -LiteralPath $dst)) { [void](New-Item -ItemType Directory -Path $dst -ErrorAction Stop) }
+            Copy-Item -LiteralPath $src -Destination (Join-Path $dst 'SKILL.md') -Force -ErrorAction Stop
+        }
+    }
+    $cfg = Join-Path (Join-Path $Bundle 'config') 'hermes-rescue.config.yaml'
+    if (Test-Path -LiteralPath $cfg -PathType Leaf) { Copy-Item -LiteralPath $cfg -Destination (Join-Path $hh 'config.yaml') -Force -ErrorAction Stop }
+}
+
+function Start-RescueHermes {
+    # One child process in THIS console, waited for. The environment is set on the child's start info
+    # only (this process's environment is untouched); the key travels in that environment, never in an
+    # argument. Returns the child's exit code, or -1 when it could not be started.
+    param($Launch)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = [string]$Launch.Python
+    $psi.Arguments = ConvertTo-CommandLine -Argv ([string[]]$Launch.Argv)
+    $psi.WorkingDirectory = [string]$Launch.WorkingDirectory
+    $psi.UseShellExecute = $false
+    foreach ($n in @($Launch.RemoveEnv)) {
+        if ($psi.EnvironmentVariables.ContainsKey($n)) { $psi.EnvironmentVariables.Remove($n) }
+    }
+    foreach ($k in $Launch.Env.Keys) { $psi.EnvironmentVariables[[string]$k] = [string]$Launch.Env[$k] }
+    $p = $null
+    try {
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $p.WaitForExit()
+        return [int]$p.ExitCode
+    } catch {
+        return -1
+    } finally {
+        if ($null -ne $p) { $p.Dispose() }
+    }
+}
+
+function Invoke-HermesPhase {
+    # Hands the console to Hermes after the report exists. Returns a status word; the launcher exit code
+    # never depends on Hermes. Not-a-failure outcomes (no console, wrong architecture, no runtime) only
+    # print a bilingual note.
+    param([string]$Bundle, [string]$Reports, [string]$HostArch = '')
+    Complete-RescueProgress
+    if (-not (Test-HermesInteractive)) {
+        Write-Host 'ID: Hermes tidak dimulai: tidak ada konsol interaktif. EN: Hermes was not started: no interactive console.'
+        return 'not-interactive'
+    }
+    $key = Get-RescueApiKey -Bundle $Bundle
+    if (-not $key) {
+        Write-Guidance -Kind 'nokey' -EvidencePath $Reports
+        return 'no-key'
+    }
+    $launch = Get-RescueHermesLaunch -Bundle $Bundle -Reports $Reports -ApiKey $key -HostArch $HostArch
+    if ($launch.Status -eq 'unsupported-arch') {
+        Write-Host 'ID: Hermes portabel butuh PowerShell 64-bit di Windows x86_64; proses ini bukan itu, jadi Hermes tidak dimulai (laporan sudah lengkap).'
+        Write-Host 'EN: Portable Hermes needs 64-bit PowerShell on Windows x86_64; this process is not, so Hermes was not started (the report is complete).'
+        return 'unsupported-arch'
+    }
+    if ($launch.Status -eq 'runtime-missing') {
+        Write-Host 'ID: Runtime Hermes portabel tidak ada di USB (hermes-portable\windows-x86_64\python\python.exe); lihat hermes-portable.md di folder docs. Hermes tidak dimulai.'
+        Write-Host 'EN: The portable Hermes runtime is not on the USB (hermes-portable\windows-x86_64\python\python.exe); see hermes-portable.md in the docs folder. Hermes was not started.'
+        return 'runtime-missing'
+    }
+    if ($launch.Status -eq 'kickoff-missing') {
+        Write-Host 'ID: profiles\rescue-hermes\kickoff.md tidak ada di bundel; perbarui bundel USB. Hermes tidak dimulai.'
+        Write-Host 'EN: profiles\rescue-hermes\kickoff.md is missing from the bundle; update the USB bundle. Hermes was not started.'
+        return 'kickoff-missing'
+    }
+    Write-RescuePhase 'hermes'
+    try {
+        Initialize-HermesHome -Bundle $Bundle -Launch $launch
+    } catch {
+        Complete-RescueProgress
+        Write-Host 'PERINGATAN / WARNING: hermes-home on the USB could not be prepared (read-only USB?); Hermes was not started.' -ForegroundColor Yellow
+        return 'seed-failed'
+    }
+    Complete-RescueProgress
+    Write-Host ''
+    Write-Host 'Hermes dibuka dan langsung menjalankan rekomendasi; keluar dengan /exit atau Ctrl+C / Hermes is opening and runs the recommendations right away; leave with /exit or Ctrl+C.'
+    $code = Start-RescueHermes -Launch $launch
+    $key = $null
+    if ($code -lt 0) {
+        Write-Host 'PERINGATAN / WARNING: Hermes could not be started.' -ForegroundColor Yellow
+        return 'start-failed'
+    }
+    Write-Host ('Hermes selesai (kode ' + $code + ') / Hermes ended (code ' + $code + ').')
+    return 'started'
+}
+
+function Invoke-HermesOnly {
+    # -HermesOnly: no collection, analysis or repairs; Hermes on the reports already on the USB.
+    param([string]$Explicit, [string]$ScriptDir)
+    try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+    Write-Host 'Rescue host launcher (Windows) - -HermesOnly: Hermes on the existing reports.'
+    $bundle = Find-RescueBundle -ScriptDir $ScriptDir -Explicit $Explicit
+    if (-not $bundle) {
+        Write-Host 'ERROR: bundle rescue-omes tidak ditemukan / rescue-omes bundle not found next to this script.' -ForegroundColor Red
+        $script:ExitCode = 5
+        return
+    }
+    $reports = Join-Path $bundle 'reports'
+    if (-not (Test-Path -LiteralPath (Join-Path $reports 'index.md') -PathType Leaf)) {
+        Write-Host 'ERROR: belum ada laporan di USB (jalankan tanpa -HermesOnly dulu) / no reports on the USB yet (run once without -HermesOnly).' -ForegroundColor Red
+        $script:ExitCode = 5
+        return
+    }
+    Set-RescuePhases -Names @('hermes')
+    $status = Invoke-HermesPhase -Bundle $bundle -Reports $reports
+    if ($status -eq 'no-key') { $script:ExitCode = 3 }
+}
+
 function Invoke-RescueMain {
     param([bool]$EvidenceOnlyMode, [bool]$DryRunMode, [string]$Explicit, [string]$ScriptDir,
         [string]$ScopeText = 'all', [string]$PackagesText = '', [string]$Policy = 'approve-each',
         [string[]]$ApproveItems = @(), [string[]]$ParamItems = @(), [string]$BackupPath = '', [string[]]$SelectItems = @(),
-        [bool]$ListOnly = $false)
-    $script:Rep = @{ Ready = $false; Outcome = 'scan-failed'; Evidence = ''; After = ''; Analysis = ''; AnalysisText = ''; Reports = ''; Bundle = ''
+        [bool]$ListOnly = $false, [bool]$NoHermesMode = $false, [bool]$HermesOnlyMode = $false)
+    if ($HermesOnlyMode) {
+        if ($EvidenceOnlyMode -or $DryRunMode -or $ListOnly -or $NoHermesMode) {
+            Write-Host 'ERROR: -HermesOnly tidak bisa digabung dengan -EvidenceOnly, -DryRun, -ListRepairs atau -NoHermes / -HermesOnly cannot be combined with -EvidenceOnly, -DryRun, -ListRepairs or -NoHermes' -ForegroundColor Red
+            $script:ExitCode = 64
+            return
+        }
+        Invoke-HermesOnly -Explicit $Explicit -ScriptDir $ScriptDir
+        return
+    }
+    $script:Rep = @{ Ready = $false; Outcome = 'scan-failed'; Evidence = ''; After = ''; AfterObj = $null; Analysis = ''; AnalysisText = ''; Reports = ''; Bundle = ''
         Scope = @('all'); Policy = $Policy; KeyPresent = $false; Secrets = @(); Catalog = $null; Collect = $null; EvidenceObj = $null
         RunEvidenceId = ''; RepairExit = 0; Started = (Get-UtcIso); RunId = ('rescue-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '-win') }
+    # Phase list for the "[N/T]" lines and the progress bar of this run.
+    $offline = $EvidenceOnlyMode -or $DryRunMode
+    $wantHermes = -not ($NoHermesMode -or $offline -or $ListOnly)
+    $names = @('collect', 'validate')
+    if (-not $offline) { $names += 'analyze' }
+    $names += 'repairs'
+    if (-not $offline -and -not $ListOnly) { $names += 'rescan' }
+    $names += 'followup'
+    $names += 'report'
+    if ($wantHermes) { $names += 'hermes' }
+    Set-RescuePhases -Names $names
     try {
         Invoke-RescueMainCore -EvidenceOnlyMode $EvidenceOnlyMode -DryRunMode $DryRunMode -Explicit $Explicit -ScriptDir $ScriptDir `
             -ScopeText $ScopeText -PackagesText $PackagesText -Policy $Policy -ApproveItems $ApproveItems -ParamItems $ParamItems `
             -BackupPath $BackupPath -SelectItems $SelectItems -ListOnly $ListOnly
+        Invoke-FollowupPhase
     } finally {
+        # The run report and index.md exist before Hermes starts, whatever the outcome.
         Send-RunReport
+        Complete-RescueProgress
+    }
+    # Hermes only after a usable run; its exit code never changes the launcher's.
+    $r = $script:Rep
+    if ($wantHermes -and $r.Ready -and (@('completed', 'repair-invalid') -ccontains [string]$r.Outcome)) {
+        [void](Invoke-HermesPhase -Bundle $r.Bundle -Reports $r.Reports)
     }
 }
 
@@ -3156,7 +3729,7 @@ function Invoke-RescueMainCore {
     $destination = 'unknown'
     if ($haveKey -and -not $offline) { $destination = 'cloud' }
 
-    Write-Host 'Menjalankan pemeriksaan read-only / running read-only checks...'
+    Write-RescuePhase 'collect'
     $evidence = Invoke-HostCollection -SkipNetwork $offline -Authenticated ($haveKey -and -not $offline) -Destination $destination `
         -Bundle $bundle -Scope $scopeResult.Scope -PackageList $packageList -RepairPolicy $Policy
     $script:Rep.Collect = @{ SkipNetwork = $offline; Authenticated = ($haveKey -and -not $offline); Destination = $destination
@@ -3164,6 +3737,7 @@ function Invoke-RescueMainCore {
     $script:Rep.EvidenceObj = $evidence
     $script:Rep.RunEvidenceId = [string]$evidence['run_id']
 
+    Write-RescuePhase 'validate'
     $problems = Test-RescueEvidence -Evidence $evidence
     if ($problems.Count -gt 0) {
         Write-Host ('ERROR: evidence tidak valid / evidence failed self-check: ' + ($problems -join ', ')) -ForegroundColor Red
@@ -3178,6 +3752,7 @@ function Invoke-RescueMainCore {
     $analysisPath = Join-Path $reports ("windows-$stamp-analysis.md")
     $evidenceJson = ConvertTo-RescueJson -Value $evidence -Indent 2
     Write-Utf8File -Path $evidencePath -Text ($evidenceJson + "`n")
+    Write-LatestEvidence -Reports $reports -Json ($evidenceJson + "`n")
     $script:Rep.Evidence = $evidencePath
     $script:Rep.Outcome = 'completed'
 
@@ -3230,6 +3805,7 @@ function Invoke-RescueMainCore {
         return
     }
 
+    Write-RescuePhase 'analyze'
     if (-not $haveKey) {
         Write-Guidance -Kind 'nokey' -EvidencePath $evidencePath
         $script:ExitCode = 3
@@ -3273,5 +3849,6 @@ if ($env:RESCUE_PS_LIBRARY_ONLY -eq '1') { return }
 
 Invoke-RescueMain -EvidenceOnlyMode ([bool]$EvidenceOnly) -DryRunMode ([bool]$DryRun) -Explicit $BundleDir -ScriptDir $PSScriptRoot `
     -ScopeText $Scope -PackagesText $Packages -Policy $RepairPolicy `
-    -ApproveItems $Approve -ParamItems $Param -BackupPath $BackupRef -SelectItems $Select -ListOnly ([bool]$ListRepairs)
+    -ApproveItems $Approve -ParamItems $Param -BackupPath $BackupRef -SelectItems $Select -ListOnly ([bool]$ListRepairs) `
+    -NoHermesMode ([bool]$NoHermes) -HermesOnlyMode ([bool]$HermesOnly)
 exit $script:ExitCode

@@ -1,7 +1,9 @@
 @echo off
 rem Rescue host launcher for a RUNNING Windows 10/11. Managed by ahlikoding.com and satpamsiber.com under ahliweb.com.
 rem Double-click this file. It only starts rescue-windows.ps1 from the rescue USB (read-only checks, no install,
-rem no administrator rights, nothing written to this PC). Extra arguments are passed through, e.g. -EvidenceOnly.
+rem no administrator rights, nothing written to this PC). Extra arguments are passed through, e.g. -EvidenceOnly,
+rem -NoHermes (stop after the report) or -HermesOnly (skip the checks, open Hermes on the existing reports).
+rem After the report the script continues into Hermes in this same window; the window stays open at the end.
 setlocal
 set "HERE=%~dp0"
 set "PS1="
