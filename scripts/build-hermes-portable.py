@@ -77,27 +77,55 @@ SECRET_PATTERNS = [
     ('JWT', re.compile((r'\bey' + r'J[A-Za-z0-9_-]{8,}\.ey' + r'J[A-Za-z0-9_-]{8,}\.').encode())),
 ]
 # Precise allowlist for verified false positives in the shipped files. Each
-# entry: (path regex relative to the platform dir, finding label, regex the WHOLE
-# matched value must fullmatch). Reviewed against the first real build:
-#   - Hermes' skill guides show `Bearer sk-xxxxxxxxxxxxxxxxxxxx` placeholders.
-#   - agent/redact.py (a secret REDACTOR) documents `sk-proj-abcdef1234567890`
-#     and quotes the RSA private key header in a comment.
+# entry: (path regex relative to the platform dir, finding label, value spec).
+# A value spec is either 'sha256:<hex>' (the SHA-256 of the WHOLE matched value;
+# the values are stored only as hashes so this source holds no secret-shaped
+# literal and passes the bundle's own credential scan) or a regex that the whole
+# matched value must fullmatch. Reviewed against the first real build:
+#   - Hermes' skill guides show placeholder keys that are only a run of x.
+#   - agent/redact.py (a secret REDACTOR) documents a sample key and quotes the
+#     RSA private key header in a comment.
 #   - cryptography's ssh.py holds the OpenSSH key header as a parsing constant.
-#   - PyJWT's METADATA shows the public jwt.io example token
-#     (header {"alg":"HS256","typ":"JWT"}, payload {"some":"payload"}).
+#   - PyJWT's METADATA shows the public jwt.io example token.
 # The compiled .pyc of those exact modules carry the same strings.
+_REDACT = r'^python/hermes-agent/agent/(?:__pycache__/)?redact\.(?:py|cpython-3\d+\.pyc)$'
 SECRET_ALLOWLIST = [
     (r'^python/hermes-agent/(?:skills|optional-skills)/.+\.md$', 'API key (sk- style)', r'sk-[xX]+'),
-    (r'^python/hermes-agent/agent/(?:__pycache__/)?redact\.(?:py|cpython-3\d+\.pyc)$',
-     'API key (sk- style)', r'sk-proj-abcdef1234567890'),
-    (r'^python/hermes-agent/agent/(?:__pycache__/)?redact\.(?:py|cpython-3\d+\.pyc)$',
-     'private key block', r'-----BEGIN (?:RSA )?PRIVATE KEY-----'),
+    (_REDACT, 'API key (sk- style)', 'sha256:cc6acf934795805fa180cbdaa15f689b0104d75746d776598bedb40d71f4d7b0'),
+    (_REDACT, 'private key block', 'sha256:8bcac7908eb950419537b91e19adc83ce2c9cbfdacf4f81157fdadfec11f7017'),
     (r'^python/(?:lib/python3\.\d+|Lib)/site-packages/cryptography/hazmat/primitives/serialization/'
      r'(?:__pycache__/)?ssh\.(?:py|cpython-3\d+\.pyc)$',
-     'private key block', r'-----BEGIN OPENSSH PRIVATE KEY-----'),
+     'private key block', 'sha256:03d104c669e3c7b6be7f989db8b12c8b910d3be8c1e2a73c9369d3cc0ba803b5'),
     (r'^python/(?:lib/python3\.\d+|Lib)/site-packages/pyjwt-[0-9.]+\.dist-info/METADATA$', 'JWT',
-     r'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzb21lIjoicGF5bG9hZCJ9\.'),
+     'sha256:498d929b7f545ac77f67b3173e772ef7ce53f0c0caabee4779bb1f90ec1344da'),
 ]
+
+# CI home directories that third-party wheels built on the same kind of runner
+# legitimately mention; they are not treated as a build-machine path.
+GENERIC_HOMES = ('runner', 'runneradmin', 'vsts', 'github', 'ubuntu', 'root', 'user', 'jenkins')
+
+
+def allowlisted(allowlist, rel, label, value):
+    for path_re, entry_label, spec in allowlist:
+        if label != entry_label or not re.search(path_re, rel):
+            continue
+        if spec.startswith('sha256:'):
+            if hashlib.sha256(value.encode('utf-8')).hexdigest() == spec[7:]:
+                return True
+        elif re.fullmatch(spec, value):
+            return True
+    return False
+
+
+def build_path_literals(out, work, home=None, cwd=None):
+    """Paths of THIS build that must not leak into the output (never a generic /home/<user> pattern)."""
+    paths = [out, work, cwd]
+    if home:
+        name = home.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1].lower()
+        if name not in GENERIC_HOMES and len(os.path.normpath(home)) > 6:
+            paths.append(home)
+    return [p for p in paths if p and len(p) > 3]
+
 
 # Directories removed from the interpreter to save space; none is imported by
 # `hermes chat --cli` (the smoke test imports the CLI afterwards).
@@ -243,8 +271,7 @@ def scan_secrets(root, allowlist=None, extra_literals=()):
             for label, pattern in SECRET_PATTERNS:
                 for match in pattern.finditer(data):
                     value = match.group(0).decode('utf-8', 'replace')
-                    if any(re.search(p, rel) and label == l and re.fullmatch(v, value)
-                           for p, l, v in allowlist):
+                    if allowlisted(allowlist, rel, label, value):
                         continue
                     problems.append('%s: %s' % (rel, label))
                     break
@@ -507,12 +534,31 @@ def copy_dereferenced(src, dst):
 def install_python(uv, version, work, env):
     install_dir = os.path.join(work, 'uv-python')
     run([uv, 'python', 'install', version, '--install-dir', install_dir, '--no-bin', '--no-registry'], env)
-    candidates = [d for d in sorted(os.listdir(install_dir))
-                  if os.path.isdir(os.path.join(install_dir, d)) and not os.path.islink(os.path.join(install_dir, d))
-                  and d.startswith('cpython-')]
+    candidates = pick_interpreter_dirs(install_dir)
     if len(candidates) != 1:
         raise BuildError('expected exactly one installed interpreter, found %d' % len(candidates))
     return os.path.join(install_dir, candidates[0])
+
+
+def is_link_or_junction(path):
+    """Symlink, directory junction or any other reparse point (uv's minor-version link on Windows)."""
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, 'isjunction') and os.path.isjunction(path):
+        return True
+    try:
+        attrs = getattr(os.stat(path, follow_symlinks=False), 'st_file_attributes', 0)
+    except OSError:
+        return False
+    return bool(attrs & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400))
+
+
+def pick_interpreter_dirs(install_dir):
+    """Real cpython-<major.minor.patch>-... directories; links such as cpython-3.11-... are ignored."""
+    return [d for d in sorted(os.listdir(install_dir))
+            if re.match(r'^cpython-\d+\.\d+\.\d+', d)
+            and os.path.isdir(os.path.join(install_dir, d))
+            and not is_link_or_junction(os.path.join(install_dir, d))]
 
 
 # Hermes is not installable as a wheel (its setup.py refuses; assets such as
@@ -726,7 +772,7 @@ def build(args):
             raise BuildError('cannot run the bundled interpreter')
         python_version = probe.stdout.split()[-1]
         hermes_version = source_version(hermes_src)
-        findings = scan_secrets(plat_dir, extra_literals=[out, work, os.path.expanduser('~')])
+        findings = scan_secrets(plat_dir, extra_literals=build_path_literals(out, work, os.path.expanduser('~'), os.getcwd()))
         if findings:
             raise BuildError('credential/path self-check failed (values not printed):\n  ' + '\n  '.join(findings[:30]))
         entries, count, total = hash_tree(plat_dir)

@@ -193,10 +193,68 @@ class SecretScanTests(unittest.TestCase):
         self.assertTrue(self.scan({path: placeholder + 'k = "%s"\n' % FAKE_SK}))
 
     def test_allowlist_entries_are_fully_anchored_and_documented_cases_only(self):
-        for path_re, label, value_re in hp.SECRET_ALLOWLIST:
+        for path_re, label, spec in hp.SECRET_ALLOWLIST:
             self.assertTrue(path_re.startswith('^') and path_re.endswith('$'), path_re)
             self.assertIn(label, [l for l, _ in hp.SECRET_PATTERNS])
-            self.assertNotIn('.*', value_re)
+            self.assertNotIn('.*', spec)
+            if spec.startswith('sha256:'):
+                self.assertRegex(spec[7:], r'^[0-9a-f]{64}$')
+
+    def test_source_holds_no_secret_shaped_literal(self):
+        # The bundle's own credential scan (package.yml) runs over this very file.
+        data = SCRIPT.read_bytes()
+        for label, pattern in hp.SECRET_PATTERNS:
+            self.assertIsNone(pattern.search(data), label)
+
+    def test_hash_allowlist_matches_only_the_exact_value_and_path(self):
+        value = 'eyJ' + 'hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ' + 'zb21lIjoicGF5bG9hZCJ9.'
+        rel = 'python/lib/python3.11/site-packages/pyjwt-2.13.0.dist-info/METADATA'
+        self.assertTrue(hp.allowlisted(hp.SECRET_ALLOWLIST, rel, 'JWT', value))
+        self.assertFalse(hp.allowlisted(hp.SECRET_ALLOWLIST, rel, 'JWT', value + 'x'))
+        self.assertFalse(hp.allowlisted(hp.SECRET_ALLOWLIST, 'python/other/METADATA', 'JWT', value))
+
+
+class BuildPathTests(unittest.TestCase):
+    def test_generic_ci_homes_are_not_build_paths(self):
+        for home in ('/home/runner', 'C:\\Users\\runneradmin', '/root', '/home/runner/'):
+            with self.subTest(home=home):
+                self.assertEqual(hp.build_path_literals('/o/out', '/t/work', home), ['/o/out', '/t/work'])
+
+    def test_a_personal_home_and_this_builds_paths_are_checked(self):
+        lits = hp.build_path_literals('/o/out', '/t/work', '/home/alice', '/src/checkout')
+        self.assertEqual(lits, ['/o/out', '/t/work', '/src/checkout', '/home/alice'])
+
+    def test_third_party_runner_paths_do_not_fail_but_this_builds_paths_do(self):
+        with tempfile.TemporaryDirectory() as td:
+            write(pathlib.Path(td) / 'python/pkg/sbom.json', '{"p": "/home/runner/work/x"}')
+            lits = hp.build_path_literals('/build/out', '/tmp/hp-build-abc', '/home/runner')
+            self.assertEqual(hp.scan_secrets(td, extra_literals=lits), [])
+            write(pathlib.Path(td) / 'python/pkg/leak.py', 'P = "/tmp/hp-build-abc/uv"')
+            out = hp.scan_secrets(td, extra_literals=lits)
+            self.assertEqual(len(out), 1)
+            self.assertIn('build-machine path', out[0])
+
+
+class InterpreterPickTests(unittest.TestCase):
+    def test_links_and_minor_version_directories_are_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'cpython-3.11.15-windows-x86_64-none').mkdir()
+            (base / 'cpython-3.11-windows-x86_64-none').mkdir()          # no patch version
+            (base / 'other').mkdir()
+            self.assertEqual(hp.pick_interpreter_dirs(td), ['cpython-3.11.15-windows-x86_64-none'])
+
+    def test_symlinked_patch_directory_is_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'cpython-3.11.15-linux-x86_64-gnu').mkdir()
+            try:
+                os.symlink('cpython-3.11.15-linux-x86_64-gnu', base / 'cpython-3.11.14-linux-x86_64-gnu')
+            except (OSError, NotImplementedError):
+                self.skipTest('symlinks unavailable')
+            self.assertTrue(hp.is_link_or_junction(str(base / 'cpython-3.11.14-linux-x86_64-gnu')))
+            self.assertFalse(hp.is_link_or_junction(str(base / 'cpython-3.11.15-linux-x86_64-gnu')))
+            self.assertEqual(hp.pick_interpreter_dirs(td), ['cpython-3.11.15-linux-x86_64-gnu'])
 
 
 class ArchiveValidationTests(unittest.TestCase):
