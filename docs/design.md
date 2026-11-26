@@ -54,6 +54,7 @@ The companion is an operator-run external system, not an OMES ISO or a second ag
 | Target mounts and quarantine | Operator-approved read-write remount; reversible quarantine | `lib/target_mount.py`, `malware-quarantine.py`, `lib/quarantine_store.py`, `lib/malware_detections.py` |
 | Run report | `report.md`, `report.json`, `index.md` from evidence, analysis, and journal | `rescue-report.py`, `lib/run_report.py` ([run report](run-report.md)) |
 | Host launchers | The same flow on a running Windows, macOS, or Linux | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`, `host/rescue-linux.sh` ([host launchers](host-launchers.md)) |
+| Skill update | Newest owner-signed skills bundle at Hermes start; skill text only, verified against the `allowed_signers` pinned on the USB, fail closed | `update-skills.py`, `lib/skills_update.py`, `lib/skills_bundle.py` ([skill update](skill-update.md#client-side-the-updater-91)) |
 | Skill submission | Sanitized candidate skills to GitHub Issues after operator confirmation | `submit-skill.py`, `lib/skill_sanitize.py` ([skill submission](skill-submission.md)) |
 | Hermes profile | Runtime policy and skills | `profiles/rescue-hermes/` ([learning loop](hermes-learning-loop.md)) |
 | Follow-ups and autorun | Typed read-only follow-ups of flagged checks, the fixed kickoff turn, and the skill `rescue-autorun` | `scripts/rescue-followup.py`, `rescue-ai/v1/followup.schema.json`, `profiles/rescue-hermes/kickoff.md` ([learning loop](hermes-learning-loop.md#autorun-hermes-69)) |

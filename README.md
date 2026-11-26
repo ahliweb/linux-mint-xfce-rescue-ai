@@ -73,6 +73,7 @@ Legend: **Implemented** (source level, covered by `make check`), **Hardware-requ
 | Live readiness check `persistence-active` (upper-layer type and mount on the running system) | Implemented (physical boot is Hardware-required) | [persistence](docs/persistence.md) |
 | Run report on the USB | Implemented | [run report](docs/run-report.md) |
 | Candidate skill submission to GitHub Issues | Implemented; real GitHub calls are Environment-blocked | [skill submission](docs/skill-submission.md) |
+| Automatic verified skill update when Hermes starts (`scripts/update-skills.py`: owner SSH signature against the `allowed_signers` pinned on the USB, anti-rollback, skill text only, fail closed, default `auto`) | Implemented at source level against a local fake release server; a real signed release is Environment-blocked until the owner pins the key (the shipped file is still a placeholder, so nothing is installed yet) | [skill update](docs/skill-update.md#client-side-the-updater-91) |
 | Live cloud smoke test (`test-hermes-conversation.sh --live`) | Environment-blocked | [testing](docs/testing.md) |
 | Candidate memory, operator feedback labels, regression evaluation, signed promotion | Planned | [learning loop](docs/hermes-learning-loop.md) |
 | Hardware boot matrix (Pi 5, x86, UEFI/BIOS) | Hardware-required | [testing](docs/testing.md) |
@@ -216,6 +217,7 @@ The rescue bundle is copied from an allowlist (`AGENTS.md`, `LICENSE`, `Makefile
 | `OPENCODE_ADAPTER_COMMAND` | Operator-chosen adapter run by `analyze-opencode-go.sh` |
 | `OPENCODE_TIMEOUT_SECONDS` | Adapter and analyzer timeout, positive integer (default `120`) |
 | `RESCUE_GITHUB_ISSUES_TOKEN` | Fine-grained token (Issues read/write on this repository only) for `submit-skill.py` (secret); never given to Hermes |
+| `RESCUE_SKILLS_UPDATE` | `skills_update` switch: `auto` (default) or `off`; `off` makes no network request. Read by `scripts/update-skills.py` ([skill update](docs/skill-update.md#client-side-the-updater-91)) |
 
 Unquoted or double-quoted `$` and backticks make a line invalid: it is skipped with a warning and nothing is expanded. Variables already set in the environment are not overridden. A missing file is fine; a world-writable file is refused. Credentials are not stored in this repository or in evidence. OpenCode Go documents the model as `MiMo-V2.6-Flash` with model ID `mimo-v2.6-flash`; availability and plan limits can change, so `check-hermes-rescue.sh` verifies the configured ID and endpoint but never invents a fallback provider.
 
