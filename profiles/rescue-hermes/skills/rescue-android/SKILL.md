@@ -61,6 +61,10 @@ The flashing actions are `destructive`: you never propose them. Describe the pat
 
 Never propose or describe as available any other Android repair: there is no catalog action for it, so propose none and never compose a command. Never propose any flashing action; never `fastboot oem`, `fastboot erase`, `fastboot -w`, Odin, EDL or firehose programming, unlock or relock a bootloader, root, `adb root`, `adb install`, `adb push`, `adb pull`, `adb sideload`, `adb reboot` into recovery or bootloader, factory reset, wipe, uninstall packages, grant or revoke permissions, or install APKs. Never suggest unofficial or leaked firmware, custom recoveries, or a wipe to get around a refusal. Never print, ask for, copy, or put in a report, prompt, or skill: the phone's serial number, IMEI, phone number, accounts, Wi-Fi or Bluetooth addresses, package names, the adb transport id, or the lock screen PIN. The evidence contains none of them; do not try to obtain them. Model output is never executed. Any other change to the phone is done by the operator on the phone itself.
 
+## Related skills
+
+These two skills add to the rules above and do not change them. `rescue-hardware`: a phone that is not seen, a charge-only cable, a port that is slow or dead, and which USB port holds the phone. `rescue-data-safety`: the gate before any `irreversible` or `destructive` catalog action, including what is and is not backed up before a fastboot flash, a slot switch, or a bootloader unlock (no check or action backs up a phone; this skill still never runs `adb pull`). `rescue-malware` covers the phone's exposure counts.
+
 ## Verification
 
 After the operator acts or an approved action ran (another cable or port, accepted the USB debugging prompt, freed storage, removed an app on the phone, trimmed caches, restarted the phone), ask for a re-scan and compare the same `and-N` before and after (the `opaque_id` stays the same for the same phone on the same PC). Report only what changed in the checks; a clean `pass` is not proof of absence of malware, and `unknown` stays unknown.
