@@ -3547,6 +3547,37 @@ function Start-RescueHermes {
     }
 }
 
+function Invoke-SkillUpdate {
+    # Verified skill update (docs/skill-update.md): runs scripts\update-skills.py with the portable Python of the USB,
+    # after hermes-home is seeded, so the bundled skills are the fallback. The pinned key is
+    # <bundle>\config\skills-allowed-signers. Without ssh-keygen the script reports "dilewati" and why; offline, a bad
+    # signature or a placeholder key keep the skills as they are. Output goes to this console. Hard cap 90 s; the
+    # API key is not passed; nothing here can stop Hermes from starting.
+    param([string]$Bundle, [string]$Reports, $Launch)
+    try {
+        $script = Join-Path (Join-Path $Bundle 'scripts') 'update-skills.py'
+        if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return }
+        Write-Host 'Memeriksa pembaruan skill Hermes (tanda tangan pemilik) ...'
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = [string]$Launch.Python
+        $psi.Arguments = ConvertTo-CommandLine -Argv @('-I', $script, '--hermes-home', [string]$Launch.HermesHome, '--reports-dir', $Reports, '--toolkit-root', $Bundle)
+        $psi.WorkingDirectory = [string]$Launch.WorkingDirectory
+        $psi.UseShellExecute = $false
+        foreach ($n in @($Launch.RemoveEnv) + @('OPENCODE_GO_API_KEY')) {
+            if ($psi.EnvironmentVariables.ContainsKey($n)) { $psi.EnvironmentVariables.Remove($n) }
+        }
+        foreach ($k in $Launch.Env.Keys) {
+            if ([string]$k -ne 'OPENCODE_GO_API_KEY') { $psi.EnvironmentVariables[[string]$k] = [string]$Launch.Env[$k] }
+        }
+        $p = [System.Diagnostics.Process]::Start($psi)
+        try {
+            if (-not $p.WaitForExit(90000)) { try { $p.Kill() } catch { } }
+        } finally { $p.Dispose() }
+    } catch {
+        Write-Host 'PERINGATAN: pembaruan skill dilewati (tidak dapat dijalankan); skill yang ada tetap dipakai.'
+    }
+}
+
 function Invoke-HermesPhase {
     # Hands the console to Hermes after the report exists. Returns a status word; the launcher exit code
     # never depends on Hermes. Not-a-failure outcomes (no console, wrong architecture, no runtime) only
@@ -3586,6 +3617,7 @@ function Invoke-HermesPhase {
         Write-Host 'PERINGATAN / WARNING: hermes-home on the USB could not be prepared (read-only USB?); Hermes was not started.' -ForegroundColor Yellow
         return 'seed-failed'
     }
+    Invoke-SkillUpdate -Bundle $Bundle -Reports $Reports -Launch $launch
     Complete-RescueProgress
     Write-Host ''
     Write-Host 'Hermes dibuka dan langsung menjalankan rekomendasi; keluar dengan /exit atau Ctrl+C / Hermes is opening and runs the recommendations right away; leave with /exit or Ctrl+C.'

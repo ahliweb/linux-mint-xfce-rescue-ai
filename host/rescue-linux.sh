@@ -224,6 +224,12 @@ start_hermes() {
     printf 'PERINGATAN / WARNING: hermes-home di USB tidak bisa disiapkan; Hermes tidak dibuka / hermes-home on the USB could not be prepared; Hermes not opened.\n' >&2
     return 1
   fi
+  # Verified skill update (docs/skill-update.md), after the seed so the bundled text is the fallback. Uses the portable
+  # Python of the USB; pinned key = <bundle>/config/skills-allowed-signers. Offline means no request. Never blocks Hermes.
+  if [[ -f $bundle/scripts/update-skills.py ]]; then
+    printf 'Memeriksa pembaruan skill Hermes (tanda tangan pemilik) ...\n'
+    timeout 90 "$py" -I "$bundle/scripts/update-skills.py" --hermes-home "$hh" --reports-dir "$reports" --toolkit-root "$bundle" || true
+  fi
   printf '\nHermes dibuka dan langsung mengerjakan rekomendasi. Keluar: Ctrl+D atau /exit.\n'
   printf 'Hermes is opening and will work on the recommendations right away. Exit: Ctrl+D or /exit.\n'
   # Subshell: the key and the isolation variables exist for the Hermes process only. The key comes from

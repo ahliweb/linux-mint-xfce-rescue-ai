@@ -82,7 +82,7 @@ Yang dilakukan di dalam container build (jaringan aktif hanya untuk apt dan inst
 2. Membuat user build `mint` (uid/gid 1000, home `/home/mint`).
 3. Menjalankan installer resmi Hermes sebagai `mint` dengan `HERMES_HOME=/home/mint/.local/share/rescue-omes/hermes` (tanpa browser/computer-use, non-interaktif). Installer diverifikasi terhadap `--installer-sha256` bila diberikan; sha256 aktual selalu dicetak.
 4. Menjalankan `scripts/install-hermes-rescue.sh --state-dir /home/mint/.local/share/rescue-omes --skip-hermes-install` sebagai `mint`: profile (`SOUL.md`, `AGENTS.md`), `config.yaml`, `hermes/env` (`0600`), launcher di `/usr/local/bin`, dan entri autostart `~/.config/autostart/hermes-rescue.desktop` (beserta entri menu aplikasi `~/.local/share/applications/hermes-rescue.desktop`). Bundle runtime lengkap (allowlist yang sama dengan `copy_bundle`, termasuk `host/` bila ada) ditempatkan di `/usr/local/lib/rescue-omes`. Symlink `/usr/local/bin/hermes` ditambahkan supaya launcher menemukan `hermes`.
-5. Memastikan **semua** skill di `profiles/rescue-hermes/skills/` (`rescue-boot-diagnosis`, `rescue-target-os`, `rescue-skill-submission`, `rescue-android`, `rescue-printer`) ada di `<state>/hermes/skills/`. `install-hermes-rescue.sh` sudah memasang semuanya, dan build menyalinnya ulang. Build gagal bila salah satu skill itu tidak terpasang.
+5. Memastikan **semua** skill di `profiles/rescue-hermes/skills/` (sebelas skill: `rescue-android`, `rescue-autorun`, `rescue-boot-diagnosis`, `rescue-data-safety`, `rescue-hardware`, `rescue-host-repair`, `rescue-malware`, `rescue-printer`, `rescue-skill-submission`, `rescue-software`, `rescue-target-os`) ada di `<state>/hermes/skills/`. `install-hermes-rescue.sh` sudah memasang semuanya, dan build menyalinnya ulang. Build gagal bila salah satu dari sebelas skill itu tidak terpasang (daftar `required` di `scripts/lib/persistence-container-build.sh`, dipin `tests/test_followup.py`), dan juga bila `config/skills-allowed-signers` atau `scripts/update-skills.py` tidak ada di bundle image: pembaru skill ([skill-update.md](skill-update.md#client-side-the-updater-91)) membaca kunci publik pemilik dari bundle itu, tidak pernah dari unduhan.
 
 Isi image (di dalam `upper/`, yaitu file seperti terlihat di `/`): paket tambahan di `/usr`, `/var/lib/dpkg`, bundle di `/usr/local/lib/rescue-omes`, dan seluruh `/home/mint` (Hermes di `.local/share/rescue-omes/hermes/hermes-agent`, Python terkelola uv di `.local/share/uv`, autostart di `.config/autostart`).
 
@@ -173,7 +173,7 @@ Semua path di bawah `upper/home/mint/.local/share/rescue-omes/` (disingkat `<sta
 | Skill hasil belajar di lapangan | `hermes/skills/<nama>` yang **tidak ada** di image baru | Dibawa |
 | Riwayat kasus | `cases`, `learning`, `reports`, `repairs` (journal), `audit`, `clamav` | Dibawa |
 | Kode Hermes dan Python terkelola | `hermes/hermes-agent`, `.local/share/uv`, `hermes/SOUL.md`, profile | Dari image baru |
-| Skill bawaan (ada di kedua image) | `hermes/skills/rescue-*` | Dari image baru (versi baru menang) |
+| Skill bawaan (ada di kedua image) | `hermes/skills/rescue-*` | Dari image baru (versi baru menang); skill hasil pembaruan bertanda tangan ikut diganti dan dipasang ulang pada start berikutnya ([skill-update.md](skill-update.md#persistence-migration)) |
 | File kunci (`*.lock`) dan `.locks` | di mana pun | Dilewati |
 | Symlink, device, dan tipe lain | di mana pun | Dilewati dan dilaporkan; tidak pernah diikuti |
 | Path lain di luar allowlist (cache, dll.) | | Tidak dibawa |

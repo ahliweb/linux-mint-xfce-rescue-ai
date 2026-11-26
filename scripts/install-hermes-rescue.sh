@@ -118,6 +118,8 @@ trap 'rm -rf "$stage"; [[ -z ${installer:-} ]] || rm -f "$installer"' EXIT
 install -d -m 0755 "$stage/config"
 cp -R -- "$root/scripts" "$root/rescue-ai" "$root/profiles" "$root/docs" "$stage/"
 install -m 0644 "$root/config/hermes-rescue.config.yaml" "$root/config/rescue.env.example" "$stage/config/"
+# The owner's pinned public key(s) for the skill updater: read from this root-owned bundle, never from a download.
+install -m 0644 "$root/config/skills-allowed-signers" "$stage/config/"
 find "$stage" -name __pycache__ -type d -prune -exec rm -rf {} +
 find "$stage" -type d -exec chmod 0755 {} +
 find "$stage" -type f -exec chmod 0644 {} +

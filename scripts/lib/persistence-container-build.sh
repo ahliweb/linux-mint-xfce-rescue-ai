@@ -137,7 +137,7 @@ for skill_dir in /tmp/rescue-src-ro/profiles/rescue-hermes/skills/*/; do
   skills_installed+=("$skill")
 done
 log "rescue skills installed: ${skills_installed[*]}"
-for required in rescue-boot-diagnosis rescue-target-os rescue-skill-submission rescue-android rescue-printer rescue-autorun; do
+for required in rescue-android rescue-autorun rescue-boot-diagnosis rescue-data-safety rescue-hardware rescue-host-repair rescue-malware rescue-printer rescue-skill-submission rescue-software rescue-target-os; do
   [[ -f $state_dir/hermes/skills/$required/SKILL.md ]] || { echo "required skill missing: $required" >&2; exit 1; }
 done
 
@@ -173,6 +173,9 @@ if grep -Eq "^OPENCODE_GO_API_KEY=[^']|^OPENCODE_GO_API_KEY='[^']" "$state_dir/h
 fi
 [[ -x $bin_dir/rescue-malware-quarantine ]] || { echo 'rescue-malware-quarantine helper is not installed' >&2; exit 1; }
 [[ -x $bin_dir/rescue-followup ]] || { echo 'rescue-followup helper is not installed' >&2; exit 1; }
+# The skill updater reads the owner's pinned public key(s) from the image, never from a download.
+[[ -f $prefix/config/skills-allowed-signers && -f $prefix/scripts/update-skills.py ]] \
+  || { echo 'skills-allowed-signers or update-skills.py is missing from the image bundle' >&2; exit 1; }
 ((skip_hermes)) || [[ -x $bin_dir/hermes && -d $state_dir/hermes/hermes-agent ]] \
   || { echo 'Hermes is not installed under the state directory' >&2; exit 1; }
 

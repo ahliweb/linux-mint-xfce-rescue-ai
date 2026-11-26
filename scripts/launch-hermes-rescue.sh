@@ -187,6 +187,17 @@ if ((offline)); then
   printf 'Offline: the local read-only scan still runs; the OpenCode Go analysis and Hermes are skipped.\n'
 fi
 
+# Verified skill update (docs/skill-update.md): before Hermes can load any skill, install the newest bundle that the
+# owner signed with their SSH key, checked against config/skills-allowed-signers of THIS installed bundle. Text of
+# skills only; no network means no request (--offline); every refusal keeps the skills in place. It never blocks the
+# run (a hard 90 s cap also covers a DNS lookup that hangs; the result is a line on the screen and in the launcher log, and one line in skill-update-journal.jsonl).
+if [[ -f $root/scripts/update-skills.py ]]; then
+  printf 'Memeriksa pembaruan skill Hermes (tanda tangan pemilik) ...\n'
+  skill_update_args=(--hermes-home "$HERMES_HOME" --reports-dir "$report_dir" --toolkit-root "$root")
+  ((!offline)) || skill_update_args+=(--offline)
+  timeout 90 python3 -I "$root/scripts/update-skills.py" "${skill_update_args[@]}" || true
+fi
+
 # Automatic read-only scan of the operating systems on the internal disks, then
 # cloud analysis of the resulting evidence. Neither step may block Hermes: on any
 # failure print a bilingual warning and continue. Everything is written to the

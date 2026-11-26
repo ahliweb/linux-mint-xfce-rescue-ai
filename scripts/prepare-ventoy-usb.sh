@@ -39,7 +39,7 @@ import sys
 root, dest = sys.argv[1:]
 ALLOW = [
     "AGENTS.md", "LICENSE", "Makefile", "README.md", "CHANGELOG.md", "VERSION",
-    "config/hermes-rescue.config.yaml", "config/rescue.env.example",
+    "config/hermes-rescue.config.yaml", "config/rescue.env.example", "config/skills-allowed-signers",
     "docs", "host", "profiles", "rescue-ai", "scripts", "tests",
 ]
 SKIP_DIRS = {"__pycache__", ".git"}
