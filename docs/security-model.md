@@ -158,6 +158,16 @@ flowchart TD
 | Host evidence contains identities | Only closed status codes and bounded numbers; `target_device_opaque_id` is a truncated hash of the machine ID | `host/rescue-windows.ps1`, `host/RESCUE-MACOS.command`, `host/rescue-linux.sh` | Implemented |
 | Concurrent launchers corrupt the macOS journal | Documented: no `flock` on macOS; do not run two launchers on the same USB | `host/RESCUE-MACOS.command`, [host-repair.md](host-repair.md) | Residual risk |
 
+## Signed skills bundle (publishing side)
+
+| Threat | Control (actual behavior) | Implemented in | Status |
+|---|---|---|---|
+| A compromised GitHub account, workflow, or release injects skills into USBs in the field | Bundles are signed only by the owner's own SSH key, manually on the owner's laptop (`ssh-keygen -Y sign -n rescue-skills`). CI builds and checks the format only: `sign-skills-bundle.sh` refuses when `CI` or `GITHUB_ACTIONS` is set, and a test fails if any workflow references signing. The USB trusts only the keys in the pinned `config/skills-allowed-signers` | `scripts/sign-skills-bundle.sh`, `.github/workflows/ci.yml`, `config/skills-allowed-signers`, `tests/test_skills_bundle.py` | Implemented (publishing side); the updater that verifies on the USB is Planned, see #91 |
+| The owner private key leaks through the tooling | The script takes the key path explicitly, hands it to `ssh-keygen` by path, and never reads, copies, or prints it; the passphrase is asked by `ssh-keygen` only. Tests use throwaway keys created and deleted inside the test, and assert that no private key block exists in the repository and that none is printed or copied | `scripts/sign-skills-bundle.sh`, `tests/test_skills_bundle.py`, [skill-update.md](skill-update.md) | Implemented |
+| No key is pinned yet, or the pinned file is malformed, and a bundle is accepted anyway | `config/skills-allowed-signers` holds a marked placeholder; `allowed_signers_state` classifies placeholder, invalid, and pinned, and the updater must refuse on the first two (fail closed). Entries must restrict the namespace to `rescue-skills` | `scripts/lib/skills_bundle.py`, `config/skills-allowed-signers` | Implemented (classification); enforcement on the USB is Planned (#91) |
+| A hostile tarball (path traversal, symlink, executable, oversized, wrong content) reaches the updater | The format allows only `skills/<name>/SKILL.md` regular files with fixed mode and owner and hard size limits; build and check refuse everything else, read members in memory, and compare each file with the sha256 in the manifest; the manifest and the tarball sha256 are covered by the owner signature | `scripts/lib/skills_bundle.py`, `scripts/build-skills-bundle.py`, `tests/test_skills_bundle.py` | Implemented |
+| A swapped or altered artifact still passes | The signature covers the manifest; the manifest pins the tarball sha256 and size and every file; one changed byte in either fails (tested with real `ssh-keygen`, also with a wrong namespace and a different key) | `tests/test_skills_bundle.py` | Implemented |
+
 ## Residual risks
 
 - A credential-bearing USB exposes the API key to anyone with physical access; prefer `--no-provision-secrets` and enter the key in the live session (then the persistence image holds it). exFAT does not enforce `0600`.
@@ -168,6 +178,7 @@ flowchart TD
 - A clean scan is not proof of health or of absence of malware; rootkits, firmware implants, and threats without signatures are out of scope.
 - There is a small window between verification and `rm` for `mw.delete-*`; that is why a backup reference and typed approval are mandatory.
 - Hibernated or dirty Windows volumes can make offline results stale; the mount provider refuses read-write access instead.
+- A signing key removed from `config/skills-allowed-signers` stays trusted on USBs that still carry the old pinned file until they are refreshed, because the skills updater changes skill text only (see [skill-update.md](skill-update.md#rotation-and-revocation)). A lost key is a USB refresh, not a remote revocation.
 - Software checks cannot prove a physical boot or a hardware write blocker; Windows and macOS launcher behavior on real machines is Hardware-required and untested here.
 
 Report vulnerabilities to **satpamsiber.com** through the governance process in [ownership-and-governance.md](ownership-and-governance.md).
