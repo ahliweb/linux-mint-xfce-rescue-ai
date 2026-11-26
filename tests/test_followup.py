@@ -736,7 +736,7 @@ class TestInstallerWiring(unittest.TestCase):
         installer = (REPO / 'scripts/install-hermes-rescue.sh').read_text(encoding='utf-8')
         self.assertIn('scripts/rescue-followup.py" "$bin_dir/rescue-followup"', installer)
         build = (REPO / 'scripts/lib/persistence-container-build.sh').read_text(encoding='utf-8')
-        self.assertIn('rescue-printer rescue-autorun; do', build)
+        self.assertIn('rescue-skill-submission rescue-software rescue-target-os; do', build)
         self.assertIn('scripts/rescue-followup.py" "$bin_dir/rescue-followup"', build)
 
 

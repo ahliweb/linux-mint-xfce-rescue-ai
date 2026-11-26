@@ -194,7 +194,8 @@ class TestInstalledBundle(HermesScriptTestCase):
             "scripts/launch-hermes-rescue.sh", "scripts/check-hermes-rescue.sh",
             "scripts/check-hardware-readiness.py", "scripts/lib/rescue-env.sh",
             "rescue-ai/v1/rescue-evidence.schema.json", "profiles/rescue-hermes/SOUL.md",
-            "config/hermes-rescue.config.yaml", "config/rescue.env.example",
+            "config/hermes-rescue.config.yaml", "config/rescue.env.example", "config/skills-allowed-signers",
+            "scripts/update-skills.py", "scripts/lib/skills_update.py", "scripts/lib/skills_bundle.py",
             "docs/run-report.md", "docs/malware.md",  # the run report cites docs/ paths; they must exist in the runtime bundle
         ):
             self.assertTrue((self.prefix / rel).is_file(), rel)
