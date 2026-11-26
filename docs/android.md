@@ -9,6 +9,7 @@ Perangkat Android (smartphone atau tablet) yang dicolok lewat USB ke PC yang men
 | Bagian | Status |
 |---|---|
 | Inventaris USB read-only dari sysfs (tanpa kerja sama ponsel): port, kecepatan, lokasi fisik ACPI, penanda hub dan USB rescue, kelas, merek, mode Android | Implemented |
+| Pencadangan data pengguna ke USB rescue (`android.backup-user-files`, kelas risiko `privacy`): desain dan model ancaman ([bagian ini](#pencadangan-data-pengguna)) | **Planned** (#98; kode menunggu #99 dan tinjauan keamanan) |
 | Target keluarga `android` (`and-N`) dengan id opak (hash berkunci, bukan serial) di evidence schema 1.3 | Implemented |
 | Pemeriksaan ADB read-only (versi, patch, verified boot, SELinux, penyimpanan, baterai, indikator root, admin perangkat, aksesibilitas, aplikasi non-store, Play Protect) | Implemented |
 | Tindakan perbaikan katalog Android (`rescue-ai/v1/catalog/android.json`: `android.trim-caches`, `android.enable-package-verifier`, `android.reboot`), parameter `android_device` yang di-resolve mesin, penawaran pemindaian di launcher live | Implemented (fase 2) |
@@ -129,6 +130,8 @@ Ambang di atas adalah heuristik dan hanya bergantung pada angka; hasil `pass` bu
 | Layar operator | Merek dan port boleh, serial tidak |
 | Keluaran `adb` | Data tak tepercaya: diurai ke himpunan status tertutup dan angka terbatas lalu dibuang |
 
+**Planned (#98):** satu pengecualian terencana untuk tindakan pencadangan berkas pengguna, dengan persetujuan diketik pemilik perangkat, di [Pencadangan data pengguna](#pencadangan-data-pengguna). Sampai bagian 2 (#99) rilis, tidak ada perintah yang membaca data pengguna dan baris-baris di atas tetap berlaku.
+
 ## Model ancaman dan batas
 
 Ponsel adalah peer USB yang tidak tepercaya: ia dapat menjawab perintah dengan data sembarang, keluaran tak terbatas, atau tidak menjawab. Karena itu semua panggilan memakai batas waktu dan batas ukuran, keluaran tidak pernah dijadikan perintah, dan hasil hanya status tertutup. Lihat [security-model](security-model.md).
@@ -171,7 +174,7 @@ Penolakan dicatat di journal sebagai `precondition fail` dengan `reason` bertipe
 
 ### Batas yang dijaga validator katalog
 
-`scripts/lib/repair_catalog.py` menolak aksi Android yang: tidak memakai tepat satu `android_device`; memanggil `adb` selain dengan `-t {android_device}`; memakai sub-perintah di luar `shell`, `reboot` (tanpa argumen), `get-state`; memakai program `shell` di luar `pm trim-caches`, `settings get|put|delete global <kunci>`, `df`; menaruh placeholder setelah `shell`; atau berjalan di platform selain `live-linux` dan `linux-host`. Jadi `root`, `install`, `push`, `pull`, `sideload`, `remount`, `reboot bootloader|recovery`, `rm`, `sh`, wipe, dan factory reset tidak dapat masuk katalog tanpa mengubah validator itu sendiri. Mesin host Windows dan macOS menerima katalog yang sama dan menandai `android_device` sebagai tidak didukung (aksi Android tidak pernah berlaku di platform mereka).
+`scripts/lib/repair_catalog.py` menolak aksi Android yang: tidak memakai tepat satu `android_device`; memanggil `adb` selain dengan `-t {android_device}`; memakai sub-perintah di luar `shell`, `reboot` (tanpa argumen), `get-state`; memakai program `shell` di luar `pm trim-caches`, `settings get|put|delete global <kunci>`, `df`; menaruh placeholder setelah `shell`; atau berjalan di platform selain `live-linux` dan `linux-host`. Jadi `root`, `install`, `push`, `pull`, `sideload`, `remount`, `reboot bootloader|recovery`, `rm`, `sh`, wipe, dan factory reset tidak dapat masuk katalog tanpa mengubah validator itu sendiri. **Planned (#98):** validator akan mengizinkan `pull` hanya untuk satu aksi pencadangan dengan sumber konstanta mesin ([desain](#pencadangan-data-pengguna)); sampai #99 rilis, larangan ini berlaku penuh. Mesin host Windows dan macOS menerima katalog yang sama dan menandai `android_device` sebagai tidak didukung (aksi Android tidak pernah berlaku di platform mereka).
 
 ### Cara memakai
 
@@ -194,6 +197,112 @@ Perintah terakhir menjalankan aksi operator (`android.reboot` tidak punya pemicu
 - Aksi Android **tidak pernah** berjalan tanpa persetujuan Anda kecuali `android.trim-caches` pada kebijakan `auto-safe`. Untuk memperbaiki lebih jauh (hapus aplikasi, factory reset, root) lakukan sendiri di ponsel atau lewat layanan resmi pabrikan; toolkit ini tidak melakukannya. Flashing hanya lewat perintah yang Anda ketik sendiri ([di bawah](#flashing-dan-unbrick-52)).
 - Bila penolakan `device-mismatch` muncul, jangan pindahkan atau ganti ponsel di antara pemindaian dan perbaikan; pindai ulang agar `and-N` dan `opaque_id` cocok lagi.
 - Bila `device-not-authorized`: buka kunci ponsel dan setujui "Izinkan USB debugging", lalu jalankan ulang.
+
+<a id="pencadangan-data-pengguna"></a>
+## Pencadangan data pengguna (Planned, #98)
+
+> **Status: Planned.** Seluruh bagian ini adalah desain dan model ancaman (isu #98, bagian 1 dari #97). **Belum ada** tindakan, kode, skema, check, atau skill yang melakukannya; implementasi menunggu tinjauan keamanan desain ini (bagian 2, #99). Sampai bagian 2 rilis, pernyataan di dokumen ini bahwa tidak ada perintah yang membaca data pengguna tetap benar. Ancaman dan kontrolnya ada di [security-model](security-model.md#android-user-file-backup-planned).
+
+Permintaan pemilik 2026-11-26: toolkit membutuhkan tindakan katalog `android.backup-user-files` (nama usulan, **Planned**) yang menyalin sebagian berkas pengguna dari ponsel yang sudah otorisasi ADB ke USB rescue, sebelum aksi `destructive` Android seperti flash fastboot, pergantian slot, atau buka bootloader ([Backup dan rollback](#rollback-flash)). Ini **membalik larangan `adb pull`** yang berlaku hari ini, jadi desain ditulis lebih dulu dan ditinjau sebelum kode.
+
+### Keputusan pemilik (Planned)
+
+Dipilih pemilik (ahliweb) lewat dialog keputusan baku pada **2026-11-26**; teks lengkapnya di [komentar keputusan #97](https://github.com/ahliweb/linux-mint-xfce-rescue-ai/issues/97#issuecomment-7192213031).
+
+| ID | Keputusan (2026-11-26) | Dipilih | Akibat pada desain |
+|---|---|---|---|
+| D1 | Tujuan | **(c) USB rescue, tanpa enkripsi.** Agent menyarankan (a); pemilik memilih (c) dan menerima risiko sisa: USB yang hilang atau dipinjamkan membawa berkas pelanggan dalam bentuk terbaca | Lokasi dan mitigasi risiko di bawah; kriteria lama "tolak tujuan di USB rescue" tidak berlaku |
+| D2 | Yang disalin | **(a) Allowlist tetap:** `DCIM`, `Pictures`, `Movies`, `Music`, `Documents`, `Download`, `Recordings`, dan `Android/media` bila terbaca | Daftar sumber adalah konstanta di kode mesin |
+| D3 | Persetujuan pemilik perangkat | **(a) Konfirmasi tetap diketik.** Journal hanya mencatat bahwa persetujuan diberikan. Kewajiban hukum menurut undang-undang pelindungan data pribadi **belum diverifikasi** dan tidak dikutip | Frasa yang diketik, `privacy-needs-terminal` |
+| D4 | Kelas risiko | **(a) Kelas baru `privacy`:** selalu bertanya, tidak pernah di `auto-safe`, tidak pernah dibatch | [Kelas risiko `privacy`](repair-framework.md#kelas-risiko-privacy-planned) |
+| D5 | Panduan retensi | **Pengingat di laporan, ditambah peringatan setiap Hermes dimulai** yang menyebut jumlah cadangan yang masih ada di USB (hitungan saja, tanpa nama berkas) | Teks laporan dan peringatan launcher di bawah |
+| Lokasi | Dalam image ext4 persistence, bukan partisi exFAT Ventoy | **Dikonfirmasi pemilik 2026-11-26** | `<state-dir>/android-backups/<backup-id>/`; alasan dan alternatif yang ditolak di bawah |
+
+### Lokasi dan mode (D1(c), Planned)
+
+- **Lokasi (keputusan pemilik 2026-11-26, [komentar #98](https://github.com/ahliweb/linux-mint-xfce-rescue-ai/issues/98#issuecomment-7192354941)):** `<state-dir>/android-backups/<backup-id>/`, direktori `0700`, berkas `0600`. Di sesi live `<state-dir>` berada di dalam image ext4 persistence, jadi: berkas tidak terbaca bila USB dibuka di Windows atau macOS tanpa alat ext4; nama berkas apa pun dari ponsel disimpan tanpa penggantian nama exFAT; dan tata letaknya meniru `<state-dir>/quarantine/` untuk malware ([malware](malware.md)). Biayanya kapasitas: image bawaan 8 GiB dan state Hermes ada di dalamnya ([persistence](persistence.md)).
+- **Alternatif yang ditolak:** partisi data exFAT Ventoy. Ditolak karena dapat dibaca di OS mana pun, exFAT mengganti nama atau menolak sebagian nama berkas, dan sesi live mungkin tidak dapat me-mount-nya selagi ISO dipakai.
+- **`backup-id`:** `bk-<UTC yyyymmddThhmmssZ>-<8 hex acak>`. Tidak pernah memuat serial, model, atau nama.
+- **Mode:** hanya `live-linux`, dan hanya bila check [`persistence-active`](persistence.md#persistence-active-status-persistensi) berstatus `pass` (check itu advisory untuk laporan; tindakan ini memperlakukan selain `pass`, termasuk `warn` dan `unknown`, sebagai penolakan). Tanpa persistence cadangan hilang saat shutdown: ditolak `persistence-not-active`. `linux-host` ditolak `mode-not-supported` pada versi ini karena state-dir-nya ada di partisi exFAT. Windows dan macOS tidak menjalankan aksi Android.
+
+### Sumber dan perintah ke perangkat (Planned)
+
+- **Sumber (D2):** konstanta di kode mesin, **bukan** di katalog: `/sdcard/<F>/` untuk F dalam `DCIM`, `Pictures`, `Movies`, `Music`, `Documents`, `Download`, `Recordings`, `Android/media` (yang terakhir hanya bila terbaca). Folder yang tidak ada dihitung `absent`, bukan galat.
+- **Perintah yang boleh diurai dari ponsel:** hanya dua, dan keluarannya hanya satu bilangan desimal terbatas:
+  - `adb -t {android_device} shell du -sk /sdcard/<F>/` (perkiraan ukuran dalam KiB);
+  - `adb -t {android_device} shell 'find /sdcard/<F>/ -type f | wc -l'` (jumlah berkas; string konstan yang dibentuk mesin, nama folder adalah konstanta).
+
+  Keluaran lain apa pun menghasilkan `device-output-invalid`. Batas waktu 60 detik per query; query yang habis waktu atau tidak menghasilkan satu bilangan terbatas diperlakukan sebagai `device-output-invalid` (lihat butir terbuka di PR). Nama berkas tidak pernah masuk ke penguraian mesin.
+- **Salinan:** satu `adb -t ID pull /sdcard/<F>/ <staging>/<F>` per folder ke direktori staging baru di bawah direktori cadangan. Lalu mesin menelusuri staging secara lokal tanpa mengikuti symlink, melewati dan menghitung symlink dan berkas khusus, dan mensyaratkan setiap path hasil resolusi tetap di dalam staging; hanya sesudahnya staging di-rename ke tempat akhir. Batas: 100000 berkas dan total waktu dinding 2 jam; byte dibatasi oleh pemeriksaan ruang kosong. Melewati batas berkas atau waktu menghentikan salinan, membuang staging, dan hasilnya `failed` (tidak ada cadangan di tempat akhir).
+- **Ruang kosong sebelum `pull` pertama:** byte kosong pada sistem berkas `<state-dir>` harus ≥ perkiraan ukuran + 1 GiB cadangan (agar state Hermes tetap dapat ditulis); bila kurang: `insufficient-space`.
+
+### Penolakan sebelum menyalin (kode tertutup, Planned)
+
+`persistence-not-active`, `mode-not-supported`, `consent-not-given`, `insufficient-space`, `privacy-needs-terminal`, `device-output-invalid`, ditambah kode `android_device` yang sudah ada: `device-absent`, `device-not-authorized`, `device-ambiguous`, `device-mismatch`. Tidak ada kode lain; mesin tidak memakai teks bebas.
+
+### Persetujuan dan kelas `privacy` (D3, D4, Planned)
+
+- Satu prompt yang menampilkan teks retensi D5 **sebelum** bertanya, lalu meminta operator mengetik frasa tetap `pemilik setuju` atau `owner consents` (dipangkas, tidak peka huruf besar-kecil). `ya` dan `yes` tidak diterima. `--approve` tanpa terminal ditolak `privacy-needs-terminal`.
+- Kelas `privacy` selalu bertanya, tidak pernah di `auto-safe`, tidak pernah dibatch, dan tidak pernah diusulkan oleh trigger maupun model. Journal hanya mencatat `consent: typed`; nama pemilik tidak ditanyakan atau dicatat.
+
+### Verifikasi dan hasil (Planned)
+
+Jumlah berkas di perangkat per folder harus sama dengan jumlah berkas biasa lokal; selisih menghasilkan hasil `partial` (manifest `complete=false`). Setiap berkas yang tersalin di-hash (sha256). Hasil tertutup: `ok`, `partial`, `verify-failed`, `refused`, `failed`.
+
+### Manifest (Planned)
+
+`manifest.json` (`0600`) di samping data. Skema `rescue-android-backup/1`:
+
+| Bidang | Isi |
+|---|---|
+| `schema` | `rescue-android-backup/1` |
+| `backup_id`, `created_utc` | id dan waktu UTC pembuatan |
+| `target` | `opaque_id` target (bukan serial) |
+| `complete` | `true` hanya bila hasil `ok` |
+| `folders` | per folder allowlist: `present`, `files`, `bytes` |
+| `files` | daftar `{path (relatif), size, sha256}` |
+| `skipped` | hitungan symlink dan berkas khusus yang dilewati |
+
+Manifest memuat **nama berkas**, sehingga tinggal bersama datanya dan **tidak pernah** masuk journal, laporan, evidence, input analyzer, issue, atau skill. Journal dan laporan hanya memuat: `backup_id`, hitungan, byte, sha256 manifest itu sendiri, durasi, `consent: typed`, dan hasil atau alasan tertutup. Tidak ada yang lain.
+
+### `--backup-ref` (Planned)
+
+Aksi `destructive` Android menerima manifest dengan `complete=true` sebagai `--backup-ref` (journal mencatat ukuran dan sidik jari seperti sekarang, bukan path). Manifest tidak lengkap ditolak `backup-incomplete`. Aturan validator (Planned): `pull` diizinkan hanya untuk aksi ini dan hanya dari konstanta mesin; `pull` di aksi lain atau sumber lain tetap ditolak.
+
+### Retensi (D5, Planned)
+
+Teks pemilik, Indonesia otoritatif, tampil apa adanya di laporan dengan terjemahan Inggris:
+
+> Cadangan ini berisi data pribadi pemilik perangkat dan tersimpan tanpa enkripsi di USB ini. Setelah pemilik memastikan datanya utuh, serahkan salinannya kepadanya, lalu hapus dari USB sebelum USB dipakai atau dipinjamkan lagi.
+>
+> (EN: This backup holds the device owner's personal data and is stored unencrypted on this USB. Once the owner confirms the data is complete, hand a copy to them, then delete it from the USB before the USB is used or lent again.)
+
+Launcher live, sebelum Hermes, mencetak jumlah cadangan di bawah `<state-dir>/android-backups/` dan umur (hari) yang tertua, tanpa nama. Pembantu `scripts/android-backups.py` (Planned) menyediakan `--list` (id, jumlah, ukuran, umur) dan `--delete BACKUP_ID` (id diketik ulang untuk konfirmasi); inilah cara yang didokumentasikan untuk menjalankan teks retensi.
+
+### Risiko sisa yang diterima pemilik (D1(c), Planned)
+
+USB yang hilang atau dipinjamkan lagi membawa berkas pelanggan yang dapat dibaca siapa pun yang memakai alat ext4; kewajiban hukum menurut undang-undang pelindungan data pribadi belum diverifikasi dan tidak dikutip. Mitigasi: image ext4 tidak tampil di pengelola berkas Windows atau macOS, peringatan launcher, teks retensi, dan pembantu hapus. Tabel ancaman lengkap: [security-model](security-model.md#android-user-file-backup-planned).
+
+### Alur (Planned)
+
+```mermaid
+flowchart TD
+    A[Operator memilih android.backup-user-files] --> R1{Mode live-linux dan persistence-active pass?}
+    R1 -->|Tidak| X[Ditolak: persistence-not-active atau mode-not-supported]
+    R1 -->|Ya| R2{Ponsel android_device valid dan ruang cukup?}
+    R2 -->|Tidak| X2[Ditolak: kode android_device atau insufficient-space]
+    R2 -->|Ya| C{Terminal dan frasa persetujuan diketik?}
+    C -->|Tidak| X3[Ditolak: privacy-needs-terminal atau consent-not-given]
+    C -->|Ya| P[adb pull per folder ke staging]
+    P --> W[Telusur lokal tanpa symlink, path tetap di staging]
+    W --> V{Hitungan perangkat sama dengan lokal, sha256 semua berkas?}
+    V -->|Ya| M1[Rename staging, manifest complete=true]
+    V -->|Tidak| M2[Rename staging, manifest complete=false, hasil partial]
+    M1 --> J[Journal: id, hitungan, byte, sha256 manifest, consent typed]
+    M2 --> J
+```
+
+Ringkasnya: semua penolakan dicek dan persetujuan diketik sebelum `adb pull` pertama, lalu salinan diperiksa secara lokal dan dibandingkan dengan hitungan perangkat sebelum manifest dan journal ditulis.
 
 ## Flashing dan unbrick (#52)
 
@@ -280,6 +389,8 @@ Ponsel di mode Qualcomm EDL (9008) atau MediaTek BROM/preloader biasanya mati to
 ### Backup dan rollback
 
 Aksi `destructive` butuh `--backup-ref FILE` (berkas biasa tidak kosong; journal mencatat ukuran dan sidik jarinya, bukan path) dan `action_id` diketik. Fastboot tidak dapat membaca balik partisi, jadi backup harus dibuat **sebelum** bootloader dibuka dan sebelum flash: untuk partisi `boot`/`vendor_boot`/`init_boot` salin image yang sedang terpasang dari paket firmware resmi yang sama dengan sistem sekarang atau dari ekstraksi di ponsel yang masih bisa boot; berkas itu (atau catatan SHA-256 firmware yang sedang terpasang) adalah referensi `--backup-ref`, dan itulah yang Anda flash balik secara **manual** bila ponsel tidak boot sesudahnya. Rollback otomatis hanya ada untuk pergantian slot.
+
+**Planned (#98):** tindakan `android.backup-user-files` akan menghasilkan manifest yang dapat dipakai sebagai `--backup-ref` untuk berkas pengguna ([desain](#pencadangan-data-pengguna)); hari ini tidak ada alat yang mencadangkan ponsel dan backup tetap dibuat operator sendiri.
 
 ### Contoh perintah
 
