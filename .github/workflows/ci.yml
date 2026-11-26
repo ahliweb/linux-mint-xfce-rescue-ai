@@ -25,6 +25,15 @@ jobs:
           python -m pip install jsonschema
       - name: Source-level checks
         run: make check PYTHON=python
+      - name: Skills bundle (build twice, byte-identical, format check; never signed)
+        run: |
+          set -Eeuo pipefail
+          make skills-bundle PYTHON=python
+          mkdir -p "$RUNNER_TEMP/skills-second"
+          python scripts/build-skills-bundle.py build --output-dir "$RUNNER_TEMP/skills-second"
+          for f in dist/*; do cmp -- "$f" "$RUNNER_TEMP/skills-second/$(basename -- "$f")"; done
+          python scripts/build-skills-bundle.py check --manifest dist/rescue-skills-"$(cat VERSION)".manifest.json
+          python scripts/build-skills-bundle.py signers-status || echo 'allowed_signers is not pinned yet (updater stays disabled)'
       - name: Collector smoke test
         run: |
           ./scripts/collect-evidence.sh --output "$RUNNER_TEMP/rescue-evidence.json"
