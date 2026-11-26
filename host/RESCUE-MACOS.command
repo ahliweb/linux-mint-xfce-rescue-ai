@@ -1651,6 +1651,16 @@ function buildHonesty(mode, outcome, keyPresent, actions, cmp, scope) {
   if (cmp.reason === 'rescan-missing') { blocked.push('rescan-not-completed'); }
   return { hardware_required: hw, environment_blocked: blocked, scope_limited: !(scope.length === 1 && scope[0] === 'all') };
 }
+// The macOS launcher never opens Hermes, so it never runs the skill updater (docs/skill-update.md): the line is
+// "not applicable" whatever a journal on the USB holds. This generator does not read the journal (the Python and
+// PowerShell generators do); any other mode is only a test input and says "none recorded".
+function buildSkillUpdate(mode) {
+  return { state: mode === 'macos-host' ? 'not_applicable' : 'none', status: null, reason: null, bundle_version: null, signer: null, recorded_at: null };
+}
+function skillUpdateText(su) {
+  if (su.state === 'not_applicable') { return 'tidak berlaku: macOS tidak membuka Hermes, jadi tidak ada pembaruan skill / not applicable: the macOS launcher never opens Hermes'; }
+  return 'tidak ada pembaruan skill tercatat / no skill update recorded';
+}
 function buildReport(inp) {
   var info = inp.action_info || {};
   var ev = inp.evidence, after = inp.evidence_after, evSha = inp.evidence_sha256;
@@ -1691,7 +1701,8 @@ function buildReport(inp) {
     analysis: { status: text ? 'completed' : 'not_run', model_id: ev && ev.ai_provider ? ev.ai_provider.model_id : null, evidence_sha256: evSha,
       text: text, text_truncated: truncated, redactions: text !== null ? redactions : 0, proposals: { accepted: counts ? counts[0] : null, rejected: counts ? counts[1] : null } },
     remediation: { journal: { chain: chain, records_total: records.length, records_run: runRecords }, actions: actions },
-    comparison: cmp
+    comparison: cmp,
+    skill_update: buildSkillUpdate(inp.mode)
   };
   report.open_items = buildOpenItems(det, actions, cmp, chain, inp.repair_exit);
   report.honesty = buildHonesty(inp.mode, outcome, keyPresent, actions, cmp, scope);
@@ -1774,7 +1785,8 @@ function renderMarkdown(rep) {
     ['Versi toolkit / Toolkit version', h.toolkit_version || 'unknown'], ['Catalog SHA-256', h.catalog_sha256 || 'unavailable'],
     ['Scope', h.scope.join(', ')], ['Repair policy', h.repair_policy || 'unknown'],
     ['Kunci provider ada / Provider key present (nilai tidak pernah dicatat)', yesNo(h.provider_key_present)],
-    ['Hasil / Outcome', h.outcome], ['Evidence SHA-256', h.evidence_sha256 || 'none']]));
+    ['Hasil / Outcome', h.outcome], ['Evidence SHA-256', h.evidence_sha256 || 'none'],
+    ['Pembaruan skill / Skill update', skillUpdateText(rep.skill_update)]]));
   out.push('', '## 2. Preflight perangkat keras / Hardware readiness', '');
   if (rd.performed) {
     out.push('Gerbang / Gate: **' + rd.gate.toUpperCase() + '** (overall: ' + rd.overall + ')', '');

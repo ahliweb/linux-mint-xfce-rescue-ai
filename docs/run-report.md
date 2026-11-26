@@ -12,6 +12,7 @@ Label status: **Implemented** (level source, dicakup `make check`), **Hardware-r
 | Generator PowerShell native di `host/rescue-windows.ps1` (kompatibel PS 5.1) | **Implemented** (diuji dengan `pwsh` di Linux; PS 5.1 di Windows nyata **Hardware-required**) |
 | Generator JXA (`osascript -l JavaScript`, tanpa Python) di `host/RESCUE-MACOS.command` | **Implemented** (diuji dengan shim `node`; JXA di macOS nyata **Hardware-required**) |
 | Skema `rescue-ai/v1/run-report.schema.json`, fixture, `make validate` | **Implemented** |
+| Baris pembaruan skill di header (hasil terbaru dari `reports/skill-update-journal.jsonl`, field tertutup; macOS "tidak berlaku") | **Implemented** (PowerShell diuji dengan `pwsh` di CI; sesi nyata ke GitHub dengan tanda tangan asli **Environment-blocked**, lihat [skill-update](skill-update.md)) |
 | Uji silang: JSON dan Markdown dari PowerShell dan JXA sama dengan Python untuk input yang sama | **Implemented** |
 | Pemindaian ulang setelah aksi dieksekusi (sebelum/sesudah) di live USB, Linux host, Windows, macOS | **Implemented** (pemindaian pada mesin nyata **Hardware-required**) |
 | Analisis AI di dalam laporan | Teks nyata dari cloud **Environment-blocked**; uji memakai server loopback palsu |
@@ -55,7 +56,7 @@ File dibuat `0600` bila sistem berkas mengizinkan (exFAT tidak menegakkan mode),
 
 Setiap bagian menyatakan apa yang **diverifikasi** dan apa yang **tidak**.
 
-1. **Header**: `run_id`, waktu UTC mulai dan selesai, mode (`live-linux`, `linux-host`, `windows-host`, `macos-host`), `VERSION` toolkit, SHA-256 katalog, scope, kebijakan perbaikan, apakah kunci provider **ada** (nilainya tidak pernah dicatat), hasil run (`completed`, `completed-with-failures`, `evidence-only`, `dry-run`, `preflight-failed`, `scan-failed`, `scan-skipped`, `evidence-invalid`, `no-key`, `network-error`, `provider-rejected`, `analysis-failed`, `analyzer-missing`, `dependency-missing`, `repair-invalid`, `journal-unusable`, `interrupted`, `report-privacy-refused`), SHA-256 evidence. `dependency-missing` (hanya launcher Linux) berarti `python3-jsonschema` tidak ada di host: evidence dikumpulkan, tetapi analisis dan perbaikan tidak dijalankan; bagian Kejujuran menandainya `host-dependency-missing`. `network-error` berarti tidak ada jawaban yang dapat dipakai (DNS, koneksi, timeout, HTTP 401/403/408/429/5xx); `provider-rejected` berarti provider menjawab dengan HTTP 4xx lain (misalnya 400 `MissingSessionID`), jadi jaringan berfungsi dan permintaan ditolak; bagian Kejujuran menandainya `provider-rejected-request`, bukan `network-unreachable`.
+1. **Header**: `run_id`, waktu UTC mulai dan selesai, mode (`live-linux`, `linux-host`, `windows-host`, `macos-host`), `VERSION` toolkit, SHA-256 katalog, scope, kebijakan perbaikan, apakah kunci provider **ada** (nilainya tidak pernah dicatat), hasil run (`completed`, `completed-with-failures`, `evidence-only`, `dry-run`, `preflight-failed`, `scan-failed`, `scan-skipped`, `evidence-invalid`, `no-key`, `network-error`, `provider-rejected`, `analysis-failed`, `analyzer-missing`, `dependency-missing`, `repair-invalid`, `journal-unusable`, `interrupted`, `report-privacy-refused`), SHA-256 evidence, dan **pembaruan skill** (satu baris, lihat [Baris pembaruan skill](#baris-pembaruan-skill)). `dependency-missing` (hanya launcher Linux) berarti `python3-jsonschema` tidak ada di host: evidence dikumpulkan, tetapi analisis dan perbaikan tidak dijalankan; bagian Kejujuran menandainya `host-dependency-missing`. `network-error` berarti tidak ada jawaban yang dapat dipakai (DNS, koneksi, timeout, HTTP 401/403/408/429/5xx); `provider-rejected` berarti provider menjawab dengan HTTP 4xx lain (misalnya 400 `MissingSessionID`), jadi jaringan berfungsi dan permintaan ditolak; bagian Kejujuran menandainya `provider-rejected-request`, bukan `network-unreachable`.
 2. **Preflight perangkat keras** (hanya live USB): hasil gerbang dan status tiap check (`cpu`, `ram`, `vga-display`, `internet-connectivity`, `usb-boot-media`). Teks `observed` (model CPU, perangkat) sengaja tidak dibawa.
 3. **Deteksi**: semua check dikelompokkan per domain (hardware, OS per sistem target, software, malware, printer, lingkungan), status, dan nilai terbatas dengan satuan. Check dan target Android (`and-N`, family `android`) masuk domain `os` dan tampil sebagai target; evidence ponsel berasal dari `scan-android.py` dan mendapat laporan run tersendiri ([android](android.md#cara-memakai)). Semua check `printer-*` (printer `prn-N`, family `printer`, dan `printer-target-*` pada target OS `os-N`) masuk domain `printer`; evidence printer berasal dari `scan-printers.py` dan mendapat laporan run tersendiri (`run_id` berakhiran `-printer`, [printer](printer.md#cara-memakai)); aksinya (`printer.*`) memakai `target_ref` `prn-N`, risiko `irreversible` ada di daftar risiko, dan penolakan `printer-absent`/`printer-mismatch`/`printer-ambiguous` ada di daftar alasan. Alasan `needs-root` (aksi butuh root/administrator yang tidak ada, tidak ditanyakan dan tidak dijalankan) dan `operator-approved-batch` (disetujui sekaligus bersama aksi `safe` lain, [repair-framework](repair-framework.md#pengalaman-operator-precheck-root-pemilih-disk-persetujuan-massal)) juga ada di daftar itu; keputusan batch tampil sebagai persetujuan operator interaktif. Legenda: `unknown` berarti **tidak dapat ditentukan, bukan sehat**.
 4. **Analisis AI**: model, SHA-256 evidence, teks analisis apa adanya (hanya dibaca, karakter kontrol dibuang, ditandai sebagai keluaran model yang tidak pernah dijalankan; dipotong pada 32768 karakter), jumlah usulan diterima dan ditolak.
@@ -90,6 +91,42 @@ Tidak ada laporan bila folder `reports/` di USB tidak bisa ditulis atau bundle t
 
 Setelah fase perbaikan, launcher mencari catatan `execute` untuk run ini di journal. Bila ada, ia menjalankan pemindaian yang sama lagi (live: `scan-target-os.py` dengan scope yang sama; Linux host: kolektor yang sama; Windows dan macOS: koleksi host yang sama) dan menyimpan `*-evidence-after.json` di USB. Kegagalan pemindaian ulang hanya membuat perbandingan kosong (`rescan-missing`, tercantum di bagian Kejujuran), tidak pernah memblokir launcher.
 
+### Baris pembaruan skill
+
+Header memuat satu baris **Pembaruan skill / Skill update**: hasil terbaru dari pembaru skill bertanda tangan ([skill-update](skill-update.md), #91), supaya operator melihatnya di `report.md` dan tidak hanya di log launcher. Isinya status, alasan, versi bundel, sidik jari penanda tangan, dan waktu pencatatan (UTC).
+
+```mermaid
+flowchart TD
+    J[(reports/skill-update-journal.jsonl)] --> N[Ambil hanya baris terbaru]
+    N --> C{Field tertutup valid?}
+    C -->|ya| V[Tampilkan nilainya]
+    C -->|tidak| I[Tampilkan tidak valid]
+    A[Tidak ada berkas jurnal] --> T[tidak ada pembaruan skill tercatat]
+    M[Launcher macOS] --> X[tidak berlaku: macOS tidak membuka Hermes]
+    V --> R[Baris di report.md dan skill_update di report.json]
+    I --> R
+    T --> R
+    X --> R
+```
+
+Generator membaca jurnal hanya dari `<folder laporan>/skill-update-journal.jsonl`, yaitu folder yang sama tempat pembaru menulis; jurnal adalah data, bukan instruksi.
+
+- **Hanya baris terbaru**, dan hanya dari 64 KiB terakhir berkas (jurnal bisa tumbuh). Baris terbaru yang lebih panjang dari jendela itu tidak dibaca dan ditampilkan sebagai tidak valid.
+- **Hanya field tertutup, masing-masing divalidasi**: `status` dari enum pembaru (`updated`, `current`, `skipped`, `refused`, `offline`, `failed`), `reason` dari enum kode alasan pembaru, `bundle_version` berpola `MAJOR.MINOR.PATCH`, `signer` berpola `SHA256:` diikuti 43 karakter base64, `at` berpola waktu UTC laporan. Nilai null yang sah (versi atau penanda tangan pada penolakan) ditampilkan `-`.
+- **Nilai tidak valid tidak pernah diteruskan.** Field yang gagal diperiksa ditampilkan `tidak valid` (di JSON: string `invalid`); baris yang bukan objek JSON, bukan UTF-8, atau berskema lain ditampilkan `tidak valid` secara utuh (`state: invalid`). Teks bebas, path, dan field lain dari jurnal tidak masuk laporan, dan privacy self-check tetap berlaku.
+- **Tanpa jurnal**: `tidak ada pembaruan skill tercatat` (`state: none`).
+- **macOS**: `tidak berlaku: macOS tidak membuka Hermes, jadi tidak ada pembaruan skill` (`state: not_applicable`), apa pun isi jurnal; launcher macOS tidak menjalankan pembaru.
+
+Penempatan menurut urutan launcher:
+
+| Launcher | Urutan | Arti baris |
+|---|---|---|
+| `launch-hermes-rescue.sh` (live) | Pembaru berjalan sebelum pemindaian, laporan ditulis sesudahnya | Hasil run ini |
+| `host/rescue-linux.sh`, `host/rescue-windows.ps1` | Laporan ditulis, lalu `hermes-home` di-seed, lalu pembaru berjalan, lalu Hermes mulai | Hasil **tercatat terakhir**, biasanya dari start sebelumnya; waktu pencatatan di baris menunjukkan kapan |
+| `host/RESCUE-MACOS.command` | Tidak membuka Hermes | Tidak berlaku |
+
+Pada launcher host, pembaru sengaja tidak dipindah ke depan laporan: pembaru mengunduh dari jaringan dan berjalan setelah seed `hermes-home` (sehingga skill bawaan menjadi cadangan) dan memakai Python portabel di USB, sedangkan laporan harus tetap ditulis cepat pada semua jalur keluar (termasuk jalur gagal dan terputus). Mengubah urutan itu menyentuh perilaku pembaru dan jalur laporan; baris ini jujur dengan menampilkan waktu pencatatan dan catatan bahwa pada launcher host ia bisa dari start sebelumnya. Hasil run host saat ini tetap ada di log launcher dan baris baru jurnal; laporan run berikutnya menampilkannya.
+
 ## `scripts/rescue-report.py`
 
 ```bash
@@ -119,7 +156,10 @@ Kode keluar: `0` laporan ditulis (atau `--validate`: semua valid) | `1` privacy 
 | `analysis` | `status`, `model_id`, `evidence_sha256`, `text`, `text_truncated`, `redactions`, `proposals{accepted,rejected}` |
 | `remediation` | `journal{chain: valid/INVALID/absent, records_total, records_run}`, `actions[]` |
 | `comparison` | `performed`, `reason`, `compared`, `unchanged`, `only_before`, `only_after`, `changed[]` |
+| `skill_update` | `state` (`recorded`, `none`, `invalid`, `not_applicable`), `status`, `reason`, `bundle_version`, `signer`, `recorded_at`: enum, pola, atau literal `invalid`; `null` bila tidak ada |
 | `open_items[]`, `honesty`, `summary`, `privacy_check` | butir terbuka (enum), penanda Hardware-required/Environment-blocked, ringkasan untuk indeks, hasil pemeriksaan privasi |
+
+Semua `report.json` memuat `skill_update` (wajib); laporan lama tanpa kunci itu tidak lolos skema versi ini.
 
 Fixture: `rescue-ai/v1/fixtures/run-report-valid-*.json` (harus lolos) dan `run-report-invalid-*.json` (harus ditolak; alasannya di `*.reason.txt`); `make validate` memeriksa keduanya.
 
@@ -169,4 +209,4 @@ Rollback MANUAL diperlukan: `docs/os-repair.md#rollback-linux`
 
 ## Verifikasi
 
-`make check` menjalankan `tests/test_run_report.py`: model dan renderer (bagian, redaksi parameter, hasil akhir, sebelum/sesudah, butir terbuka, kejujuran), kasus rantai hash yang dirusak, privacy self-check (setiap aturan, nilai kunci), skema dan fixture, CLI (izin `0600`, atomik, kode keluar, journal dari engine nyata), uji silang PowerShell dan JXA terhadap Python (JSON, Markdown, indeks), dan jalur launcher (live USB dengan pemindai stub, Linux host, Windows dengan `pwsh`, macOS dengan `zsh` dan shim `node`) termasuk pemindaian ulang. **Belum** diverifikasi (Hardware-required): perilaku Windows PowerShell 5.1 dan JXA di macOS sungguhan, serta run pada mesin dan disk nyata.
+`make check` menjalankan `tests/test_run_report.py`: model dan renderer (bagian, redaksi parameter, hasil akhir, sebelum/sesudah, butir terbuka, kejujuran), kasus rantai hash yang dirusak, privacy self-check (setiap aturan, nilai kunci), skema dan fixture, CLI (izin `0600`, atomik, kode keluar, journal dari engine nyata), uji silang PowerShell dan JXA terhadap Python (JSON, Markdown, indeks), dan jalur launcher (live USB dengan pemindai stub, Linux host, Windows dengan `pwsh`, macOS dengan `zsh` dan shim `node`) termasuk pemindaian ulang. Baris pembaruan skill diuji di `SkillUpdateLineTests` (model, nilai tidak valid tidak diteruskan, baris rusak, tanpa jurnal, macOS, enum sama dengan pembaru dan skema), `SkillUpdateCliTests` (jurnal yang ditulis kode pembaru asli, semua alasan, jurnal hostile) dan uji silang PowerShell dan JXA. **Belum** diverifikasi (Hardware-required): perilaku Windows PowerShell 5.1 dan JXA di macOS sungguhan, serta run pada mesin dan disk nyata.

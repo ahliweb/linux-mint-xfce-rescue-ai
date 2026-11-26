@@ -1913,6 +1913,11 @@ $script:RrTargetEnums = @{
 }
 $script:RrFinals = @('verified', 'rolled-back', 'failed', 'skipped', 'declined', 'proposed')
 $script:RrMaxAnalysis = 32768
+# Skill update journal (docs/skill-update.md): closed sets mirrored from scripts/lib/skills_update.py (tests pin them).
+$script:RrSkillUpdateJournal = 'skill-update-journal.jsonl'
+$script:RrSkillUpdateMaxTail = 65536
+$script:RrSkillUpdateStatuses = @('updated', 'current', 'skipped', 'refused', 'offline', 'failed')
+$script:RrSkillUpdateReasons = @('updated', 'current', 'not-newer', 'disabled', 'config-invalid', 'no-ssh-keygen', 'placeholder-signers', 'invalid-signers', 'offline', 'http-error', 'no-bundle', 'bad-release', 'too-large', 'bad-signature', 'bad-manifest', 'version-mismatch', 'rollback', 'toolkit-too-old', 'bad-bundle', 'state-invalid', 'toolkit-version-unreadable', 'unsafe-target', 'install-error')
 $script:RrControl = '[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]'
 $script:RrRunRe = '^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$'
 $script:RrActionRe = '^(hw|os-linux|os-windows|os-macos|sw|mw|android|printer)\.[a-z0-9]+(-[a-z0-9]+)*$'
@@ -2413,6 +2418,106 @@ function Get-RrHonesty {
     return [ordered]@{ hardware_required = @($hardware); environment_blocked = @($blocked); scope_limited = $limited }
 }
 
+function Get-RrNewestLine {
+    # The newest non-blank line (bytes) of a journal file, or $null when the file is absent or empty. Only the last
+    # RrSkillUpdateMaxTail bytes are read; when the file is longer the first fragment is partial and is dropped, so a
+    # newest line longer than the window comes back as an empty array (shown as invalid).
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $size = $fs.Length
+            $start = [Math]::Max([long]0, $size - $script:RrSkillUpdateMaxTail)
+            [void]$fs.Seek($start, [System.IO.SeekOrigin]::Begin)
+            $buf = New-Object byte[] ([int]($size - $start))
+            $got = 0
+            while ($got -lt $buf.Length) {
+                $n = $fs.Read($buf, $got, $buf.Length - $got)
+                if ($n -le 0) { break }
+                $got += $n
+            }
+        } finally { $fs.Dispose() }
+    } catch { return $null }
+    $parts = New-Object System.Collections.Generic.List[object]
+    $segStart = 0
+    for ($i = 0; $i -le $got; $i++) {
+        if ($i -eq $got -or $buf[$i] -eq 10) {
+            $len = $i - $segStart
+            $seg = New-Object byte[] $len
+            if ($len -gt 0) { [Array]::Copy($buf, $segStart, $seg, 0, $len) }
+            $parts.Add($seg)
+            $segStart = $i + 1
+        }
+    }
+    if ($start -gt 0) {
+        if ($parts.Count -le 1) { return , (New-Object byte[] 0) }
+        $parts.RemoveAt(0)
+    }
+    $newest = $null
+    foreach ($seg in $parts) {
+        if (([System.Text.Encoding]::UTF8.GetString($seg)).Trim().Length -gt 0) { $newest = $seg }
+    }
+    if ($null -eq $newest) { return $null }
+    return , $newest
+}
+
+function Get-RrSkillUpdateField {
+    # One journal field as the report may show it: the value when it passes the closed check, $null for an allowed
+    # null, else the literal 'invalid'.
+    param($Value, [string[]]$Allowed = $null, [string]$Pattern = '', [bool]$Nullable = $false)
+    if ($null -eq $Value) { if ($Nullable) { return $null } else { return 'invalid' } }
+    if ($Value -isnot [string]) { return 'invalid' }
+    if ($null -ne $Allowed -and ($Allowed -cnotcontains $Value)) { return 'invalid' }
+    if ($Pattern -and ($Value -cnotmatch $Pattern)) { return 'invalid' }
+    return $Value
+}
+
+function New-RrSkillUpdate {
+    # $Line: the newest journal line (bytes) or $null. Free text of the journal is never copied.
+    param([string]$Mode, $Line)
+    $state = 'recorded'
+    if ($Mode -ceq 'macos-host') { $state = 'not_applicable' }
+    elseif ($null -eq $Line) { $state = 'none' }
+    $blank = [ordered]@{ state = $state; status = $null; reason = $null; bundle_version = $null; signer = $null; recorded_at = $null }
+    if ($state -cne 'recorded') { return $blank }
+    $text = $null
+    $rec = $null
+    try {
+        $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString([byte[]]$Line)
+        if ($text.TrimStart().StartsWith('{')) { $rec = $text | ConvertFrom-Json }
+    } catch { $rec = $null }
+    if (-not (Test-RrObj $rec) -or (Get-RrProp $rec 'schema') -cne 'rescue-skill-update/1') { $blank['state'] = 'invalid'; return $blank }
+    $at = Get-RrProp $rec 'at'
+    if ($at -is [datetime]) {
+        # PowerShell 7 turns an ISO string into a DateTime; accept it only when the exact closed form is in the line.
+        $form = $at.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($text.Contains('"' + $form + '"')) { $at = $form } else { $at = 'x' }
+    }
+    return [ordered]@{
+        state = 'recorded'
+        status = (Get-RrSkillUpdateField -Value (Get-RrProp $rec 'status') -Allowed $script:RrSkillUpdateStatuses)
+        reason = (Get-RrSkillUpdateField -Value (Get-RrProp $rec 'reason') -Allowed $script:RrSkillUpdateReasons)
+        bundle_version = (Get-RrSkillUpdateField -Value (Get-RrProp $rec 'bundle_version') -Pattern '^[0-9]+\.[0-9]+\.[0-9]+\z' -Nullable $true)
+        signer = (Get-RrSkillUpdateField -Value (Get-RrProp $rec 'signer') -Pattern '^SHA256:[A-Za-z0-9+/]{43}\z' -Nullable $true)
+        recorded_at = (Get-RrSkillUpdateField -Value $at -Pattern '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z')
+    }
+}
+
+function Get-RrSkillUpdateText {
+    param($Su)
+    switch ([string]$Su['state']) {
+        'not_applicable' { return 'tidak berlaku: macOS tidak membuka Hermes, jadi tidak ada pembaruan skill / not applicable: the macOS launcher never opens Hermes' }
+        'none' { return 'tidak ada pembaruan skill tercatat / no skill update recorded' }
+        'invalid' { return 'tidak valid: baris jurnal pembaruan skill terbaru tidak sesuai format / invalid: the newest skill update journal line is malformed' }
+    }
+    $show = { param($v) if ($v -ceq 'invalid') { 'tidak valid' } elseif ($null -eq $v) { '-' } else { [string]$v } }
+    return ('status: ' + (& $show $Su['status']) + '; alasan: ' + (& $show $Su['reason']) + '; versi: ' + (& $show $Su['bundle_version']) +
+        '; sidik jari penanda tangan: ' + (& $show $Su['signer']) + '; dicatat (UTC): ' + (& $show $Su['recorded_at']) +
+        '. Hasil tercatat terbaru; di launcher host pembaru berjalan setelah laporan ditulis, jadi baris ini bisa berasal dari start sebelumnya / ' +
+        'newest recorded outcome; on host launchers the updater runs after the report is written, so this may be from an earlier start')
+}
+
 function New-RunReportModel {
     # $In keys: run_id mode outcome started_at ended_at version catalog_sha256 scope repair_policy key_present
     # evidence evidence_sha256 evidence_after analysis_text ai_counts journal_lines repair_exit readiness action_info
@@ -2494,6 +2599,7 @@ function New-RunReportModel {
         remediation = [ordered]@{ journal = [ordered]@{ chain = $chain; records_total = @($records).Count; records_run = $runRecords }
             actions = @($actions) }
         comparison = $comparison
+        skill_update = (New-RrSkillUpdate -Mode ([string]$In['mode']) -Line $In['skill_update_line'])
     }
     $report['open_items'] = Get-RrOpenItems -Detection $detection -Actions $actions -Comparison $comparison -Chain $chain -RepairExit ([int]$In['repair_exit'])
     $report['honesty'] = Get-RrHonesty -Mode $In['mode'] -Outcome $outcome -KeyPresent $keyPresent -Actions $actions -Comparison $comparison -Scope $scope
@@ -2597,7 +2703,8 @@ function ConvertTo-RunReportMarkdown {
                 @('Mode', $h['mode']), @('Versi toolkit / Toolkit version', $ver), @('Catalog SHA-256', $cat),
                 @('Scope', (@($h['scope']) -join ', ')), @('Repair policy', $pol),
                 @('Kunci provider ada / Provider key present (nilai tidak pernah dicatat)', (Get-RrYesNo $h['provider_key_present'])),
-                @('Hasil / Outcome', $h['outcome']), @('Evidence SHA-256', $esha))))
+                @('Hasil / Outcome', $h['outcome']), @('Evidence SHA-256', $esha),
+                @('Pembaruan skill / Skill update', (Get-RrSkillUpdateText -Su $Report['skill_update'])))))
     $out.AddRange([string[]]@('', '## 2. Preflight perangkat keras / Hardware readiness', ''))
     if ($rd['performed']) {
         $out.Add(('Gerbang / Gate: **' + $rd['gate'].ToUpperInvariant() + '** (overall: ' + $rd['overall'] + ')'))
@@ -2900,6 +3007,7 @@ function Invoke-RunReport {
             run_id = $RunId; mode = $Mode; outcome = $Outcome; started_at = $Started; ended_at = $Ended; version = $v
             catalog_sha256 = $cs; scope = @($Scope | Where-Object { $_ }); repair_policy = $pol; key_present = $KeyPresent
             evidence = $ev[0]; evidence_sha256 = $ev[1]; evidence_after = $af[0]; analysis_text = $text; ai_counts = $counts
+            skill_update_line = (Get-RrNewestLine -Path (Join-Path $Reports $script:RrSkillUpdateJournal))
             journal_lines = (Get-RrFileLines -Path $JournalPath); readiness = $Readiness; action_info = $ActionInfo
             secrets = @($Secrets); key_redactions = 0; repair_exit = $RepairExit
         }

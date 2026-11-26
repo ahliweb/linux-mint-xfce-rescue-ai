@@ -33,6 +33,7 @@ The flow: CI builds only the unsigned pair; the owner signs the manifest locally
 | `config/skills-allowed-signers` | Placeholder until the owner supplies the public key |
 | Client updater `scripts/update-skills.py` (`scripts/lib/skills_update.py`): live launcher, Linux host launcher, Windows launcher | Implemented at source level against a local fake release server; a run against real GitHub with a real owner signature is Environment-blocked until the owner pins the key and releases |
 | macOS host launcher | Not applicable: it does not open Hermes, so there is nothing to update |
+| Run report line with the newest recorded outcome (#95): Python, PowerShell, and JXA generators, schema key `skill_update` | Implemented (see [Run report line](#run-report-line-95)) |
 | Pinned `config/skills-allowed-signers` copied to the USB bundle, the installed bundle, and the persistence image | Implemented |
 
 ## Format
@@ -180,7 +181,16 @@ HTTPS only (plain HTTP only for loopback, which is what the tests use); certific
 | Windows (`host/rescue-windows.ps1`) | In `Invoke-HermesPhase`, after `hermes-home` is seeded, before Hermes | the portable `python.exe` of the USB | `<bundle>\config\` |
 | macOS (`host/RESCUE-MACOS.command`) | Not applicable: it does not open Hermes | n/a | n/a |
 
-On the host launchers the run report is written before Hermes starts, so the update result is in the launcher log and the journal, not in `report.md`. The live launcher updates before the scan and records it in the same journal. The run report schema and its three generators are unchanged on purpose (see [security-model.md](security-model.md)); a report line is a follow-up.
+On the host launchers the run report is written before Hermes starts, so the update result of the same start is in the launcher log and the journal, and the report shows the newest result recorded before it (see the next section). The live launcher updates before the scan and records it in the same journal.
+
+### Run report line (#95)
+
+`report.md` and `report.json` show one line (`Pembaruan skill / Skill update`, key `skill_update`) with the status, reason, bundle version, signer fingerprint, and time of the **newest** line of `<reports>/skill-update-journal.jsonl`. The generators (Python, PowerShell, JXA) read nothing else from the updater, and the updater is unchanged. Details and the placement table: [run-report.md](run-report.md#baris-pembaruan-skill).
+
+- Closed fields only, each validated: `status` and `reason` against the enums of this updater, `bundle_version` as `MAJOR.MINOR.PATCH`, `signer` as `SHA256:` plus 43 base64 characters, `at` as a UTC stamp. A value that fails is shown as `tidak valid` and never copied; a malformed newest line is shown as `tidak valid` as a whole; free text from the journal never reaches the report. The journal is data, not instructions.
+- No journal file: `tidak ada pembaruan skill tercatat`. macOS: `tidak berlaku: macOS tidak membuka Hermes`.
+- Placement on host launchers: the report is written before the updater runs (the updater needs the seeded `hermes-home` and the portable Python, and must not delay the report on any exit path), so the line is the **last recorded** result, usually from the previous start, with its time. Moving the updater before the report was rejected because it would change the launch order and failure paths that this change must not touch.
+- The set of statuses and reason codes is copied into the report generators; `tests/test_run_report.py` fails when it differs from `STATUSES` and `MESSAGES` here, so adding a reason code to the updater requires updating the report schema and generators in the same change.
 
 ### Persistence migration
 
@@ -194,5 +204,6 @@ On the host launchers the run report is written before Hermes starts, so the upd
 
 ## Changelog
 
+- Run report line (#95): the report shows the newest recorded update outcome (closed fields, validated), in all three generators; host launchers show the last recorded result.
 - Client updater (#91): `scripts/update-skills.py` and `scripts/lib/skills_update.py`, called by the live, Linux host and Windows launchers; `skills_update` switch (`RESCUE_SKILLS_UPDATE`, default `auto`); pinned signers copied to the USB bundle, the installed bundle, and the persistence image; statuses, network safety, and the placement table.
 - Initial version: format 1, signing procedure, key custody, rotation and revocation, release steps.

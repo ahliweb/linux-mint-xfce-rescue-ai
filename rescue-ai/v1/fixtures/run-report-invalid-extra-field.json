@@ -484,6 +484,14 @@
       }
     ]
   },
+  "skill_update": {
+    "state": "none",
+    "status": null,
+    "reason": null,
+    "bundle_version": null,
+    "signer": null,
+    "recorded_at": null
+  },
   "open_items": [
     {
       "kind": "action-failed",
