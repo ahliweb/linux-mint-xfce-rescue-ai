@@ -483,6 +483,14 @@
       }
     ]
   },
+  "skill_update": {
+    "state": "recorded",
+    "status": "updated",
+    "reason": "updated",
+    "bundle_version": "0.7.0",
+    "signer": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "recorded_at": "2026-09-30T07:59:00Z"
+  },
   "open_items": [
     {
       "kind": "action-failed",

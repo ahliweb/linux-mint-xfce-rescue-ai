@@ -1,0 +1,1 @@
+skill_update.status carries free text from the journal instead of a closed value ("invalid" or an enum member).

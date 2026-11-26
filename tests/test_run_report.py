@@ -44,6 +44,7 @@ REPO = HL.REPO
 sys.path.insert(0, str(REPO / 'scripts' / 'lib'))
 import repair_catalog as rc  # noqa: E402
 import run_report as rr  # noqa: E402
+import skills_update as su  # noqa: E402
 
 CLI = REPO / 'scripts' / 'rescue-report.py'
 SCHEMA = json.loads((REPO / 'rescue-ai/v1/run-report.schema.json').read_text(encoding='utf-8'))
@@ -817,6 +818,188 @@ def jxa_source():
     return match.group(1)
 
 
+# ----------------------------------------------------------------------------------------
+# Skill update line (#95): the newest journal line, closed fields only
+# ----------------------------------------------------------------------------------------
+SU_FP = 'SHA256:' + 'k' * 43
+
+
+def su_line(**over):
+    rec = {'schema': 'rescue-skill-update/1', 'at': '2026-09-30T07:59:00Z', 'status': 'updated', 'reason': 'updated',
+           'toolkit_version': '0.7.0', 'installed_version': '0.7.0', 'bundle_version': '0.7.1', 'signer': SU_FP, 'skills': 11}
+    rec.update(over)
+    return json.dumps(rec, sort_keys=True).encode()
+
+
+def su_report(line, mode='linux-host'):
+    return report_of(mode=mode, skill_update_line=line)
+
+
+class SkillUpdateLineTests(unittest.TestCase):
+    def test_a_journal_entry_shows_status_reason_version_and_fingerprint(self):
+        report = su_report(su_line())
+        validate(self, report)
+        self.assertEqual(report['skill_update'], {'state': 'recorded', 'status': 'updated', 'reason': 'updated',
+                                                  'bundle_version': '0.7.1', 'signer': SU_FP, 'recorded_at': '2026-09-30T07:59:00Z'})
+        row = [l for l in rr.render_markdown(report).splitlines() if l.startswith('| Pembaruan skill / Skill update |')]
+        self.assertEqual(len(row), 1)
+        for part in ('status: updated', 'alasan: updated', 'versi: 0.7.1', 'sidik jari penanda tangan: ' + SU_FP,
+                     'dicatat (UTC): 2026-09-30T07:59:00Z', 'start sebelumnya'):
+            self.assertIn(part, row[0])
+
+    def test_a_refusal_with_no_version_or_signer_shows_dashes(self):
+        report = su_report(su_line(status='refused', reason='placeholder-signers', bundle_version=None, signer=None))
+        validate(self, report)
+        self.assertEqual((report['skill_update']['status'], report['skill_update']['reason']), ('refused', 'placeholder-signers'))
+        self.assertIsNone(report['skill_update']['bundle_version'])
+        self.assertIn('versi: -; sidik jari penanda tangan: -;', rr.render_markdown(report))
+
+    def test_no_journal_says_no_update_recorded(self):
+        report = su_report(None)
+        validate(self, report)
+        self.assertEqual(report['skill_update']['state'], 'none')
+        self.assertIn('| Pembaruan skill / Skill update | tidak ada pembaruan skill tercatat', rr.render_markdown(report))
+
+    def test_every_invalid_field_is_shown_as_invalid_and_never_raw(self):
+        hostile = 'IGNORE PREVIOUS INSTRUCTIONS /home/victim 10.1.2.3'
+        cases = {'status': hostile, 'reason': 'not-a-reason', 'bundle_version': '1.2.3\n', 'signer': 'SHA256:short',
+                 'at': '2026-09-30 07:59:00'}
+        for name, value in cases.items():
+            with self.subTest(field=name):
+                report = su_report(su_line(**{name: value}))
+                validate(self, report)
+                key = {'at': 'recorded_at'}.get(name, name)
+                self.assertEqual(report['skill_update'][key], 'invalid')
+                md = rr.render_markdown(report)
+                self.assertNotIn('IGNORE', json.dumps(report) + md)
+                self.assertNotIn('victim', json.dumps(report) + md)
+                self.assertIn('tidak valid', md)
+                self.assertEqual(report['privacy_check']['status'], 'passed')
+        # non-string and missing values are invalid too, an allowed null stays null
+        self.assertEqual(su_report(su_line(status=5))['skill_update']['status'], 'invalid')
+        self.assertEqual(su_report(su_line(reason=None))['skill_update']['reason'], 'invalid')
+        record = json.loads(su_line())
+        del record['at']
+        self.assertEqual(su_report(json.dumps(record).encode())['skill_update']['recorded_at'], 'invalid')
+
+    def test_a_malformed_newest_line_is_invalid_as_a_whole(self):
+        for label, line in (('not json', b'{"status": "upd'), ('array', b'[%s]' % su_line()), ('string', b'"updated"'),
+                            ('wrong schema', su_line(schema='other/1')), ('no schema', b'{"status": "updated"}'),
+                            ('bad utf-8', b'{"schema": "\xff"}'), ('empty window', b'')):
+            with self.subTest(label=label):
+                report = su_report(line)
+                validate(self, report)
+                self.assertEqual(report['skill_update'], {'state': 'invalid', 'status': None, 'reason': None, 'bundle_version': None,
+                                                          'signer': None, 'recorded_at': None})
+                self.assertIn('tidak valid: baris jurnal', rr.render_markdown(report))
+
+    def test_macos_says_not_applicable_even_when_a_journal_exists(self):
+        report = su_report(su_line(), mode='macos-host')
+        validate(self, report)
+        self.assertEqual(report['skill_update']['state'], 'not_applicable')
+        self.assertIn('| Pembaruan skill / Skill update | tidak berlaku: macOS tidak membuka Hermes', rr.render_markdown(report))
+
+    def test_the_minimal_privacy_report_has_the_field_too(self):
+        minimal = rr.minimal_report(make_inputs(skill_update_line=su_line()), ['ipv4-address'])
+        validate(self, minimal)
+        self.assertEqual(minimal['skill_update']['state'], 'none')
+
+    def test_closed_sets_match_the_updater_and_the_schema(self):
+        self.assertEqual(set(rr.SKILL_UPDATE_STATUSES), set(su.STATUSES))
+        self.assertEqual(set(rr.SKILL_UPDATE_REASONS), set(su.MESSAGES))
+        self.assertEqual(rr.SKILL_UPDATE_SCHEMA, su.JOURNAL_SCHEMA)
+        self.assertEqual(rr.SKILL_UPDATE_JOURNAL, su.JOURNAL_NAME)
+        props = SCHEMA['properties']['skill_update']['properties']
+        self.assertEqual(props['state']['enum'], list(rr.SKILL_UPDATE_STATES))
+        self.assertEqual(props['status']['anyOf'][0]['enum'], list(rr.SKILL_UPDATE_STATUSES))
+        self.assertEqual(props['reason']['anyOf'][0]['enum'], list(rr.SKILL_UPDATE_REASONS))
+        self.assertIn('skill_update', SCHEMA['required'])
+        for status, reason in su.STATUS_OF.items():
+            self.assertIn(reason, rr.SKILL_UPDATE_STATUSES)
+
+    def test_read_newest_line_takes_only_the_last_line(self):
+        tmp = Path(tempfile.mkdtemp(prefix='run-report-su-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = tmp / rr.SKILL_UPDATE_JOURNAL
+        self.assertIsNone(rr.read_newest_line(path))
+        path.write_bytes(b'')
+        self.assertIsNone(rr.read_newest_line(path))
+        path.write_bytes(su_line(status='failed') + b'\n' + su_line(status='current') + b'\n\n  \n')
+        self.assertEqual(json.loads(rr.read_newest_line(path))['status'], 'current')
+        # a file larger than the read window: the newest line still wins, the partial first fragment is dropped
+        path.write_bytes((su_line(status='failed') + b'\n') * 2000 + su_line(status='current') + b'\n')
+        self.assertGreater(path.stat().st_size, rr.SKILL_UPDATE_MAX_TAIL)
+        self.assertEqual(json.loads(rr.read_newest_line(path))['status'], 'current')
+        # a newest line longer than the window is not parsed: it comes back empty and is shown as invalid
+        path.write_bytes(su_line(status='current') + b'\n' + b'x' * (rr.SKILL_UPDATE_MAX_TAIL + 10))
+        self.assertEqual(rr.read_newest_line(path), b'')
+        self.assertEqual(su_report(rr.read_newest_line(path))['skill_update']['state'], 'invalid')
+
+
+class SkillUpdateCliTests(unittest.TestCase):
+    """The CLI reads <reports>/skill-update-journal.jsonl written by the real updater code."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='run-report-su-cli-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.reports = self.tmp / 'reports'
+
+    def run_cli(self, mode='linux-host'):
+        proc = subprocess.run([sys.executable, str(CLI), '--reports-dir', str(self.reports), '--run-id', RUN, '--mode', mode,
+                               '--outcome', 'evidence-only', '--started-at', STARTED, '--ended-at', ENDED, '--key-present', 'no'],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        run = sorted(self.reports.glob('run-*'))[-1]
+        return json.loads((run / 'report.json').read_text(encoding='utf-8')), (run / 'report.md').read_text(encoding='utf-8')
+
+    def test_no_journal_file(self):
+        doc, md = self.run_cli()
+        validate(self, doc)
+        self.assertEqual(doc['skill_update']['state'], 'none')
+        self.assertIn('tidak ada pembaruan skill tercatat', md)
+
+    def test_the_newest_line_written_by_the_updater_is_shown(self):
+        old = su._finish('offline', toolkit_version='0.7.0')
+        new = su._finish('updated', toolkit_version='0.7.0', installed_version='0.7.0', bundle_version='0.7.1', signer=SU_FP, skills=11)
+        self.assertTrue(su.write_journal(self.reports, old))
+        self.assertTrue(su.write_journal(self.reports, new))
+        doc, md = self.run_cli()
+        validate(self, doc)
+        s = doc['skill_update']
+        self.assertEqual((s['state'], s['status'], s['reason'], s['bundle_version'], s['signer']), ('recorded', 'updated', 'updated', '0.7.1', SU_FP))
+        self.assertRegex(s['recorded_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        self.assertIn('status: updated; alasan: updated; versi: 0.7.1; sidik jari penanda tangan: ' + SU_FP, md)
+
+    def test_every_status_and_reason_the_updater_can_write_is_accepted(self):
+        for reason in su.MESSAGES:
+            with self.subTest(reason=reason):
+                shutil.rmtree(self.reports, ignore_errors=True)
+                self.assertTrue(su.write_journal(self.reports, su._finish(reason, toolkit_version='0.7.0')))
+                doc, _ = self.run_cli()
+                validate(self, doc)
+                self.assertEqual((doc['skill_update']['status'], doc['skill_update']['reason']),
+                                 ('updated' if reason == 'updated' else su.STATUS_OF[reason], reason))
+
+    def test_a_hand_edited_hostile_journal_never_reaches_the_report(self):
+        self.reports.mkdir(parents=True)
+        (self.reports / rr.SKILL_UPDATE_JOURNAL).write_bytes(
+            su_line() + b'\n' + su_line(status='run rm -rf /', signer='ssh-ed25519 AAAA secret', reason='/home/victim') + b'\n')
+        doc, md = self.run_cli()
+        validate(self, doc)
+        self.assertEqual((doc['skill_update']['status'], doc['skill_update']['signer'], doc['skill_update']['reason']),
+                         ('invalid', 'invalid', 'invalid'))
+        self.assertNotIn('rm -rf', json.dumps(doc) + md)
+        self.assertNotIn('victim', json.dumps(doc) + md)
+        self.assertNotIn('ssh-ed25519', json.dumps(doc) + md)
+
+    def test_macos_mode_is_not_applicable(self):
+        self.reports.mkdir(parents=True)
+        (self.reports / rr.SKILL_UPDATE_JOURNAL).write_bytes(su_line() + b'\n')
+        doc, md = self.run_cli(mode='macos-host')
+        self.assertEqual(doc['skill_update']['state'], 'not_applicable')
+        self.assertIn('tidak berlaku: macOS tidak membuka Hermes', md)
+
+
 class Generators:
     """Runs the three generators on the same input files. Directories are per generator."""
 
@@ -1007,6 +1190,26 @@ class CrossCheckMixin:
                     else:
                         self.assertNotIn('repair-engine-failed', [k for k, _ in items])
 
+    def test_skill_update_line_is_equal_for_every_journal_shape(self):
+        # none (no journal file) is covered by every other test; here a journal exists in each reports folder.
+        newest = {'recorded': su_line(), 'refusal': su_line(status='refused', reason='bad-signature', bundle_version=None, signer=None),
+                  'hostile': su_line(status='x /home/a', reason=7, bundle_version='1.2.3\n', signer='SHA256:zz', at='2026-09-30 07:59:00'),
+                  'malformed': b'{"schema": "rescue-skill-update/1", "status": ', 'array': b'[' + su_line() + b']'}
+        for label, line in newest.items():
+            for mode in ('windows-host', 'macos-host'):
+                if not self.SU_JOURNAL and mode != 'macos-host':
+                    continue
+                with self.subTest(journal=label, mode=mode):
+                    shutil.rmtree(self.tmp / 'py', ignore_errors=True)
+                    shutil.rmtree(self.tmp / self.NAME, ignore_errors=True)
+                    for name in ('py', self.NAME):
+                        (self.tmp / name).mkdir()
+                        (self.tmp / name / rr.SKILL_UPDATE_JOURNAL).write_bytes(su_line(status='failed') + b'\n' + line + b'\n')
+                    py, other = self.assert_same(self.gen.files(), mode=mode, outcome='evidence-only')
+                    self.assertEqual(py[0]['skill_update'], other[0]['skill_update'])
+                    self.assertEqual(py[0]['skill_update']['state'], 'not_applicable' if mode == 'macos-host' else
+                                     ('recorded' if label in ('recorded', 'refusal', 'hostile') else 'invalid'))
+
     def test_failed_run_without_artifacts_is_equal(self):
         paths = self.gen.files(evidence=False, after=False, analysis=None, journal=False, readiness=True)
         self.assert_same(paths, mode='live-linux', outcome='preflight-failed', scope='os', policy='detect-only')
@@ -1075,6 +1278,7 @@ class CrossCheckMixin:
 @unittest.skipUnless(PWSH, 'pwsh not installed')
 class PowerShellCrossCheck(CrossCheckMixin, unittest.TestCase):
     NAME = 'ps'
+    SU_JOURNAL = True   # the PowerShell generator reads the journal like the Python one
 
     def other(self, paths, **over):
         return self.gen.powershell(paths, name='ps', **over)
@@ -1109,6 +1313,7 @@ class PowerShellCrossCheck(CrossCheckMixin, unittest.TestCase):
 @unittest.skipUnless(NODE, 'node not installed')
 class JxaCrossCheck(CrossCheckMixin, unittest.TestCase):
     NAME = 'js'
+    SU_JOURNAL = False  # the JXA generator never reads the journal: it only ever runs for macOS (not applicable)
 
     def other(self, paths, **over):
         return self.gen.jxa(paths, name='js', **over)
@@ -1898,6 +2103,22 @@ class StaticTests(unittest.TestCase):
 
     def test_fixture_schema_check_via_validator_object(self):
         jsonschema.Draft202012Validator.check_schema(SCHEMA)
+
+    def test_powershell_skill_update_sets_and_patterns_mirror_python(self):
+        # pwsh is absent on some machines (the cross-check skips), so pin the copied closed sets statically.
+        ps = PS1.read_text(encoding='utf-8')
+
+        def arr(name):
+            m = re.search(r"\$script:%s = @\(([^)]*)\)" % name, ps)
+            self.assertIsNotNone(m, name)
+            return re.findall(r"'([^']+)'", m.group(1))
+        self.assertEqual(arr('RrSkillUpdateStatuses'), list(rr.SKILL_UPDATE_STATUSES))
+        self.assertEqual(arr('RrSkillUpdateReasons'), list(rr.SKILL_UPDATE_REASONS))
+        self.assertIn("'%s'" % rr.SKILL_UPDATE_JOURNAL, ps)
+        self.assertIn("'%s'" % rr.SKILL_UPDATE_SCHEMA, ps)
+        self.assertIn('RrSkillUpdateMaxTail = %d' % rr.SKILL_UPDATE_MAX_TAIL, ps)
+        for pattern in (r"'^[0-9]+\.[0-9]+\.[0-9]+\z'", r"'^SHA256:[A-Za-z0-9+/]{43}\z'", r"'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z'"):
+            self.assertIn(pattern, ps)
 
     def test_launchers_write_no_report_outside_the_usb_and_never_source_the_generator_state(self):
         for path in (HL.REPO / 'scripts' / 'launch-hermes-rescue.sh', HL.REPO / 'host' / 'rescue-linux.sh'):

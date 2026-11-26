@@ -93,6 +93,14 @@
     "only_after": 0,
     "changed": []
   },
+  "skill_update": {
+    "state": "none",
+    "status": null,
+    "reason": null,
+    "bundle_version": null,
+    "signer": null,
+    "recorded_at": null
+  },
   "open_items": [],
   "honesty": {
     "hardware_required": [

@@ -36,6 +36,19 @@ FINALS = ('verified', 'rolled-back', 'failed', 'skipped', 'declined', 'proposed'
 CONTROL = re.compile('[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]')
 DOC_RE = re.compile(r'^docs/[A-Za-z0-9._/-]+(#[A-Za-z0-9._-]+)?$')
 STAMP_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+# Skill update journal (docs/skill-update.md): only the CLOSED fields of the newest line are read; the sets below mirror
+# scripts/lib/skills_update.py (tests/test_run_report.py pins them) and the PowerShell generator repeats them.
+SKILL_UPDATE_JOURNAL = 'skill-update-journal.jsonl'
+SKILL_UPDATE_SCHEMA = 'rescue-skill-update/1'
+SKILL_UPDATE_STATUSES = ('updated', 'current', 'skipped', 'refused', 'offline', 'failed')
+SKILL_UPDATE_REASONS = ('updated', 'current', 'not-newer', 'disabled', 'config-invalid', 'no-ssh-keygen', 'placeholder-signers',
+                        'invalid-signers', 'offline', 'http-error', 'no-bundle', 'bad-release', 'too-large', 'bad-signature',
+                        'bad-manifest', 'version-mismatch', 'rollback', 'toolkit-too-old', 'bad-bundle', 'state-invalid',
+                        'toolkit-version-unreadable', 'unsafe-target', 'install-error')
+SKILL_UPDATE_STATES = ('recorded', 'none', 'invalid', 'not_applicable')
+SKILL_UPDATE_MAX_TAIL = 65536   # bytes read from the end of the journal; the newest line must fit
+VERSION_RE = re.compile(r'^[0-9]+\.[0-9]+\.[0-9]+$')
+FINGERPRINT_RE = re.compile(r'^SHA256:[A-Za-z0-9+/]{43}$')
 
 PRIVACY_RULES = (
     ('unix-home-path', re.compile(r'/home/[^/\s]+')),
@@ -517,6 +530,79 @@ def build_honesty(mode, outcome, key_present, actions, comparison, scope):
     return {'hardware_required': hardware, 'environment_blocked': blocked, 'scope_limited': limited}
 
 
+def read_newest_line(path):
+    """The newest non-blank line (bytes) of a journal file, or None when the file is absent or empty.
+
+    Only the last SKILL_UPDATE_MAX_TAIL bytes are read. When the file is longer, the first fragment is a partial line and
+    is dropped, so a newest line longer than the window comes back as b'' (not valid, shown as such)."""
+    try:
+        with open(path, 'rb') as fh:
+            size = fh.seek(0, os.SEEK_END)
+            start = max(0, size - SKILL_UPDATE_MAX_TAIL)
+            fh.seek(start)
+            raw = fh.read(SKILL_UPDATE_MAX_TAIL)
+    except OSError:
+        return None
+    parts = raw.split(b'\n')
+    if start > 0:
+        parts = parts[1:] if len(parts) > 1 else []
+        if not parts:
+            return b''
+    parts = [part for part in parts if part.strip()]
+    return parts[-1] if parts else None
+
+
+def _closed(value, allowed=None, pattern=None, nullable=False):
+    """A journal field as the report may show it: the value when it passes the closed check, None for an allowed null, else 'invalid'."""
+    if value is None:
+        return None if nullable else 'invalid'
+    if not isinstance(value, str):
+        return 'invalid'
+    if allowed is not None and value not in allowed:
+        return 'invalid'
+    if pattern is not None and not pattern.fullmatch(value):
+        return 'invalid'
+    return value
+
+
+def build_skill_update(mode, line):
+    """The skill update line of the report. *line* is the newest journal line (bytes) or None. Free text is never copied."""
+    def empty(state):
+        return {'state': state, 'status': None, 'reason': None, 'bundle_version': None, 'signer': None, 'recorded_at': None}
+    if mode == 'macos-host':  # the macOS launcher never opens Hermes, so it never runs the updater
+        return empty('not_applicable')
+    if line is None:
+        return empty('none')
+    try:
+        record = json.loads(line.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        record = None
+    if not isinstance(record, dict) or record.get('schema') != SKILL_UPDATE_SCHEMA:
+        return empty('invalid')
+    return {'state': 'recorded',
+            'status': _closed(record.get('status'), allowed=SKILL_UPDATE_STATUSES),
+            'reason': _closed(record.get('reason'), allowed=SKILL_UPDATE_REASONS),
+            'bundle_version': _closed(record.get('bundle_version'), pattern=VERSION_RE, nullable=True),
+            'signer': _closed(record.get('signer'), pattern=FINGERPRINT_RE, nullable=True),
+            'recorded_at': _closed(record.get('at'), pattern=STAMP_RE)}
+
+
+def skill_update_text(su):
+    if su['state'] == 'not_applicable':
+        return 'tidak berlaku: macOS tidak membuka Hermes, jadi tidak ada pembaruan skill / not applicable: the macOS launcher never opens Hermes'
+    if su['state'] == 'none':
+        return 'tidak ada pembaruan skill tercatat / no skill update recorded'
+    if su['state'] == 'invalid':
+        return 'tidak valid: baris jurnal pembaruan skill terbaru tidak sesuai format / invalid: the newest skill update journal line is malformed'
+
+    def show(value):
+        return 'tidak valid' if value == 'invalid' else ('-' if value is None else value)
+    return ('status: %s; alasan: %s; versi: %s; sidik jari penanda tangan: %s; dicatat (UTC): %s. Hasil tercatat terbaru; '
+            'di launcher host pembaru berjalan setelah laporan ditulis, jadi baris ini bisa berasal dari start sebelumnya / '
+            'newest recorded outcome; on host launchers the updater runs after the report is written, so this may be from an earlier start'
+            % (show(su['status']), show(su['reason']), show(su['bundle_version']), show(su['signer']), show(su['recorded_at'])))
+
+
 def build_summary(detection, actions, comparison):
     counts = {name: 0 for name in FINALS}
     for action in actions:
@@ -588,6 +674,7 @@ def build_report(inp):
             'actions': actions,
         },
         'comparison': comparison,
+        'skill_update': build_skill_update(inp['mode'], inp.get('skill_update_line')),
     }
     report['open_items'] = build_open_items(detection, actions, comparison, chain, inp.get('repair_exit'))
     report['honesty'] = build_honesty(inp['mode'], outcome, bool(inp.get('key_present')), actions, comparison, scope)
@@ -682,7 +769,8 @@ def render_markdown(report):
         ['Catalog SHA-256', h['catalog_sha256'] or 'unavailable'], ['Scope', ', '.join(h['scope'])],
         ['Repair policy', h['repair_policy'] or 'unknown'],
         ['Kunci provider ada / Provider key present (nilai tidak pernah dicatat)', _yes_no(h['provider_key_present'])],
-        ['Hasil / Outcome', h['outcome']], ['Evidence SHA-256', h['evidence_sha256'] or 'none']])
+        ['Hasil / Outcome', h['outcome']], ['Evidence SHA-256', h['evidence_sha256'] or 'none'],
+        ['Pembaruan skill / Skill update', skill_update_text(report['skill_update'])]])
     out += ['', '## 2. Preflight perangkat keras / Hardware readiness', '']
     if rd['performed']:
         out.append('Gerbang / Gate: **%s** (overall: %s)' % (rd['gate'].upper(), rd['overall']))

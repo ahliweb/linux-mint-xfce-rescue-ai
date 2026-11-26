@@ -206,6 +206,7 @@ def main(argv=None):
         'scope': scope or None, 'repair_policy': args.repair_policy, 'key_present': key_present,
         'evidence': evidence, 'evidence_sha256': hashlib.sha256(evidence_raw).hexdigest() if evidence_raw else None,
         'evidence_after': after, 'analysis_text': analysis_text, 'ai_counts': counts,
+        'skill_update_line': rr.read_newest_line(os.path.join(args.reports_dir, rr.SKILL_UPDATE_JOURNAL)),
         'journal_lines': lines, 'repair_exit': args.repair_exit, 'readiness': readiness, 'action_info': info or {}, 'secrets': secrets,
     }
     if lines is not None:
