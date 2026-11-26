@@ -1,4 +1,4 @@
-.PHONY: check syntax lint test validate docs diff-check collect hardware-check version
+.PHONY: check syntax lint test validate docs diff-check collect hardware-check version skills-bundle
 
 PYTHON ?= python3
 
@@ -40,6 +40,10 @@ collect:
 
 hardware-check:
 	$(PYTHON) scripts/check-hardware-readiness.py --mode auto --output /tmp/rescue-hardware-readiness.json
+
+## skills-bundle: deterministic dist/rescue-skills-<VERSION>.tar.gz + manifest (never signed here; see docs/skill-update.md)
+skills-bundle:
+	$(PYTHON) scripts/build-skills-bundle.py build --output-dir dist
 
 version:
 	@cat VERSION

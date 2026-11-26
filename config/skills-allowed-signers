@@ -1,0 +1,8 @@
+# RESCUE-SKILLS-ALLOWED-SIGNERS-PLACEHOLDER
+#
+# PLACEHOLDER. No owner public key is pinned yet, so NO skills bundle is trusted (fail closed).
+# The skills updater must refuse to install anything while the marker line above is present.
+#
+# The owner replaces this file through a reviewed pull request with entries of the form
+#   <principal> namespaces="rescue-skills" ssh-ed25519 <PUBLIC key, base64> [comment]
+# and removes the marker line. Only a PUBLIC key goes here; see docs/skill-update.md.
